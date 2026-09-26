@@ -1,6 +1,6 @@
 # License
 
-Edge Python is licensed in two parts, and the directory a file sits in decides which one applies.
+Edge Python is licensed in three parts, and the directory a file sits in decides which one applies.
 
 ## The engine
 
@@ -10,9 +10,17 @@ Licensed under the Apache License 2.0, whose text is at <https://www.apache.org/
 
 The engine builds as `compiler.wasm` and as a Rust library, and driving either from your own host needs nothing from anyone, a closed product included.
 
+## The language kit
+
+`lang/`
+
+Copyright 2026 Dylan Sutton Chavez. Licensed under the PolyForm Noncommercial License 1.0.0, whose text is at <https://polyformproject.org/licenses/noncommercial/1.0.0>.
+
+A personal tool, a hobby, research or teaching needs nothing from anyone. A product, or a project under terms that let others sell it, needs a written agreement with the licensor, which <c.sutton.dylan@gmail.com> arranges.
+
 ## The products
 
-`lang/` `site/` `infra/`
+`site/` `infra/`
 
 Copyright 2026 Dylan Sutton Chavez. All rights reserved.
 
