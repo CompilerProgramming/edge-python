@@ -57,6 +57,12 @@
     "fails": ["unknown package 'mystery'"]
   },
   {
+    "given": { "app.edge": "EDGEPKG\u0001" },
+    "env": { "EDGE_TOKEN": "not-a-token" },
+    "run": ["publish", "app.edge"],
+    "fails": ["That token is not valid."]
+  },
+  {
     "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "given": { "edge.json": "{ \"system\": { \"time\": \"https://cdn.edgepython.com/js/builtins/time/index.js\" } }\n" },
     "run": ["add", "math"],

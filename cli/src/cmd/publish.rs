@@ -36,22 +36,24 @@ struct Published {
 
 /* The artifact as it sits on disk is the whole body. */
 fn send(token: &str, artifact: &[u8]) -> Result<Published> {
+    // A refusal still carries a body, the registry's own words for what went wrong.
     let mut response = ureq::post(site("/api/publish").as_str())
+        .config()
+        .http_status_as_error(false)
+        .build()
         .header("authorization", &format!("Bearer {token}"))
         .header("content-type", "application/octet-stream")
         .send(artifact)
-        .map_err(|e| match e {
-            ureq::Error::StatusCode(code) => anyhow!("the registry refused it with {code}"),
-            other => anyhow!("reaching the registry: {other}")
-        })?;
+        .map_err(|e| anyhow!("reaching the registry: {e}"))?;
 
+    let status = response.status().as_u16();
     let text = response.body_mut().read_to_string().context("reading the registry's answer")?;
-    let answer: serde_json::Value = serde_json::from_str(&text).context("parsing the registry's answer")?;
+    let answer: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
     let field = |key: &str| answer.get(key).and_then(|v| v.as_str()).map(str::to_string);
 
     match (field("name"), field("version"), field("url")) {
-        (Some(name), Some(version), Some(url)) => Ok(Published { name, version, url }),
-        _ => bail!("{}", answer.get("error").and_then(|e| e.as_str()).unwrap_or("the registry sent no url"))
+        (Some(name), Some(version), Some(url)) if status < 300 => Ok(Published { name, version, url }),
+        _ => bail!("{}", field("error").unwrap_or_else(|| format!("the registry refused it with {status}")))
     }
 }
