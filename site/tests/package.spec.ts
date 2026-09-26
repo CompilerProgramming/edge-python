@@ -123,6 +123,18 @@ test('opens an older version under ?v= and keeps the newest at the bare address'
   await expect(page.getByText('Not found')).toBeVisible()
 })
 
+test('puts the newest release first under Recent and sends std to its maintainer', async ({ page, request }) => {
+  const older = await published(request)
+  const newer = await published(request)
+
+  await page.goto('/?sort=recent')
+  const shelf = await page.locator('[data-cards] a[href^="/package/"]').evaluateAll((all) => all.map((a) => a.getAttribute('href')))
+  expect(shelf).toContain(`/package/${older.name}`)
+  expect(shelf.indexOf(`/package/${newer.name}`)).toBeLessThan(shelf.indexOf(`/package/${older.name}`))
+
+  await expect(page.getByRole('link', { name: 'std' })).toHaveAttribute('href', '/@dylan')
+})
+
 test('says nothing is there for a name nobody published', async ({ page }) => {
   await page.goto('/package/nobody-here')
   await expect(page.getByText('Not found')).toBeVisible()

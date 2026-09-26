@@ -12,19 +12,26 @@ const guides = [
   { icon: 'boxes', label: 'Modules', detail: 'edge add json', href: '/docs/reference/modules' }
 ] as const
 
-const scopes = [
-  { label: 'std', current: true },
-  { label: 'system', current: false },
-  { label: 'community', current: false }
-]
-
 // Publishing needs a token, so signed out the same button opens the sign-in dialog.
 const { user } = Astro.locals
 
 // A query narrows the shelf, and it arrives in the url so the form works before any script does.
 const asked = (Astro.url.searchParams.get('q') ?? '').trim().slice(0, 64)
+const recent = Astro.url.searchParams.get('sort') === 'recent'
 
-const { results: packages } = await listed(env.DB, { asked: asked || undefined })
+// Popular and recent reorder the same shelf, std is the maintainer's own.
+const shelf = (sort?: string) => {
+  const params = new URLSearchParams({ ...(asked ? { q: asked } : {}), ...(sort ? { sort } : {}) })
+  return params.size ? `/?${params}` : '/'
+}
+
+const sorts = [
+  { label: 'Popular', href: shelf(), current: !recent },
+  { label: 'Recent', href: shelf('recent'), current: recent },
+  { label: 'std', href: '/@dylan', current: false }
+]
+
+const { results: packages } = await listed(env.DB, { asked: asked || undefined, recent })
 const total = await counted(env.DB)
 
 const outline = 'flex items-center gap-2 transition border border-line text-fg-hint px-4 py-1 rounded-full hover:text-fg'
@@ -85,12 +92,12 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
           <Field name="q" label="Filter packages" hideLabel type="search" placeholder="Filter packages" icon="search" value={asked} class="[&>span]:h-8.5 [&>span]:py-0" />
         </form>
 
-        <div class="flex items-center gap-4 sm:ml-auto">
-          <span class="text-fg-hint">Scope</span>
-          {scopes.map(({ label, current }) => (
-            <button class:list={['rounded-full border border-line-strong px-3 py-1', current ? 'text-fg' : 'text-fg-faint transition hover:text-fg']}>
+        <div data-sorts class="flex items-center gap-4 sm:ml-auto">
+          <span class="text-fg-hint">Sort</span>
+          {sorts.map(({ label, href, current }) => (
+            <a href={href} class:list={['rounded-full border border-line-strong px-3 py-1', current ? 'text-fg' : 'text-fg-faint transition hover:text-fg']}>
               <span>{label}</span>
-            </button>
+            </a>
           ))}
         </div>
       </div>
@@ -124,7 +131,10 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
 
     /* The shelf is asked for as a page, not as json, so the cards it answers with are the same markup the server already knows how to draw. */
     const narrow = async (asked: string) => {
-      const url = asked ? `/?q=${encodeURIComponent(asked)}` : '/'
+      const params = new URLSearchParams(location.search)
+      if (asked) params.set('q', asked)
+      else params.delete('q')
+      const url = params.size ? `/?${params}` : '/'
 
       running?.abort()
       running = new AbortController()
@@ -132,9 +142,11 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
       try {
         const answer = await fetch(url, { signal: running.signal, headers: { accept: 'text/html' } })
         const page = new DOMParser().parseFromString(await answer.text(), 'text/html')
-        const drawn = page.querySelector('[data-cards]')
-
-        if (drawn) cards.replaceChildren(...drawn.childNodes)
+        // The sort links carry the query too, so they are redrawn beside the cards.
+        for (const region of ['[data-cards]', '[data-sorts]']) {
+          const drawn = page.querySelector(region)
+          if (drawn) document.querySelector(region)?.replaceChildren(...drawn.childNodes)
+        }
         history.replaceState(null, '', url)
       } catch (error) {
         // An aborted request is the next keystroke arriving, which is not a failure to report.
