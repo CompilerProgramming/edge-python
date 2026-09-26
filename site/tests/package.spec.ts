@@ -132,7 +132,7 @@ test('puts the newest release first under Recent and sends std to its maintainer
   expect(shelf).toContain(`/package/${older.name}`)
   expect(shelf.indexOf(`/package/${newer.name}`)).toBeLessThan(shelf.indexOf(`/package/${older.name}`))
 
-  await expect(page.getByRole('link', { name: 'std' })).toHaveAttribute('href', '/@dylan')
+  await expect(page.locator('[data-sorts]').getByRole('link', { name: 'std', exact: true })).toHaveAttribute('href', '/@dylan')
 })
 
 test('says nothing is there for a name nobody published', async ({ page }) => {
