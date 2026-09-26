@@ -5,13 +5,15 @@ use crate::host::{get, site};
 use crate::manifest::Manifest;
 use crate::ui;
 
-/* The newest version of a published package, pinned to the digest the registry reports, so a build fails if those bytes ever change. */
-fn published(name: &str) -> Result<String> {
-    let source = site(&format!("/api/packages/{name}"));
+/* A published version, the newest unless one is named, pinned to the digest the registry reports, so a build fails if those bytes ever change. */
+fn published(name: &str, version: Option<&str>) -> Result<String> {
+    let query = version.map_or(String::new(), |v| format!("?v={v}"));
+    let source = site(&format!("/api/packages/{name}{query}"));
 
-    let mut response = get(&source).map_err(|e| match e {
-        ureq::Error::StatusCode(404) => anyhow!("unknown package '{name}'; give a url with {name}=<url>"),
-        other => anyhow!("asking the registry about '{name}': {other}"),
+    let mut response = get(&source).map_err(|e| match (e, version) {
+        (ureq::Error::StatusCode(404), Some(v)) => anyhow!("'{name}' has no version {v}"),
+        (ureq::Error::StatusCode(404), None) => anyhow!("unknown package '{name}'; give a url with {name}=<url>"),
+        (other, _) => anyhow!("asking the registry about '{name}': {other}"),
     })?;
 
     let text = response.body_mut().read_to_string().map_err(|e| anyhow!("reading {source}: {e}"))?;
@@ -32,9 +34,10 @@ pub fn add(path: &Path, pkgs: &[String]) -> Result<()> {
         .iter()
         .map(|spec| {
             let (name, url_override) = parse_spec(spec);
+            let (name, version) = name.split_once('@').map_or((name, None), |(n, v)| (n, Some(v)));
             let url = match url_override {
                 Some(u) => u,
-                None => published(name)?,
+                None => published(name, version)?,
             };
             Ok::<_, anyhow::Error>((name, url))
         })

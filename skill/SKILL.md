@@ -94,7 +94,7 @@ A persistent interpreter across prompts. Imports, definitions and mutations surv
 
 ### edge init, edge add, edge remove
 
-`edge init [name]` scaffolds `main.py`, an empty `edge.json` and `index.html`, with `--bare` skipping the HTML. `edge add json network` writes one `imports` entry per official package, its CDN URL (`dom` points at its `entry.py` facade), and prints each name with the URL it wrote. `edge add foo=<url>` registers a custom URL, also under `imports`, since each host tells a `.py`, `.wasm` or `.js` module apart by the artifact. `edge add` keeps `extends` and any other key already there. `edge remove` deletes entries. A name the official catalog does not know is looked up in the registry, and the entry it writes carries that version's digest as a `#sha256-` fragment, so the bytes are pinned. Unknown names abort the whole command before any write.
+`edge init [name]` scaffolds `main.py`, an empty `edge.json` and `index.html`, with `--bare` skipping the HTML. `edge add json network` writes one `imports` entry per official package, its CDN URL (`dom` points at its `entry.py` facade), and prints each name with the URL it wrote. `edge add foo=<url>` registers a custom URL, also under `imports`, since each host tells a `.py`, `.wasm` or `.js` module apart by the artifact. `edge add` keeps `extends` and any other key already there. `edge remove` deletes entries. A name the official catalog does not know is looked up in the registry at its newest version, or at the one `json@0.1.0` names, and the entry it writes carries that version's digest as a `#sha256-` fragment, so the bytes are pinned. Unknown names abort the whole command before any write.
 
 ### edge serve
 

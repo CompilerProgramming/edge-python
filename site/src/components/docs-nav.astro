@@ -7,11 +7,12 @@ interface Props {
   sections: Section[]
   current: Doc
   base?: string
+  query?: string
 }
 
-const { sections, current, base = '/docs' } = Astro.props
+const { sections, current, base = '/docs', query = '' } = Astro.props
 
-const href = (doc: Doc) => `${base}/${doc.slug}`
+const href = (doc: Doc) => `${base}/${doc.slug}${query}`
 const holds = (section: Section) => section.docs.some((doc) => doc.id === current.id)
 
 const pill = 'block w-full px-4 py-1.5 rounded-full text-left'

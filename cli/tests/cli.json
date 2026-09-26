@@ -57,6 +57,11 @@
     "fails": ["unknown package 'mystery'"]
   },
   {
+    "given": { "edge.json": "{}\n" },
+    "run": ["add", "json@0.1.0"],
+    "contains": { "edge.json": "/pkg/json/0.1.0/app.edge#sha256-" }
+  },
+  {
     "given": { "app.edge": "EDGEPKG\u0001" },
     "env": { "EDGE_TOKEN": "not-a-token" },
     "run": ["publish", "app.edge"],

@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { published, test } from './helpers'
+import { mintToken, packed, published, test } from './helpers'
 
 const INTRO = `---
 title: Introduction
@@ -93,6 +93,34 @@ test('lists a documented package and its author in the sitemap, and leaves an un
   expect(sitemap).toContain(`/@${documented.handle}</loc>`)
   expect(sitemap).not.toContain(`/package/${bare.name}</loc>`)
   expect(sitemap).not.toContain(`/@${bare.handle}</loc>`)
+})
+
+test('opens an older version under ?v= and keeps the newest at the bare address', async ({ page, request }) => {
+  const { name } = await published(request, DOCS)
+  const headers = { authorization: `Bearer ${await mintToken(request)}`, 'content-type': 'application/octet-stream' }
+  const docs = { ...DOCS, '@docs/01-getting-started/01-introduction.mdx': INTRO.replace('Turns text into a slug', 'Turns text into a slug, now in 0.2.0') }
+  const newer = await request.post('/api/publish', { headers, data: packed({ 'edge.json': JSON.stringify({ name, version: '0.2.0' }), 'main.py': '', ...docs }) })
+  expect(newer.status()).toBe(201)
+
+  await page.goto(`/package/${name}`)
+  await expect(page.locator('h1 + span')).toHaveText('0.2.0')
+  await expect(page.locator('.prose')).toContainText('now in 0.2.0')
+  await expect(page.locator('[data-code] pre').first()).toHaveText(`edge add ${name}`)
+  await expect(page.locator('table a')).toHaveText(['0.2.0', '0.1.0'])
+
+  await page.locator('table a', { hasText: '0.1.0' }).click()
+  await expect(page).toHaveURL(`/package/${name}?v=0.1.0`)
+  await expect(page.locator('h1 + span')).toHaveText('0.1.0')
+  await expect(page.locator('.prose')).not.toContainText('now in 0.2.0')
+  await expect(page.locator('[data-code] pre').first()).toHaveText(`edge add ${name}@0.1.0`)
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex, follow')
+  await expect(page.locator('aside[data-sticky] a').first()).toHaveAttribute('href', `/package/${name}/getting-started/introduction?v=0.1.0`)
+
+  await page.goto(`/package/${name}?v=0.2.0`)
+  await expect(page).toHaveURL(`/package/${name}`)
+
+  await page.goto(`/package/${name}?v=9.9.9`)
+  await expect(page.getByText('Not found')).toBeVisible()
 })
 
 test('says nothing is there for a name nobody published', async ({ page }) => {

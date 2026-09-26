@@ -135,7 +135,8 @@ $ edge add math network
   updated edge.json
 ```
 
-A name is looked up in the registry, and the entry it writes carries the digest of the version it found, so a build fails if those bytes ever change. Point a name at a custom URL with `edge add foo=https://example.com/foo.wasm`. It goes to `imports` too, whatever the URL, because each host tells a code module, a native module, and a JS module apart by the artifact. `edge add` keeps `extends` and any other key already in the manifest. `edge remove` deletes entries the same way.
+A name is looked up in the registry at its newest version, or at the one `json@0.1.0` names, and the entry it writes carries the digest of that version, so a build fails if those bytes ever change. Point a name at a custom URL with `edge add foo=https://example.com/foo.wasm`. It goes to `imports` too, whatever the URL, because each host tells a code module, a native module, and a JS module apart by the artifact. `edge add` keeps `extends` and any other key already in the manifest. `edge remove` deletes entries the same way.
+
 ## `edge build`: pack the app
 
 Packs the project and its imports into one artifact, in one of three modes for three targets.

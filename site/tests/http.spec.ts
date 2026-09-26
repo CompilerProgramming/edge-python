@@ -432,6 +432,8 @@ test.describe('publishing', () => {
     const looked = await request.get(`/api/packages/${name}`)
     expect(looked.status()).toBe(200)
     expect(await looked.json()).toMatchObject({ name, version: '0.2.0' })
+    expect(await (await request.get(`/api/packages/${name}?v=0.1.0`)).json()).toMatchObject({ name, version: '0.1.0', digest })
+    expect((await request.get(`/api/packages/${name}?v=9.9.9`)).status()).toBe(404)
 
     // A name someone holds is theirs, and a shape the registry cannot serve is refused.
     await request.post('/api/auth/signout')
