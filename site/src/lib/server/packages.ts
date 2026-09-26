@@ -28,6 +28,9 @@ export const MAX_LOCK = 256 << 10
 
 // A rate limiter can only count seconds, so the day's worth of new names is counted here instead.
 export const MAX_NEW_NAMES = 10
+
+// What one account's artifacts may add up to, since a version costs the same room as a name and nothing reclaims it.
+export const MAX_STORAGE = 1 << 30
 const DAY = 86_400_000
 
 /* A name that reads the same in a url, an import and a listing. */
@@ -225,6 +228,19 @@ export const indexable = (db: D1Database) =>
          and v.published_at = (select max(published_at) from version where package = p.name and yanked_at is null)`
     )
     .all<{ name: string; handle: string }>()
+
+/* The room one account's packages take, every version of each, a yanked one included since its bytes are still stored. */
+export const stored = (db: D1Database, userId: string) =>
+  db
+    .prepare(
+      `select p.name, count(*) as versions, sum(v.size) as size from package p
+         join version v on v.package = p.name
+       where p.user_id = ?
+       group by p.name
+       order by size desc, p.name`
+    )
+    .bind(userId)
+    .all<{ name: string; versions: number; size: number }>()
 
 export const versionsOf = (db: D1Database, name: string) =>
   db

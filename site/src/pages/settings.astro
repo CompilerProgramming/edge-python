@@ -8,10 +8,12 @@ import Confirm from '../components/ui/confirm.astro'
 import Profile from '../components/settings/profile.astro'
 import Account from '../components/settings/account.astro'
 import Tokens from '../components/settings/tokens.astro'
+import Storage from '../components/settings/storage.astro'
 import Invoices from '../components/settings/invoices.astro'
 import Upkeep from '../components/settings/upkeep.astro'
 import { linkedProviders } from '../lib/server/users'
 import { userTokens } from '../lib/server/tokens'
+import { MAX_STORAGE, stored } from '../lib/server/packages'
 
 const { user } = Astro.locals
 if (!user) return Astro.redirect('/')
@@ -21,7 +23,7 @@ type Item = { label: string; icon: ComponentProps<typeof Icon>['name'] }
 
 const groups: { label: string; items: Item[] }[] = [
   { label: 'Personal', items: [{ label: 'Profile', icon: 'user' }, { label: 'Account', icon: 'mailbox' }] },
-  { label: 'Publishing', items: [{ label: 'Tokens', icon: 'key' }, { label: 'Upkeep', icon: 'handshake' }] },
+  { label: 'Publishing', items: [{ label: 'Tokens', icon: 'key' }, { label: 'Storage', icon: 'save' }, { label: 'Upkeep', icon: 'handshake' }] },
   { label: 'Billing', items: [{ label: 'Invoices', icon: 'file' }] }
 ]
 
@@ -29,6 +31,9 @@ const items = groups.flatMap((group) => group.items)
 const linked = await linkedProviders(env.DB, user.id)
 
 const held = await userTokens(env.DB, user.id)
+
+const { results: packages } = await stored(env.DB, user.id)
+const used = packages.reduce((total, each) => total + each.size, 0)
 
 const day = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' })
 const clock = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -117,6 +122,7 @@ const row = 'flex items-center gap-2 w-full px-4 py-1.5 text-left hover:bg-line-
           {item.label === 'Profile' && <Profile user={user} />}
           {item.label === 'Account' && <Account user={user} linked={linked} />}
           {item.label === 'Tokens' && <Tokens tokens={tokens} />}
+          {item.label === 'Storage' && <Storage handle={user.handle} used={used} quota={MAX_STORAGE} packages={packages} />}
           {item.label === 'Invoices' && <Invoices />}
           {item.label === 'Upkeep' && <Upkeep />}
         </div>

@@ -1,4 +1,5 @@
-const UNITS = ['B', 'KB', 'MB']
+// An artifact is capped in megabytes, an account's whole shelf is counted in gigabytes.
+const UNITS = ['B', 'KB', 'MB', 'GB']
 
 /* A size a person reads, one decimal until it is a whole unit, since an artifact is the one number a listing shows about its weight. */
 export function bytes(size: number) {
