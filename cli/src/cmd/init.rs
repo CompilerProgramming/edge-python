@@ -3,7 +3,8 @@ use std::fs;
 use std::path::Path;
 
 const SCAFFOLD_MAIN_PY: &str = "print(\"hello from edge python\")\n";
-const EDGE_JSON: &str = "{}\n";
+// A new project records the engine it was written for, so a later one keeps running it and an earlier one says why it cannot.
+const EDGE_JSON: &str = concat!("{\n  \"edge\": \"", env!("CARGO_PKG_VERSION"), "\"\n}\n");
 const INDEX_HTML: &str = include_str!("../templates/scaffold.html");
 
 fn index_html(title: &str) -> String {

@@ -246,6 +246,13 @@ impl<'a> Walk<'a> {
                 return;
             }
         };
+        // A package says the lowest engine it runs on, so one written for a later one is refused where it loads.
+        if let Some(floor) = crate::manifest::floor(&bytes)
+            && crate::manifest::newer(&floor)
+        {
+            self.failures.push(format!("edge.json at '{spec}': needs edge {floor}, this is {}", env!("CARGO_PKG_VERSION")));
+            return;
+        }
         let dir = dir_of(spec);
         self.manifest_dirs.insert(dir.clone());
         // Every version it declares becomes the url and digest its lock holds, before a name or the compiler sees it.

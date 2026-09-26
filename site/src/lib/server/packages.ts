@@ -40,6 +40,9 @@ export const described = (text: unknown) => text == null || (typeof text === 'st
 export const linked = (url: unknown) =>
   url == null || (typeof url === 'string' && url.startsWith('https://') && url.length <= MAX_REPOSITORY && !/\s/.test(url))
 
+// The lowest engine a release runs on, absent when it names none.
+export const floored = (version: unknown) => version == null || (typeof version === 'string' && versioned(version))
+
 // A LICENSE of any length is a notice, and the Apache one is eleven thousand characters.
 export const noticed = (text: unknown) => text == null || (typeof text === 'string' && text.length <= MAX_NOTICE)
 

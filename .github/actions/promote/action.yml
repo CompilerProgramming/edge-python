@@ -23,4 +23,4 @@ runs:
     - name: Promote
       shell: bash
       working-directory: infra
-      run: npm run promote -- "$EDGE_RUN"
+      run: npm run promote -- "$EDGE_RUN" "${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}"

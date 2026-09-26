@@ -61,6 +61,7 @@ const shown = author && publicUser(author)
 const description = typeof artifact.description === 'string' ? artifact.description : null
 const repository = typeof artifact.repository === 'string' ? artifact.repository : null
 const license = artifact.notice && identify(artifact.notice)
+const floor = typeof artifact.edge === 'string' ? artifact.edge : null
 
 const base = `/package/${name}`
 
@@ -77,7 +78,7 @@ const release: WithContext<SoftwareSourceCode> = {
   ...(license ? { license } : {}),
   ...(shown?.handle ? { author: { '@type': 'Person', name: shown.name ?? `@${shown.handle}`, url: new URL(`/@${shown.handle}`, Astro.url).href } } : {})
 }
-const meta = [`${count(held.downloads)} downloads`, license, bytes(viewed.size)].filter(Boolean)
+const meta = [`${count(held.downloads)} downloads`, license, bytes(viewed.size), floor && `needs edge ${floor}`].filter(Boolean)
 const dot = 'text-fg-disabled'
 
 // A column keeps its own width so the table scrolls instead of squeezing the dates on a phone.

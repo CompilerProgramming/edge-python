@@ -6,7 +6,7 @@ import { tokenUser } from '../../lib/server/tokens'
 import type { Packed } from '../../lib/server/bundle'
 import { packed } from '../../lib/server/bundle'
 import type { Page } from '../../lib/server/packages'
-import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NEW_NAMES, MAX_NOTICE, checkLocks, checkPages, claimedToday, described, keyOf, linked, named, noticed, packageByName, publish, versionExists, versioned } from '../../lib/server/packages'
+import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NEW_NAMES, MAX_NOTICE, checkLocks, checkPages, claimedToday, described, floored, keyOf, linked, named, noticed, packageByName, publish, versionExists, versioned } from '../../lib/server/packages'
 
 /* The artifact is the only thing sent. Everything a listing shows is read out of it here, so a publisher declares nothing twice and cannot declare it differently from what they shipped. */
 export const POST: APIRoute = async ({ request }) => {
@@ -31,12 +31,13 @@ export const POST: APIRoute = async ({ request }) => {
     return json({ error: (error as Error).message }, 400)
   }
 
-  const { name, version, description, repository, notice } = declared
+  const { name, version, description, repository, edge, notice } = declared
 
   if (typeof name !== 'string' || !named(name)) return json({ error: 'A name is lowercase letters, digits and single hyphens, starting with a letter.' }, 400)
   if (typeof version !== 'string' || !versioned(version)) return json({ error: 'A version is major.minor.patch, digits only.' }, 400)
   if (!described(description)) return json({ error: `A description is ${MAX_DESCRIPTION} characters at most.` }, 400)
   if (!linked(repository)) return json({ error: 'A repository is an https url a listing can link.' }, 400)
+  if (!floored(edge)) return json({ error: 'An edge version is major.minor.patch, digits only.' }, 400)
   if (!noticed(notice)) return json({ error: `A license notice is ${MAX_NOTICE} bytes at most.` }, 400)
 
   const held = await packageByName(env.DB, name)

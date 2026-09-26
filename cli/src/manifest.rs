@@ -19,6 +19,8 @@ pub struct Manifest {
     pub repository: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub imports: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -72,6 +74,20 @@ impl Manifest {
         {
             bail!("edge.json at '{at}': repository '{repository}' must be an https url a listing can link");
         }
+        if let Some(edge) = &self.edge
+            && !versioned(edge)
+        {
+            bail!("edge.json at '{at}': edge '{edge}' must be major.minor.patch, digits only");
+        }
+        Ok(())
+    }
+
+    /* Refuses a project written for a newer engine, since a later one keeps running what an earlier one wrote but never the other way. Said here so an old binary names the version it lacks instead of failing on a field it cannot read. */
+    pub fn check_engine(path: &Path) -> Result<()> {
+        let Some(floor) = Self::load(path)?.edge else { return Ok(()) };
+        if newer(&floor) {
+            bail!("this project needs edge {floor}, this is {}\nhelp: curl -fsSL https://cdn.edgepython.com/cli/install.sh | sh", env!("CARGO_PKG_VERSION"));
+        }
         Ok(())
     }
 
@@ -96,6 +112,23 @@ fn named(name: &str) -> bool {
 fn linked(url: &str) -> bool {
     let Some(host) = url.strip_prefix("https://") else { return false };
     !host.is_empty() && url.len() <= 256 && !url.contains(char::is_whitespace)
+}
+
+/// Whether `floor` asks for an engine later than the one running.
+pub fn newer(floor: &str) -> bool {
+    parts(floor) > parts(env!("CARGO_PKG_VERSION"))
+}
+
+/* The engine a manifest's bytes ask for, read on its own so a dependency answers out of the package that carries it rather than out of a registry. */
+pub fn floor(bytes: &[u8]) -> Option<String> {
+    let declared: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    declared.get("edge")?.as_str().map(str::to_string)
+}
+
+/* The three numbers of a version, each its own integer, so 0.7.0 outranks 0.6.45 rather than reading as a decimal. */
+fn parts(version: &str) -> (u32, u32, u32) {
+    let mut read = version.split('.').map(|part| part.parse().unwrap_or(0));
+    (read.next().unwrap_or(0), read.next().unwrap_or(0), read.next().unwrap_or(0))
 }
 
 /* Three numeric parts, no prerelease tags, so an ordering never depends on how a tag sorts. */
@@ -151,6 +184,32 @@ mod tests {
             let err = format!("{e:#}");
             assert!(err.contains(want), "{body} wanted '{want}', got '{err}'");
         }
+    }
+
+    /* A later engine runs what an earlier one wrote, so only a floor above the running version is refused, and a project that names none runs anywhere. */
+    #[test]
+    fn a_project_runs_on_its_engine_or_a_later_one() {
+        let running = parts(env!("CARGO_PKG_VERSION"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.json");
+        let at = |major, minor, patch| format!("{{ \"edge\": \"{major}.{minor}.{patch}\" }}");
+
+        for body in ["{}", &at(0, 0, 1), &at(running.0, running.1, running.2)] {
+            std::fs::write(&path, body).unwrap();
+            assert!(Manifest::check_engine(&path).is_ok(), "{body} should run");
+        }
+
+        std::fs::write(&path, at(running.0, running.1, running.2 + 1)).unwrap();
+        let err = format!("{:#}", Manifest::check_engine(&path).unwrap_err());
+        assert!(err.contains("this project needs edge") && err.contains(env!("CARGO_PKG_VERSION")), "{err}");
+    }
+
+    // Each field is its own integer, so a patch of 45 sits below a minor of 7 rather than reading as a decimal.
+    #[test]
+    fn a_version_orders_by_its_numbers_and_not_as_a_decimal() {
+        assert!(parts("0.7.0") > parts("0.6.45"));
+        assert!(parts("0.6.5") < parts("0.6.41"));
+        assert!(parts("1.0.0") > parts("0.99.99"));
     }
 
     #[test]

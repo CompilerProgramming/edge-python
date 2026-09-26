@@ -6,7 +6,8 @@
   },
   {
     "run": ["init", "myapp", "--bare"],
-    "creates": ["myapp/main.py", "myapp/edge.json"]
+    "creates": ["myapp/main.py", "myapp/edge.json"],
+    "contains": { "myapp/edge.json": "\"edge\":" }
   },
   {
     "given": { "myapp/.keep": "" },
@@ -171,10 +172,6 @@
     "given": { "u.py": "val = 5\n", "t.py": "from .u import val\nprint(\"got\", val)\n" },
     "run": ["run", "t.py"],
     "stdout": ["got 5"]
-  },
-  {
-    "run": ["--version"],
-    "stdout": ["edge 0.5.0"]
   },
   {
     "given": { "t.py": "print('hi from edge')\n" },

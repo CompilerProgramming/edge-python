@@ -174,6 +174,15 @@ fn main() -> Result<()> {
 
     let manifest_path = cli.manifest.clone().unwrap_or_else(|| PathBuf::from("edge.json"));
 
+    // Every command that compiles the project reads what engine it asks for first, so an old binary says so.
+    let compiles = matches!(cli.cmd, Cmd::Run { .. } | Cmd::Test { .. } | Cmd::Build { .. } | Cmd::Repl | Cmd::Actor { .. });
+    if compiles
+        && let Err(e) = manifest::Manifest::check_engine(&manifest_path)
+    {
+        ui::error(&e);
+        std::process::exit(1);
+    }
+
     let result = match cli.cmd {
         Cmd::Init { name, bare } => cmd::init::run(name.as_deref(), bare),
         Cmd::Add { pkgs } => cmd::pkg::add(&manifest_path, &pkgs),

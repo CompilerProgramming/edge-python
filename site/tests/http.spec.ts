@@ -454,6 +454,7 @@ test.describe('publishing', () => {
       ['an ssh remote', release(naming(), '0.1.0', { repository: 'git@github.com:you/charts.git' })],
       ['a notice past the cap', release(naming(), '0.1.0', {}, { LICENSE: 'x'.repeat(MAX_NOTICE + 1) })],
       ['a description past the cap', release(naming(), '0.1.0', { description: 'x'.repeat(MAX_DESCRIPTION + 1) })],
+      ['an engine floor that is not a version', release(naming(), '0.1.0', { edge: '0.7' })],
       ['a page the site cannot lay out', release(naming(), '0.1.0', {}, { '@docs/guide.mdx': 'no frontmatter here\n' })]
     ]
 

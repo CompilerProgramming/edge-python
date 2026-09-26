@@ -20,6 +20,7 @@ export type Packed = {
   version: unknown
   description: unknown
   repository: unknown
+  edge: unknown
   notice: string | null
   docs: Record<string, string>
   // Each manifest the bundle carries beside the lock that resolves it, both as written.
@@ -78,6 +79,7 @@ export function packed(artifact: Uint8Array): Packed {
     version: manifest.version,
     description: manifest.description ?? null,
     repository: manifest.repository ?? null,
+    edge: manifest.edge ?? null,
     notice: notice(files),
     docs: docs(files),
     manifests: named(files, MANIFEST),

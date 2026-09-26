@@ -5,6 +5,16 @@ set -e
 BASE="${EDGE_INSTALL_BASE:-https://cdn.edgepython.com/cli}"
 INSTALL_DIR="${EDGE_INSTALL_DIR:-$HOME/.local/bin}"
 
+# An optional vX.Y.Z reads the frozen copy of that release, no argument reads the latest.
+version="${1:-}"
+if [ -n "$version" ]; then
+  printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+    echo "bad version: $version, expected vX.Y.Z" >&2
+    exit 1
+  }
+  BASE="${BASE%/cli}/$version/cli"
+fi
+
 case "$(uname -s)" in
   Linux) os="unknown-linux-musl" ;;
   Darwin) os="apple-darwin" ;;

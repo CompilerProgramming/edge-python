@@ -99,11 +99,12 @@ test('opens an older version under ?v= and keeps the newest at the bare address'
   const { name } = await published(request, DOCS)
   const headers = { authorization: `Bearer ${await mintToken(request)}`, 'content-type': 'application/octet-stream' }
   const docs = { ...DOCS, '@docs/01-getting-started/01-introduction.mdx': INTRO.replace('Turns text into a slug', 'Turns text into a slug, now in 0.2.0') }
-  const newer = await request.post('/api/publish', { headers, data: packed({ 'edge.json': JSON.stringify({ name, version: '0.2.0' }), 'main.py': '', ...docs }) })
+  const newer = await request.post('/api/publish', { headers, data: packed({ 'edge.json': JSON.stringify({ name, version: '0.2.0', edge: '0.7.0' }), 'main.py': '', ...docs }) })
   expect(newer.status()).toBe(201)
 
   await page.goto(`/package/${name}`)
   await expect(page.locator('h1 + span')).toHaveText('0.2.0')
+  await expect(page.getByText('needs edge 0.7.0')).toBeVisible()
   await expect(page.locator('.prose')).toContainText('now in 0.2.0')
   await expect(page.locator('[data-code] pre').first()).toHaveText(`edge add ${name} && edge lock`)
   await expect(page.locator('table a')).toHaveText(['0.2.0', '0.1.0'])
@@ -111,6 +112,7 @@ test('opens an older version under ?v= and keeps the newest at the bare address'
   await page.locator('table a', { hasText: '0.1.0' }).click()
   await expect(page).toHaveURL(`/package/${name}?v=0.1.0`)
   await expect(page.locator('h1 + span')).toHaveText('0.1.0')
+  await expect(page.getByText('needs edge')).toHaveCount(0)
   await expect(page.locator('.prose')).not.toContainText('now in 0.2.0')
   await expect(page.locator('[data-code] pre').first()).toHaveText(`edge add ${name}@0.1.0 && edge lock`)
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex, follow')

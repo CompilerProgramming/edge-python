@@ -19,6 +19,21 @@ const TYPES: Record<string, string> = {
 // Paths carry no version, so every object revalidates against its ETag.
 export const CACHE = 'public, max-age=0, must-revalidate'
 
+// A versioned tree never changes, and a year is the longest a cache accepts.
+export const FROZEN_CACHE = 'public, max-age=31536000, immutable'
+
+const FROZEN = /^v\d+\.\d+\.\d+\//
+
+export const cache_control = (prefix: string) => (FROZEN.test(prefix) ? FROZEN_CACHE : CACHE)
+
+// A release freezes a copy of its own from 1.0, since 0.x promises nothing the storage buys.
+export function frozen_prefix(release: string) {
+  const version = release.replace(/^v/, '')
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`"${release}" is not a release, pass one shaped vX.Y.Z.`)
+
+  return Number(version.split('.')[0]) >= 1 ? `v${version}/` : ''
+}
+
 // The compiler and the JavaScript runtime are the large payloads, stored brotli encoded.
 const encoded = (key: string) => key === 'compiler.wasm' || key.startsWith('js-runtime/')
 
@@ -117,10 +132,11 @@ async function pool<T>(items: T[], task: (item: T) => Promise<void>, width = 8) 
 
 export async function put_tree(bucket: string, prefix: string, tree: string) {
   const objects = cdn_objects(tree)
+  const cache = cache_control(prefix)
 
   await pool(objects, async (object) => {
     console.log(`Uploading "${prefix}${object.key}" (${object.type}${object.encoding ? `, ${object.encoding}` : ''})...`)
-    const headers = { 'Content-Type': object.type, 'Cache-Control': CACHE, ...(object.encoding ? { 'Content-Encoding': object.encoding } : {}) }
+    const headers = { 'Content-Type': object.type, 'Cache-Control': cache, ...(object.encoding ? { 'Content-Encoding': object.encoding } : {}) }
     await client.put(object_path(bucket, `${prefix}${object.key}`), { body: object_bytes(object), headers })
   })
 
@@ -142,11 +158,15 @@ export async function delete_keys(bucket: string, keys: string[]) {
   })
 }
 
-// A promote replaces the whole dev tree, so keys the run no longer ships go away.
+// A promote replaces the whole tree, so keys the run no longer ships go away, a frozen release stays.
+export function swept(keys: string[], shipped: string[]) {
+  const keep = new Set(shipped)
+  return keys.filter((key) => !keep.has(key) && !FROZEN.test(key))
+}
+
 // 010100101010 REVERT THIS COMMIT BEFORE LAUNCH. KEEP THE PUBLISHED PACKAGES UNDER pkg/ OUT OF THIS PRUNE, OR EVERY TAG DELETES THEM.
 export async function prune(bucket: string, shipped: string[]) {
-  const keep = new Set(shipped)
-  await delete_keys(bucket, (await list_keys(bucket)).filter((key) => !keep.has(key)))
+  await delete_keys(bucket, swept(await list_keys(bucket), shipped))
 }
 
 // Downloads a run's public tree from tmp, decoded, minus the build inputs.

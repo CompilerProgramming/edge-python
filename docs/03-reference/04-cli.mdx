@@ -34,6 +34,8 @@ cargo install --path cli
 
 `install.sh` drops the binary at `~/.local/bin/edge` and appends that directory to your `~/.bashrc` or `~/.zshrc` unless already present. Open a new shell and `edge --version` should work. Re-run the same line to upgrade. The Linux binaries are static, so any distribution works.
 
+Pass a release to install that one instead of the latest, `curl -fsSL https://cdn.edgepython.com/cli/install.sh | sh -s v1.0.0`. Every release from 1.0 keeps a frozen copy of itself on the CDN, which is what a version reads and what a downgrade needs.
+
 Building from source embeds `compiler.wasm`, so run `cargo wasm` first, or point `EDGE_COMPILER_WASM` at a copy. The build fetches nothing.
 
 ## `edge run`: run a script
@@ -82,7 +84,7 @@ $ edge lock
 
   wrote edge.lock
 $ edge repl
-Edge Python 0.5.0  ·  .reset to start fresh  ·  .exit, Ctrl+C or Ctrl+D to quit
+Edge Python 0.7.0  ·  .reset to start fresh  ·  .exit, Ctrl+C or Ctrl+D to quit
 >>> from math import sqrt
 >>> print(sqrt(2))
 1.4142135623730951

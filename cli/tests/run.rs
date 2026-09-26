@@ -211,6 +211,34 @@ fn answer_registry(mut stream: std::net::TcpStream, answer: &str, key: &str, bun
     }
 }
 
+/* A dependency says the lowest engine it runs on in its own manifest, so the refusal comes from the package that carries it and never from a registry. A project whose own manifest asks for one is refused before any of this, by the command itself. */
+#[test]
+fn a_dependency_written_for_a_later_engine_is_refused_where_it_loads() {
+    let dir = scratch("floor");
+    std::fs::create_dir_all(dir.join("pkg")).unwrap();
+    std::fs::write(dir.join("edge.json"), "{ \"imports\": { \"greet\": \"./pkg/main.py\" } }\n").unwrap();
+    std::fs::write(dir.join("main.py"), "from greet import shout\nprint(shout('hi'))\n").unwrap();
+    std::fs::write(dir.join("pkg/edge.json"), "{ \"name\": \"greet\", \"version\": \"0.1.0\", \"edge\": \"99.0.0\" }\n").unwrap();
+    std::fs::write(dir.join("pkg/main.py"), "def shout(word):\n    return word.upper()\n").unwrap();
+
+    let (_, err, code) = run_in(&dir, &["run", "main.py"], None);
+    assert!(err.contains("needs edge 99.0.0") && err.contains(env!("CARGO_PKG_VERSION")), "stderr was: {err}");
+    assert_eq!(code, 1);
+
+    // The same package under a floor this engine meets loads with nothing to say about it.
+    std::fs::write(dir.join("pkg/edge.json"), format!("{{ \"edge\": \"{}\" }}\n", env!("CARGO_PKG_VERSION"))).unwrap();
+    let (out, err, code) = run_in(&dir, &["run", "main.py"], None);
+    assert_eq!((out.as_str(), code), ("HI\n", 0), "stderr was: {err}");
+}
+
+// Read from the crate rather than spelled out, so the number never has to be chased through a fixture.
+#[test]
+fn the_binary_reports_the_version_it_was_built_from() {
+    let dir = scratch("version");
+    let (out, err, code) = run_in(&dir, &["--version"], None);
+    assert_eq!((out.trim(), code), (format!("edge {}", env!("CARGO_PKG_VERSION")).as_str(), 0), "stderr: {err}");
+}
+
 /* Declaring a package writes only its version, `edge lock` is what records where those bytes are, and a run reads that and nothing else. */
 #[test]
 fn a_declared_version_is_locked_once_and_then_runs() {
