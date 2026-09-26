@@ -24,6 +24,7 @@ export const MAX_REPOSITORY = 256
 export const MAX_NOTICE = 64 << 10
 export const MAX_PAGES = 64
 export const MAX_PAGE = 128 << 10
+export const MAX_LOCK = 256 << 10
 
 // A rate limiter can only count seconds, so the day's worth of new names is counted here instead.
 export const MAX_NEW_NAMES = 10
@@ -58,6 +59,43 @@ export function checkPages(raw: unknown): Page[] {
     const read = check(path, body)
     return { path, title: read.keys.get('title') ?? path, body: read.body }
   })
+}
+
+/* Holds every manifest a bundle carried to the rule its own CLI packs under, that a name declared by version resolves through the lock beside it. A version says nothing about where its bytes are, so one that nothing resolved would reach a consumer as a module they cannot fetch. */
+export function checkLocks(manifests: Record<string, string>, locks: Record<string, string>) {
+  for (const [dir, source] of Object.entries(manifests)) {
+    const at = `${dir}edge.json`
+
+    let declared: unknown
+    try {
+      declared = JSON.parse(source)
+    } catch {
+      throw new Error(`The ${at} inside that package is not JSON.`)
+    }
+
+    const imports = (declared as { imports?: unknown } | null)?.imports
+    if (imports == null || typeof imports !== 'object' || Array.isArray(imports)) continue
+
+    const versions = Object.entries(imports as Record<string, unknown>).filter(([, target]) => typeof target === 'string' && VERSION.test(target))
+    if (!versions.length) continue
+
+    const beside = locks[dir]
+    if (beside === undefined) throw new Error(`${at} declares a version and carries no edge.lock, so nothing says where it points.`)
+    if (beside.length > MAX_LOCK) throw new Error(`A lock is ${MAX_LOCK} bytes at most.`)
+
+    let held: unknown
+    try {
+      held = JSON.parse(beside)
+    } catch {
+      throw new Error(`The ${dir}edge.lock inside that package is not JSON.`)
+    }
+
+    for (const [name, target] of versions) {
+      const entry = (held as Record<string, { version?: unknown } | undefined> | null)?.[name]
+      if (entry == null || typeof entry !== 'object') throw new Error(`${at} declares ${name} ${target} and its edge.lock does not hold it.`)
+      if (entry.version !== target) throw new Error(`${at} declares ${name} ${target} and its edge.lock holds another release.`)
+    }
+  }
 }
 
 /* Where a published artifact lives, the same path a consumer's imports entry points at. */
@@ -141,7 +179,7 @@ export function listed(db: D1Database, { handle, asked, recent = false, limit = 
     .all<Listed>()
 }
 
-/* One more reach for this package, counted where `edge add` asks for a digest, since that is the moment somebody puts it in a project rather than merely reads its page. */
+/* One more reach for this package, counted where `edge add` asks what to declare, since that is the moment somebody puts it in a project rather than merely reads its page or locks it again. */
 export const downloaded = (db: D1Database, name: string) =>
   db.prepare('update package set downloads = downloads + 1 where name = ?').bind(name).run()
 

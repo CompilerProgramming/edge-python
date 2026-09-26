@@ -1,13 +1,22 @@
 use anyhow::{anyhow, bail, Result};
+use std::io::Read;
 use std::path::Path;
 
-use crate::host::{get, site};
+use crate::host::{cdn, get, site};
+use crate::lock::{self, Entry, Lock};
 use crate::manifest::Manifest;
 use crate::ui;
 
-/* A published version, the newest unless one is named, pinned to the digest the registry reports, so a build fails if those bytes ever change. */
-fn published(name: &str, version: Option<&str>) -> Result<String> {
-    let query = version.map_or(String::new(), |v| format!("?v={v}"));
+// Bounds a runaway download while a url is hashed into the lock.
+const MAX_FETCH_BYTES: u64 = 64 << 20;
+
+/* What the registry says a name resolves to, its newest release unless one is named. A refresh says so, since only taking a package for the first time is worth counting. */
+fn release(name: &str, version: Option<&str>, refresh: bool) -> Result<Entry> {
+    let asked = [version.map(|v| format!("v={v}")), refresh.then(|| "lock=1".to_string())].into_iter().flatten().collect::<Vec<_>>().join("&");
+    let query = match asked.is_empty() {
+        true => String::new(),
+        false => format!("?{asked}"),
+    };
     let source = site(&format!("/api/packages/{name}{query}"));
 
     let mut response = get(&source).map_err(|e| match (e, version) {
@@ -18,11 +27,12 @@ fn published(name: &str, version: Option<&str>) -> Result<String> {
 
     let text = response.body_mut().read_to_string().map_err(|e| anyhow!("reading {source}: {e}"))?;
     let answer: serde_json::Value = serde_json::from_str(&text).map_err(|e| anyhow!("parsing {source}: {e}"))?;
+    let field = |key: &str| answer.get(key).and_then(|v| v.as_str()).map(str::to_string);
 
-    let url = answer.get("url").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("the registry sent no url for '{name}'"))?;
-    let digest = answer.get("digest").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("the registry sent no digest for '{name}'"))?;
-
-    Ok(format!("{url}#sha256-{digest}"))
+    match (field("version"), field("url"), field("digest")) {
+        (Some(version), Some(url), Some(digest)) => Ok(Entry { version: Some(version), url, digest: format!("sha256-{digest}") }),
+        _ => bail!("the registry sent no release for '{name}'"),
+    }
 }
 
 pub fn add(path: &Path, pkgs: &[String]) -> Result<()> {
@@ -33,23 +43,27 @@ pub fn add(path: &Path, pkgs: &[String]) -> Result<()> {
     let resolved: Vec<(&str, String)> = pkgs
         .iter()
         .map(|spec| {
-            let (name, url_override) = parse_spec(spec);
-            let (name, version) = name.split_once('@').map_or((name, None), |(n, v)| (n, Some(v)));
-            let url = match url_override {
-                Some(u) => u,
-                None => published(name, version)?,
+            let (name, version, url) = parse_spec(spec);
+            let target = match url {
+                Some(url) => url,
+                // A version is all the manifest keeps, `edge lock` is what turns it into an address.
+                None => release(name, version, false)?.version.unwrap_or_default(),
             };
-            Ok::<_, anyhow::Error>((name, url))
+            Ok::<_, anyhow::Error>((name, target))
         })
         .collect::<Result<_>>()?;
 
     let mut m = Manifest::load(path)?;
-    for (name, url) in resolved {
-        ui::added(name, &url);
-        m.imports.insert(name.to_string(), url);
+    let versions = resolved.iter().any(|(_, target)| lock::version_of(target).is_some());
+    for (name, target) in resolved {
+        ui::added(name, &target);
+        m.imports.insert(name.to_string(), target);
     }
     m.save(path)?;
-    ui::note("updated edge.json");
+    ui::note(match versions {
+        true => "updated edge.json, run edge lock to resolve it",
+        false => "updated edge.json",
+    });
     Ok(())
 }
 
@@ -74,10 +88,73 @@ pub fn remove(path: &Path, pkgs: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Parse `name` or `name=url`.
-fn parse_spec(spec: &str) -> (&str, Option<String>) {
-    if let Some((name, url)) = spec.split_once('=') {
-        return (name, Some(url.to_string()));
+/* Resolves every version and url the manifest declares and writes the lock a run reads, so nothing else has to ask the registry where a name points. */
+pub fn lock(path: &Path) -> Result<()> {
+    let manifest = Manifest::load(path)?;
+    let mut lock = Lock::default();
+
+    for (name, target) in &manifest.imports {
+        let entry = match lock::version_of(target) {
+            Some(version) => release(name, Some(version), true)?,
+            // A path carries its own bytes, a pinned url its own digest, and a page imports JavaScript unchecked.
+            None if !target.contains("://") || target.contains("#sha256-") || javascript(target) => continue,
+            None => Entry { version: None, url: target.clone(), digest: lock::digest_of(&download(target)?) },
+        };
+        ui::added(name, &entry.url);
+        lock.insert(name, entry);
     }
-    (spec, None)
+
+    let written = lock.save(path)?;
+    ui::note(&format!("wrote {}", written.display()));
+    Ok(())
+}
+
+/* Whether a target is a JavaScript module, which a page imports itself and so cannot hash. */
+fn javascript(target: &str) -> bool {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    matches!(path.rsplit('.').next(), Some("js" | "mjs"))
+}
+
+/* The bytes at `url`, hashed into the lock so a later run can tell whether they ever changed. */
+fn download(url: &str) -> Result<Vec<u8>> {
+    let source = cdn(url);
+    let mut response = get(&source).map_err(|e| anyhow!("fetching {source}: {e}"))?;
+    let mut bytes = Vec::new();
+    response.body_mut().as_reader().take(MAX_FETCH_BYTES).read_to_end(&mut bytes).map_err(|e| anyhow!("reading {source}: {e}"))?;
+    Ok(bytes)
+}
+
+/// Parse `name`, `name@version` or `name=url`.
+fn parse_spec(spec: &str) -> (&str, Option<&str>, Option<String>) {
+    if let Some((name, url)) = spec.split_once('=') {
+        return (name, None, Some(url.to_string()));
+    }
+    match spec.split_once('@') {
+        Some((name, version)) => (name, Some(version), None),
+        None => (spec, None, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_spec_names_a_package_a_version_or_a_url() {
+        assert_eq!(parse_spec("json"), ("json", None, None));
+        assert_eq!(parse_spec("json@0.1.0"), ("json", Some("0.1.0"), None));
+        assert_eq!(parse_spec("foo=https://x/foo.wasm"), ("foo", None, Some("https://x/foo.wasm".to_string())));
+    }
+
+    /* A page imports JavaScript itself, so nothing ever holds its bytes to hash, and the lock records no digest for one rather than handing a browser a pin it has to refuse. */
+    // 010100101010 A REGISTRY PACKAGE WHOSE ARTIFACT IS A .js IS LOCKED BY VERSION AND LEFT UNPINNED BY js/src/specs.ts, COVER THAT END TO END ONCE ONE IS PUBLISHED.
+    #[test]
+    fn javascript_is_the_one_artifact_the_lock_leaves_alone() {
+        for target in ["https://x/charts.js", "https://x/charts.mjs", "https://x/time/index.js?v=2"] {
+            assert!(javascript(target), "{target}");
+        }
+        for target in ["https://x/json.wasm", "https://x/pkg/json/0.1.0/app.edge", "https://x/helper.py"] {
+            assert!(!javascript(target), "{target}");
+        }
+    }
 }

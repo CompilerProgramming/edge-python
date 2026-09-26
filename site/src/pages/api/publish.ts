@@ -6,7 +6,7 @@ import { tokenUser } from '../../lib/server/tokens'
 import type { Packed } from '../../lib/server/bundle'
 import { packed } from '../../lib/server/bundle'
 import type { Page } from '../../lib/server/packages'
-import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NEW_NAMES, MAX_NOTICE, checkPages, claimedToday, described, keyOf, linked, named, noticed, packageByName, publish, versionExists, versioned } from '../../lib/server/packages'
+import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NEW_NAMES, MAX_NOTICE, checkLocks, checkPages, claimedToday, described, keyOf, linked, named, noticed, packageByName, publish, versionExists, versioned } from '../../lib/server/packages'
 
 /* The artifact is the only thing sent. Everything a listing shows is read out of it here, so a publisher declares nothing twice and cannot declare it differently from what they shipped. */
 export const POST: APIRoute = async ({ request }) => {
@@ -26,6 +26,7 @@ export const POST: APIRoute = async ({ request }) => {
   try {
     declared = packed(new Uint8Array(bytes))
     pages = checkPages(declared.docs)
+    checkLocks(declared.manifests, declared.locks)
   } catch (error) {
     return json({ error: (error as Error).message }, 400)
   }

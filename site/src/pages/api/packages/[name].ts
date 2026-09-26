@@ -20,7 +20,8 @@ export const GET: APIRoute = async ({ params, url }) => {
   if (asked && !release) return json({ error: `${name} has no version ${asked}.` }, 404)
   if (!release || release.yanked_at !== null) return json({ error: asked ? `${name} ${asked} is yanked.` : 'Every version of that package is yanked.' }, 410)
 
-  await downloaded(env.DB, name)
+  // A lock refresh asks the same question again about a package somebody already took, so it counts once.
+  if (url.searchParams.get('lock') !== '1') await downloaded(env.DB, name)
 
   return json({
     name,

@@ -35,13 +35,14 @@ export async function fetchWithLockfile(spec: string, lockfile: Map<string, stri
     } catch (e) {
         // A manifest probe is opportunistic, a module that fails to fetch is worth a warning.
         if (spec.endsWith('edge.json')) knownMissing.add(spec);
-        else console.warn(`[edge-python] fetch failed for '${spec}':`, e);
+        else if (!spec.endsWith('edge.lock')) console.warn(`[edge-python] fetch failed for '${spec}':`, e);
         return null;
     }
 
     if (!resp.ok) {
         if (resp.status === 404 && spec.endsWith('edge.json')) knownMissing.add(spec);
-        else console.warn(`[edge-python] ${resp.status} for '${spec}' at ${resp.url}`);
+        // An absent lock is reported where the version it would resolve is, and is never remembered, so writing one is enough.
+        else if (!spec.endsWith('edge.lock')) console.warn(`[edge-python] ${resp.status} for '${spec}' at ${resp.url}`);
         return null;
     }
 

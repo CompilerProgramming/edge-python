@@ -49,9 +49,13 @@ pub struct Host {
 impl Host {
     /// Launch a browser and serve the harness, the manifest and the embedded host on a loopback port.
     pub fn open(manifest: Option<&Path>) -> Result<Host> {
-        // The declared modules keep their own addresses, only the host and the engine come from here.
+        // The declared modules keep their own addresses, resolved here so the page is never handed a version.
         let imports = match manifest {
-            Some(path) if path.exists() => std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
+            Some(path) if path.exists() => {
+                let mut declared = crate::manifest::Manifest::load(path)?;
+                declared.imports = crate::lock::resolved(path, &declared.imports)?;
+                serde_json::to_vec(&declared).with_context(|| format!("serializing {}", path.display()))?
+            }
             _ => b"{}".to_vec(),
         };
 

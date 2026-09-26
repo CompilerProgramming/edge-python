@@ -17,9 +17,13 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn run_in(dir: &Path, args: &[&str], stdin: Option<&str>) -> (String, String, i32) {
+    run_env(dir, args, &[], stdin)
+}
+
+fn run_env(dir: &Path, args: &[&str], env: &[(&str, &str)], stdin: Option<&str>) -> (String, String, i32) {
     let mut cmd = Command::new(BIN);
     // Scratch-local module cache, so no case reads or writes the real one.
-    cmd.current_dir(dir).args(args).env("XDG_CACHE_HOME", dir).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.current_dir(dir).args(args).env("XDG_CACHE_HOME", dir).envs(env.iter().copied()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
     let mut child = cmd.spawn().unwrap();
     if let Some(input) = stdin {
@@ -165,6 +169,82 @@ fn a_packed_package_imports_from_inside_itself() {
     std::fs::write(app.join("main.py"), "from greet import hello\nprint(hello(\"edge\"))\n").unwrap();
     let (out, err, code) = run_in(&app, &["run", "main.py"], None);
     assert_eq!((out.as_str(), code), ("hello edge\n", 0), "stderr: {err}");
+}
+
+/* A registry and a CDN of one package, so the whole declare, resolve and run path is exercised without reaching the real one. */
+fn spawn_registry(bundle: Vec<u8>, version: &str) -> u16 {
+    let digest = compiler::util::sha256::hex_encode(&compiler::util::sha256::sha256(&bundle));
+    let key = format!("/pkg/greet/{version}/app.edge");
+    let answer = format!(
+        "{{\"name\":\"greet\",\"version\":\"{version}\",\"digest\":\"{digest}\",\"size\":{},\"hosts\":null,\"url\":\"https://cdn.edgepython.com{key}\"}}",
+        bundle.len()
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("tcp addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let (answer, key, bundle) = (answer.clone(), key.clone(), bundle.clone());
+            std::thread::spawn(move || answer_registry(stream, &answer, &key, &bundle));
+        }
+    });
+    port
+}
+
+fn answer_registry(mut stream: std::net::TcpStream, answer: &str, key: &str, bundle: &[u8]) {
+    use std::io::{BufRead, Write};
+    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line);
+    let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+    let head = |kind: &str, len: usize| format!("HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n");
+    let body = match path.split('?').next().unwrap_or("") {
+        "/api/packages/greet" => Some((head("application/json", answer.len()), answer.as_bytes().to_vec())),
+        p if p == key => Some((head("application/octet-stream", bundle.len()), bundle.to_vec())),
+        _ => None,
+    };
+    match body {
+        Some((head, bytes)) => {
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&bytes);
+        }
+        None => drop(stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")),
+    }
+}
+
+/* Declaring a package writes only its version, `edge lock` is what records where those bytes are, and a run reads that and nothing else. */
+#[test]
+fn a_declared_version_is_locked_once_and_then_runs() {
+    let lib = scratch("lockdep");
+    std::fs::write(lib.join("main.py"), "def shout(word):\n    return word.upper()\n").unwrap();
+    let (_, err, code) = run_in(&lib, &["build", "--out", "dep.edge"], None);
+    assert_eq!(code, 0, "build failed: {err}");
+    let port = spawn_registry(std::fs::read(lib.join("dep.edge")).unwrap(), "0.1.0");
+    let site = format!("http://127.0.0.1:{port}");
+    let env = [("EDGE_SITE_BASE", site.as_str()), ("EDGE_CDN_BASE", site.as_str())];
+
+    let app = scratch("lockapp");
+    std::fs::write(app.join("main.py"), "from greet import shout\nprint(shout('hi edge'))\n").unwrap();
+    std::fs::write(app.join("edge.json"), "{}\n").unwrap();
+
+    let (out, err, code) = run_env(&app, &["add", "greet"], &env, None);
+    assert_eq!(code, 0, "add failed: {err}");
+    assert!(out.contains("greet") && out.contains("0.1.0"), "add printed the version: {out}");
+    let declared = std::fs::read_to_string(app.join("edge.json")).unwrap();
+    assert!(declared.contains("\"greet\": \"0.1.0\""), "the manifest keeps the version alone: {declared}");
+    assert!(!app.join("edge.lock").exists(), "add writes no lock");
+
+    // Nothing says where 0.1.0 is yet, so the run names the command that would answer.
+    let (_, err, code) = run_env(&app, &["run", "main.py"], &env, None);
+    assert!(err.contains("'greet' is not locked, run edge lock"), "stderr was: {err}");
+    assert_eq!(code, 1);
+
+    let (_, err, code) = run_env(&app, &["lock"], &env, None);
+    assert_eq!(code, 0, "lock failed: {err}");
+    let held = std::fs::read_to_string(app.join("edge.lock")).unwrap();
+    assert!(held.contains("\"version\": \"0.1.0\"") && held.contains("sha256-"), "the lock holds the release and its digest: {held}");
+
+    let (out, err, code) = run_env(&app, &["run", "main.py"], &env, None);
+    assert_eq!((out.as_str(), code), ("HI EDGE\n", 0), "stderr was: {err}");
 }
 
 #[derive(serde::Deserialize)]

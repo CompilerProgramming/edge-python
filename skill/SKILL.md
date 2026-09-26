@@ -40,6 +40,7 @@ A project is any folder with `.py` files and an `edge.json` declaring every modu
 edge init myapp        # scaffold main.py, an empty edge.json and index.html
 cd myapp
 edge add json          # declare each package the code imports
+edge lock              # resolve every declared version into edge.lock
 edge run main.py       # run the entry point
 edge test              # discover and run every *_test.py
 edge build             # pack a portable ./app.edge bundle
@@ -92,9 +93,11 @@ A persistent interpreter across prompts. Imports, definitions and mutations surv
 
 `edge test --web` runs the same files on the browser host in headless Chrome, one browser for the suite with a fresh page per file, so a package can prove it works where `dom`, `storage` and `frame()` are real.
 
-### edge init, edge add, edge remove
+### edge init, edge add, edge remove, edge lock
 
-`edge init [name]` scaffolds `main.py`, an empty `edge.json` and `index.html`, with `--bare` skipping the HTML. `edge add json network` writes one `imports` entry per official package, its CDN URL (`dom` points at its `entry.py` facade), and prints each name with the URL it wrote. `edge add foo=<url>` registers a custom URL, also under `imports`, since each host tells a `.py`, `.wasm` or `.js` module apart by the artifact. `edge add` keeps `extends` and any other key already there. `edge remove` deletes entries. A name the official catalog does not know is looked up in the registry at its newest version, or at the one `json@0.1.0` names, and the entry it writes carries that version's digest as a `#sha256-` fragment, so the bytes are pinned. Unknown names abort the whole command before any write.
+`edge init [name]` scaffolds `main.py`, an empty `edge.json` and `index.html`, with `--bare` skipping the HTML. `edge add json network` looks each name up in the registry at its newest version, or at the one `json@0.1.0` names, writes one `imports` entry holding that version alone, and prints it. `edge add foo=<url>` registers a custom URL verbatim, also under `imports`, since each host tells a `.py`, `.wasm` or `.js` module apart by the artifact. `edge add` keeps `extends` and any other key already there. `edge remove` deletes entries. Unknown names abort the whole command before any write, and neither command touches `edge.lock`.
+
+`edge lock` turns each declared version into the URL and digest of that release and writes `edge.lock` beside the manifest, rebuilding the whole file each time. It is the only command that asks the registry where a name points, so `edge run`, `edge test` and `edge build` read the lock and resolve nothing themselves. A version with no entry, or one whose entry holds another release, fails with `'json' is not locked, run edge lock`.
 
 ### edge serve
 
@@ -287,7 +290,7 @@ from lib.helpers import slugify as sl
 
 Not supported. `from . import x` and any form of dynamic import.
 
-Bare names resolve through `edge.json`, walking up from the importing file with the nearest manifest winning. The manifest maps each name to a path or URL under `imports`, and `extends` may name a parent manifest. The artifact decides the kind, `.py` is a code module, `.wasm` a native plugin and `.js` a JavaScript module, which the JS host runs on the page's main thread and the CLI in StarlingMonkey, so a manifest never classifies a package. A leftover `system` section fails with `edge.json at '<path>': move the system entries into imports`. `name`, `version`, `description`, `repository` and `docs` are the registry fields, ignored by the compiler and shape-checked by the CLI. Only what nothing else supplies belongs there, so an author and a date come from the publishing account and the license is read from the packed `LICENSE` file.
+Bare names resolve through `edge.json`, walking up from the importing file with the nearest manifest winning. The manifest maps each name to a path, a URL, or a `major.minor.patch` version naming a registry package under `imports`, and `extends` may name a parent manifest. A version resolves through the `edge.lock` beside the manifest that declared it, which every host reads before the compiler sees the manifest, so the compiler only ever meets a path or a URL. The artifact decides the kind, `.py` is a code module, `.wasm` a native plugin and `.js` a JavaScript module, which the JS host runs on the page's main thread and the CLI in StarlingMonkey, so a manifest never classifies a package. A leftover `system` section fails with `edge.json at '<path>': move the system entries into imports`. `name`, `version`, `description`, `repository` and `docs` are the registry fields, ignored by the compiler and shape-checked by the CLI. Only what nothing else supplies belongs there, so an author and a date come from the publishing account and the license is read from the packed `LICENSE` file.
 
 ```json
 {
@@ -299,7 +302,7 @@ Bare names resolve through `edge.json`, walking up from the importing file with 
 }
 ```
 
-The official names `json`, `re`, `math`, `struct`, `test`, `dom`, `network`, `storage` and `time` resolve only when declared, `edge add <name>` writes each entry, and an undeclared name fails at compile time with `module '<name>' is not provided by this host and no edge.json declares it`, and the CLI adds a `help:` line with the `edge add` command for an official name. The CLI keeps the std packages inside the binary, so they need no network there, and downloads each JavaScript module once into its cache. Modules are singletons with shared mutable state, an import cycle raises `RuntimeError` at startup, and inside an imported module `__name__` is its canonical spec so `if __name__ == "__main__":` blocks are skipped on import. `import_module(name)` looks up a module already bound by a plain `import` in scope.
+The official names `json`, `re`, `math`, `struct`, `test`, `dom`, `network`, `storage` and `time` resolve only when declared, `edge add <name>` then `edge lock` writes each entry, and an undeclared name fails at compile time with `module '<name>' is not provided by this host and no edge.json declares it`, and the CLI adds a `help:` line with the `edge add` command for an official name. The CLI keeps the std packages inside the binary, so they need no network there, and downloads each JavaScript module once into its cache. Modules are singletons with shared mutable state, an import cycle raises `RuntimeError` at startup, and inside an imported module `__name__` is its canonical spec so `if __name__ == "__main__":` blocks are skipped on import. `import_module(name)` looks up a module already bound by a plain `import` in scope.
 
 ## Builtins
 
@@ -607,7 +610,7 @@ A snapshot is taken when the script parks on a wait the engine cannot serve, for
 
 ## Std packages
 
-Five official packages, each declared with `edge add <name>` and imported by bare name on both hosts. Pointing the entry at another URL pins a version.
+Five official packages, each declared with `edge add <name>` then `edge lock` and imported by bare name on both hosts. A version in `imports` names the release and the lock pins its bytes.
 
 ### json
 
@@ -727,7 +730,7 @@ pass. division by zero raises
 
 ## System modules
 
-Four system libraries, each declared with `edge add <name>`. All four are JavaScript modules. The JS host runs them on the page's main thread, the CLI in StarlingMonkey, a runtime it downloads once on the first JavaScript import. That runtime has `fetch`, streams, timers, `crypto` and `URL`, but no `Intl`, `WebSocket` or page globals, and it is always UTC. A module that reaches a missing global fails at that call with `module 'network' needs 'WebSocket', missing in this runtime`, the same text a JavaScript runtime without a page gives for `dom` and `storage`.
+Four system libraries, each declared with `edge add <name>` then `edge lock`. All four are JavaScript modules. The JS host runs them on the page's main thread, the CLI in StarlingMonkey, a runtime it downloads once on the first JavaScript import. That runtime has `fetch`, streams, timers, `crypto` and `URL`, but no `Intl`, `WebSocket` or page globals, and it is always UTC. A module that reaches a missing global fails at that call with `module 'network' needs 'WebSocket', missing in this runtime`, the same text a JavaScript runtime without a page gives for `dom` and `storage`.
 
 | Module | CLI | JS host |
 |---|---|---|

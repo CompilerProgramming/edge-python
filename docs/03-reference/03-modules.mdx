@@ -68,6 +68,7 @@ Bare names resolve through `edge.json`, the only manifest name. Every field is o
   "repository": "https://github.com/you/charts",
   "docs": "./docs",
   "imports": {
+    "json": "0.1.0",
     "utils": "./lib/utils.py",
     "fastmath": "./vendor/fastmath.wasm",
     "charts": "./vendor/charts.js"
@@ -76,7 +77,7 @@ Bare names resolve through `edge.json`, the only manifest name. Every field is o
 }
 ```
 
-- `imports`: bare name to spec (path or URL). One map holds every module, the artifact behind each spec tells the host whether it is a code module, a native module, or a JS module.
+- `imports`: bare name to spec (path, URL, or a `major.minor.patch` version naming a registry package). One map holds every module, the artifact behind each spec tells the host whether it is a code module, a native module, or a JS module. A version names a release and nothing else, [`edge.lock`](#edgelock) is what says where its bytes are.
 - `extends`: a directory whose `edge.json` is consulted when a name is not declared locally. Use it for monorepo sub-packages that share the parent's dependencies. Omit it for hermetic libraries. Cycles in the chain fail at compile time.
 - `name`, `version`, `description`, `repository`, `docs`: what a package carries into a registry. The compiler ignores all five, the CLI checks their shape. A name is lowercase letters, digits and single hyphens starting with a letter, a version is `major.minor.patch` with digits only, a description is one line of 60 characters at most, a repository is an `https` url a listing can link, and `docs` is a relative directory inside the project.
 
@@ -89,11 +90,33 @@ Resolution follows four rules.
 1. **Walk-up.** A bare name is resolved against the nearest `edge.json`, walking up from the importing file's directory. Each manifest is a package boundary, the same pattern as Node's `node_modules` discovery. The chain is capped at 32 hops.
 2. **Hermetic.** The nearest manifest wins. If it does not declare the name and has no `extends`, compilation fails. A deep dependency cannot borrow a parent's aliases.
 3. **Relative to the importer.** A leading-dot spec resolves against the file that contains the import, so a transitively imported `lib/a.py` doing `from .b import g` finds `lib/b.py`.
-4. **Spec shapes.** A spec containing `://` or starting with `/` is used as is. A spec starting with `./` or `../` is joined against the importer's directory. Any other spec with a `/` is joined against the nearest `edge.json` directory. Anything else is a bare name for the walk-up.
+4. **Spec shapes.** A spec containing `://` or starting with `/` is used as is. A spec starting with `./` or `../` is joined against the importer's directory. A spec of three numeric parts is a version, which the host replaces with its locked URL before the compiler reads the manifest, so the compiler only ever sees a path or a URL. Any other spec with a `/` is joined against the nearest `edge.json` directory. Anything else is a bare name for the walk-up.
+
+## edge.lock
+
+A version says which release a project wants, and the `edge.lock` beside its `edge.json` says where that release is. `edge lock` writes it, every other command reads it, so a run resolves a name without asking a registry.
+
+```json
+{
+  "json": {
+    "version": "0.1.0",
+    "url": "https://cdn.edgepython.com/pkg/json/0.1.0/app.edge",
+    "digest": "sha256-0a68e05fc4b6e9110fccafd57802cab5c2a3ca64ed1d3b486ec2770f1a8c758a"
+  }
+}
+```
+
+One entry per declared name, and nothing transitive, since a published package carries its own dependencies inside its `.edge`. An entry for a bare URL records only the URL and the digest, a relative path is absent because its bytes are already in the project, and a URL that carries its own `#sha256-` is absent because it already says what to expect. A JavaScript module takes no digest, which the page imports itself and cannot hash.
+
+A lock answers for the manifest it sits beside, so a nested package and a packed `.edge` each carry their own. A declared version with no entry, or one whose entry holds another release, fails before anything compiles:
+
+```text
+error: edge.json at 'edge.json': 'json' is not locked, run edge lock
+```
 
 ## Integrity
 
-Append `#sha256-<64 hex chars>` to a spec in `edge.json` to pin its content:
+Append `#sha256-<64 hex chars>` to a spec in `edge.json` to pin its content, which a locked version already does for you:
 
 ```json
 { "imports": { "utils": "https://example.com/utils.py#sha256-deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567" } }
@@ -225,7 +248,7 @@ A module that reaches a browser global loads anywhere and fails where the global
 
 ### Module resolution
 
-Relative imports load from disk relative to the importing file, dotted imports from the nearest `edge.json` dir. Bare names go through the `edge.json` walk-up, nothing resolves without an entry. Manifest URLs download once into `~/.cache/edge/modules` (`$XDG_CACHE_HOME` is honored) with a 64 MB cap, and a JavaScript module brings the files it imports with relative specifiers. A downloaded file is pinned by a `.lock` sidecar holding its SHA-256, and later runs refuse on drift until you remove the cache entry. A remote `edge.json` that answered 404 is remembered as absent, so later runs skip the request.
+Relative imports load from disk relative to the importing file, dotted imports from the nearest `edge.json` dir. Bare names go through the `edge.json` walk-up, nothing resolves without an entry, and a declared version goes through the [`edge.lock`](#edgelock) beside the manifest that declared it. Manifest URLs download once into `~/.cache/edge/modules` (`$XDG_CACHE_HOME` is honored) with a 64 MB cap, and a JavaScript module brings the files it imports with relative specifiers. A downloaded file is pinned by a `.lock` sidecar holding its SHA-256, and later runs refuse on drift until you remove the cache entry. A remote `edge.json` that answered 404 is remembered as absent, so later runs skip the request.
 
 The CLI compiles a `.wasm` plugin from disk or a URL with Cranelift on first use and keeps the machine code in `~/.cache/edge/plugins`, keyed by the file's hash, so later runs skip the compile.
 
@@ -280,5 +303,5 @@ The build also needs the pinned StarlingMonkey release in `target/starling.wasm`
 ## See also
 
 - [ABI](/docs/reference/abi): the wire contract behind `.wasm` plugins.
-- [CLI](/docs/reference/cli): `edge add` writes manifest entries, `edge build` vendors packages for offline use.
+- [CLI](/docs/reference/cli): `edge add` writes manifest entries, `edge lock` resolves them, `edge build` vendors packages for offline use.
 - [Limits and errors](/docs/reference/limits-and-errors): the sandbox profile both hosts run under.

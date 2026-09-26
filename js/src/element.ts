@@ -1,5 +1,6 @@
 import { createWorker } from "./index.ts";
 import type { WorkerHandle } from "./index.ts";
+import { isVersion, lockedSpec } from "./specs.ts";
 
 /* Defines the custom element, a web component that loads the JS host from an HTML tag. */
 export class EdgePythonElement extends HTMLElement {
@@ -16,8 +17,10 @@ export class EdgePythonElement extends HTMLElement {
             const manifest: { imports?: Record<string, string>, system?: unknown } = await fetch(base).then(r => r.json());
             if (manifest.system !== undefined) throw new Error(`edge.json at '${base.href}': move the system entries into imports`);
             if (manifest.imports) {
+                // The worker never reads this manifest, so a version it declares is resolved here or nowhere.
+                const lock = Object.values(manifest.imports).some(isVersion) ? await fetch(new URL('edge.lock', base)).then(r => r.ok ? r.json() : null) : null;
                 imports = {};
-                for (const [name, url] of Object.entries(manifest.imports)) imports[name] = new URL(url, base).href;
+                for (const [name, target] of Object.entries(manifest.imports)) imports[name] = new URL(lockedSpec(name, target, lock), base).href;
             }
         }
 

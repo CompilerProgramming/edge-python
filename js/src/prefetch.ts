@@ -2,7 +2,8 @@ import { decodeBundle } from './bundle.ts';
 import { fetchWithLockfile, requestUrl } from './fetch.ts';
 import { loadNativeModule, nativeTable } from './native.ts';
 import type { NativeLoader } from './native.ts';
-import { dirOf, joinRel, parentDir } from './specs.ts';
+import { dirOf, isVersion, joinRel, lockedSpec, parentDir } from './specs.ts';
+import type { Locked } from './specs.ts';
 import type { CompilerExports } from './wasm.ts';
 import type { CacheBackend } from './cache/types.ts';
 import type { Rt } from './rt.ts';
@@ -94,6 +95,25 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
     const push = (spec: string, label: string): void => {
         if (!labels.has(spec)) labels.set(spec, label);
         queue.push(spec);
+    };
+
+    /* The lock beside one manifest, read once a run and only when a version needs it, so a project that declares none probes for nothing. A packed package carries its own, already in memory beside its manifest. */
+    const locks = new Map<string, Record<string, Locked> | null>();
+    const lockFor = async (dir: string): Promise<Record<string, Locked> | null> => {
+        if (locks.has(dir)) return locks.get(dir) ?? null;
+        const at = dir + 'edge.lock';
+        const bytes = fetchedSources.get(at) ?? await fetchWithLockfile(at, lockfile, ctx);
+        const held = bytes ? JSON.parse(TD.decode(bytes)) as Record<string, Locked> : null;
+        locks.set(dir, held);
+        return held;
+    };
+
+    /* Each declared target as the lock resolved it, awaited here because the name it frees is queued on the next line. */
+    const lockImports = async (imports: Record<string, string>, dir: string): Promise<Record<string, string>> => {
+        const entries = Object.entries(imports);
+        if (!entries.some(([, target]) => isVersion(target))) return imports;
+        const held = await lockFor(dir);
+        return Object.fromEntries(entries.map(([name, target]) => [name, lockedSpec(name, target, held)]));
     };
 
     // Probe every ancestor manifest, mirroring the compiler walk-up.
@@ -207,8 +227,15 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
             manifestDirs.add(dir);
             // A leftover `system` section merges nothing, the compiler rejects the manifest when a bare import reaches it.
             if (parsed.system !== undefined) { retryRoot(); continue; }
+            // Every version it declares becomes the url the lock beside it holds, before a name or the compiler sees one.
+            let resolved: Record<string, string>;
+            try { resolved = await lockImports(parsed.imports || {}, dir); }
+            catch (e) { failures.push(`edge.json at '${spec}': ${errMsg(e)}`); continue; }
+            if (Object.values(parsed.imports || {}).some(isVersion)) {
+                fetchedSources.set(spec, TE.encode(JSON.stringify({ ...parsed, imports: resolved })));
+            }
             // Merge as a resolution table (nearer manifests already in `table` win), then resolve any deferred names.
-            for (const [name, target] of Object.entries(parsed.imports || {})) {
+            for (const [name, target] of Object.entries(resolved)) {
                 if (!(name in table)) table[name] = joinRel(dir, target);
             }
             retryPending();

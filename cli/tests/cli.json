@@ -57,9 +57,10 @@
     "fails": ["unknown package 'mystery'"]
   },
   {
+    "pending": "010100101010 WAITS ON A PUBLISHED json IN THE REGISTRY, RESTORE THEN",
     "given": { "edge.json": "{}\n" },
     "run": ["add", "json@0.1.0"],
-    "contains": { "edge.json": "/pkg/json/0.1.0/app.edge#sha256-" }
+    "contains": { "edge.json": "\"json\": \"0.1.0\"" }
   },
   {
     "given": { "app.edge": "EDGEPKG\u0001" },

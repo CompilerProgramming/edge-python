@@ -105,14 +105,14 @@ test('opens an older version under ?v= and keeps the newest at the bare address'
   await page.goto(`/package/${name}`)
   await expect(page.locator('h1 + span')).toHaveText('0.2.0')
   await expect(page.locator('.prose')).toContainText('now in 0.2.0')
-  await expect(page.locator('[data-code] pre').first()).toHaveText(`edge add ${name}`)
+  await expect(page.locator('[data-code] pre').first()).toHaveText(`edge add ${name} && edge lock`)
   await expect(page.locator('table a')).toHaveText(['0.2.0', '0.1.0'])
 
   await page.locator('table a', { hasText: '0.1.0' }).click()
   await expect(page).toHaveURL(`/package/${name}?v=0.1.0`)
   await expect(page.locator('h1 + span')).toHaveText('0.1.0')
   await expect(page.locator('.prose')).not.toContainText('now in 0.2.0')
-  await expect(page.locator('[data-code] pre').first()).toHaveText(`edge add ${name}@0.1.0`)
+  await expect(page.locator('[data-code] pre').first()).toHaveText(`edge add ${name}@0.1.0 && edge lock`)
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex, follow')
   await expect(page.locator('aside[data-sticky] a').first()).toHaveAttribute('href', `/package/${name}/getting-started/introduction?v=0.1.0`)
 

@@ -1,4 +1,5 @@
 use super::{cache_root, cdn, get, js, plugins, Instance, ORIGIN};
+use crate::lock::{self, Lock};
 use compiler::modules::{dir_of, join_relative, parse_integrity, parse_manifest, scan_imports, walk_up_dirs, ImportSpec};
 use compiler::util::sha256::{hex_encode, sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -247,10 +248,23 @@ impl<'a> Walk<'a> {
         };
         let dir = dir_of(spec);
         self.manifest_dirs.insert(dir.clone());
-        for (name, target) in &parsed.imports {
+        // Every version it declares becomes the url and digest its lock holds, before a name or the compiler sees it.
+        let resolved = match self.resolve_versions(spec, &parsed.imports) {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                self.failures.push(format!("edge.json at '{spec}': {e}"));
+                return;
+            }
+        };
+        let rewritten = resolved.iter().zip(&parsed.imports).any(|((_, target), (_, declared))| target != declared);
+        for (name, target) in &resolved {
             self.table.entry(name.clone()).or_insert_with(|| join_relative(&dir, target));
         }
-        self.inst.store.data_mut().fetched.insert(spec.to_string(), bytes);
+        let served = match rewritten {
+            true => serve_manifest(&resolved, parsed.extends.as_deref()),
+            false => bytes,
+        };
+        self.inst.store.data_mut().fetched.insert(spec.to_string(), served);
         self.retry_pending();
         self.retry_root();
         if let Some(ext) = &parsed.extends {
@@ -259,6 +273,42 @@ impl<'a> Walk<'a> {
                 next.push('/');
             }
             self.queue.push_back(format!("{next}edge.json"));
+        }
+    }
+
+    /* Each declared target as the lock beside this manifest resolved it, so a run reads where a name points rather than asking the registry. */
+    fn resolve_versions(&mut self, spec: &str, imports: &[(String, String)]) -> Result<Vec<(String, String)>, String> {
+        if !imports.iter().any(|(_, target)| needs_lock(target)) {
+            return Ok(imports.to_vec());
+        }
+        let lock = match self.read_beside(spec, lock::FILE)? {
+            Some(bytes) => Lock::parse(&bytes).map_err(|e| format!("{e:#}"))?,
+            None => Lock::default(),
+        };
+        imports.iter().map(|(name, target)| Ok((name.clone(), lock.spec(name, target).map_err(|e| format!("{e:#}"))?))).collect()
+    }
+
+    /* A file beside a manifest, read the way that manifest was, so a lock follows its project onto disk, into a bundle or behind a url. */
+    fn read_beside(&mut self, manifest: &str, name: &str) -> Result<Option<Vec<u8>>, String> {
+        if manifest == "edge.json"
+            && let Some(path) = self.project.manifest.clone()
+        {
+            let beside = std::path::Path::new(&path).with_file_name(name);
+            return match std::fs::read(&beside) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(format!("reading {}: {e}", beside.display())),
+            };
+        }
+        Ok(self.read_sibling(&format!("{}{name}", dir_of(manifest))))
+    }
+
+    /* Bytes for a file a manifest sits beside, from the package that carries it, the bundle, or the network, in that order. A packed package answers for its own files, so one fetched from a url still reads the manifest inside it. */
+    fn read_sibling(&mut self, spec: &str) -> Option<Vec<u8>> {
+        let remote = spec.contains("://") && self.project.bundle.is_none() && !self.mounted.contains_key(spec);
+        match remote {
+            true => fetch_manifest(spec),
+            false => self.fetch(spec).unwrap_or(None),
         }
     }
 
@@ -276,10 +326,7 @@ impl<'a> Walk<'a> {
             };
         }
         // A remote manifest that answered 404 once stays absent, so later runs skip the request.
-        let bytes = match spec.contains("://") && self.project.bundle.is_none() {
-            true => fetch_manifest(spec),
-            false => self.fetch(spec).unwrap_or(None),
-        };
+        let bytes = self.read_sibling(spec);
         if root && bytes.is_none() {
             return Ok(Some(b"{}".to_vec()));
         }
@@ -391,6 +438,23 @@ impl<'a> Walk<'a> {
 
 fn target(spec: &str) -> &str {
     spec.split_once('#').map_or(spec, |(t, _)| t)
+}
+
+/* Whether a target says nothing about where its bytes are, or says it without a digest, which is what a lock answers. */
+fn needs_lock(target: &str) -> bool {
+    lock::version_of(target).is_some() || (target.contains("://") && !target.contains("#sha256-"))
+}
+
+/* The manifest as the compiler reads it, which knows paths and urls and never a version. */
+fn serve_manifest(imports: &[(String, String)], extends: Option<&str>) -> Vec<u8> {
+    let mut manifest = serde_json::Map::new();
+    let table: serde_json::Map<String, serde_json::Value> =
+        imports.iter().map(|(name, target)| (name.clone(), serde_json::Value::String(target.clone()))).collect();
+    manifest.insert("imports".to_string(), serde_json::Value::Object(table));
+    if let Some(extends) = extends {
+        manifest.insert("extends".to_string(), serde_json::Value::String(extends.to_string()));
+    }
+    serde_json::Value::Object(manifest).to_string().into_bytes()
 }
 
 /* The extension of the last path segment, query and fragment stripped, it picks how a module loads. */

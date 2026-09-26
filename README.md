@@ -49,10 +49,12 @@ First, declare the modules the program uses. `edge add json` writes them to `edg
 ```json
 {
   "imports": {
-    "json": "https://cdn.edgepython.com/std/json.wasm"
+    "json": "0.1.0"
   }
 }
 ```
+
+`edge lock` resolves that version into an `edge.lock` beside it.
 
 Next, save the program above as `app.py`. Finally, run it.
 

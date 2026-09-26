@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::lock;
 use crate::manifest::Manifest;
 
 // Marks a standalone binary, its trailer holds the payload length before it.
@@ -63,13 +64,18 @@ fn collect_bundle(manifest_path: &Path, with_docs: bool) -> Result<(Bundle, bool
     let mut files = Vec::new();
     for s in scripts.iter().chain(&notices) {
         let rel = s.strip_prefix(&project).unwrap_or(s).to_string_lossy().replace('\\', "/");
-        // The root manifest is the one the command names, pushed below whatever its file is called.
-        if rel == "edge.json" { continue; }
+        // The root manifest and its lock are the pair the command names, pushed below whatever their files are called.
+        if rel == "edge.json" || rel == lock::FILE { continue; }
         files.push(Entry { path: rel, bytes: fs::read(s).with_context(|| format!("reading {}", s.display()))? });
     }
     let mut javascript = false;
     if manifest_path.exists() {
         files.push(Entry { path: "edge.json".to_string(), bytes: fs::read(manifest_path)? });
+        // The lock travels with the manifest it resolves, so the bundle reads a name the same way its project did.
+        let beside = manifest_path.with_file_name(lock::FILE);
+        if beside.exists() {
+            files.push(Entry { path: lock::FILE.to_string(), bytes: fs::read(&beside)? });
+        }
         let manifest = Manifest::load(manifest_path)?;
         if with_docs {
             if let Some(clash) = files.iter().find(|f| f.path.starts_with(docs::PREFIX)) {
@@ -78,12 +84,12 @@ fn collect_bundle(manifest_path: &Path, with_docs: bool) -> Result<(Bundle, bool
             let pages = docs::collect(&project, manifest.docs.as_deref())?;
             files.extend(pages.into_iter().map(|(path, bytes)| Entry { path, bytes }));
         }
-        javascript = vendor_bundle(&manifest, &mut files)?;
+        javascript = vendor_bundle(&lock::resolved(manifest_path, &manifest.imports)?, &mut files)?;
     }
     // A nested package answers to its own manifest, so its url modules and runtime ride along too.
     let nested: Vec<PathBuf> = files.iter().filter(|f| f.path.ends_with("/edge.json")).map(|f| project.join(&f.path)).collect();
     for path in nested {
-        javascript |= vendor_bundle(&Manifest::load(&path)?, &mut files)?;
+        javascript |= vendor_bundle(&lock::resolved(&path, &Manifest::load(&path)?.imports)?, &mut files)?;
     }
     let mut kept = HashSet::new();
     files.retain(|f| kept.insert(f.path.clone()));
@@ -108,13 +114,13 @@ fn is_notice(path: &Path) -> bool {
 }
 
 /* Carries each declared url module and the files it reaches, keyed by the address it answers. */
-fn vendor_bundle(manifest: &Manifest, files: &mut Vec<Entry>) -> Result<bool> {
-    let javascript = manifest.imports.values().any(|spec| {
+fn vendor_bundle(imports: &BTreeMap<String, String>, files: &mut Vec<Entry>) -> Result<bool> {
+    let javascript = imports.values().any(|spec| {
         let path = spec.split(['?', '#']).next().unwrap_or(spec);
         matches!(path.rsplit('.').next(), Some("js" | "mjs"))
     });
     let mut seen = HashSet::new();
-    for (name, spec) in manifest.imports.iter().filter(|(_, spec)| spec.contains("://")) {
+    for (name, spec) in imports.iter().filter(|(_, spec)| spec.contains("://")) {
         let (url, pin) = parse_integrity(spec).map_err(|e| anyhow!(e))?;
         let path = url.split('?').next().unwrap_or(url);
         let (base, entry) = path.rsplit_once('/').ok_or_else(|| anyhow!("'{url}' names no file"))?;
@@ -233,7 +239,7 @@ pub fn run(manifest_path: &Path, out_dir: PathBuf) -> Result<()> {
 
     let scripts = collect_scripts(&project, &out_dir);
     let sp = crate::ui::spinner("vendoring packages");
-    let vendored = match vendor_packages(&manifest, &out_dir) {
+    let vendored = match vendor_packages(&lock::resolved(manifest_path, &manifest.imports)?, &out_dir) {
         Ok(v) => v,
         Err(e) => { sp.fail("failed to vendor packages"); return Err(e); }
     };
@@ -294,16 +300,16 @@ fn walk(dir: &Path, out_dir: &Path, found: &mut Vec<PathBuf>) {
         }
         if path.is_dir() {
             walk(&path, out_dir, found);
-        } else if name == "edge.json" || matches!(path.extension().and_then(|e| e.to_str()), Some("py" | "js" | "mjs" | "wasm")) {
+        } else if name == "edge.json" || name == lock::FILE || matches!(path.extension().and_then(|e| e.to_str()), Some("py" | "js" | "mjs" | "wasm")) {
             found.push(path);
         }
     }
 }
 
 /// Every url the manifest declares lands in dist/vendor/<name>/ with the files it reaches beside it.
-fn vendor_packages(manifest: &Manifest, out_dir: &Path) -> Result<BTreeMap<String, String>> {
+fn vendor_packages(imports: &BTreeMap<String, String>, out_dir: &Path) -> Result<BTreeMap<String, String>> {
     let mut local = BTreeMap::new();
-    for (name, spec) in manifest.imports.iter().filter(|(_, spec)| spec.contains("://")) {
+    for (name, spec) in imports.iter().filter(|(_, spec)| spec.contains("://")) {
         let (url, pin) = parse_integrity(spec).map_err(|e| anyhow!(e))?;
         let path = url.split('?').next().unwrap_or(url);
         let (base, entry) = path.rsplit_once('/').ok_or_else(|| anyhow!("'{url}' names no file"))?;
@@ -353,8 +359,10 @@ fn file_deps(rel: &str, bytes: &[u8]) -> Result<Vec<(String, bool)>> {
             let imports = manifest.get("imports").and_then(|i| i.as_object()).into_iter().flatten();
             imports
                 .filter_map(|(_, target)| target.as_str())
-                .filter(|target| !target.contains("://") && !target.starts_with('/'))
+                // A version names no file here, the lock beside this manifest is what points it at one.
+                .filter(|target| !target.contains("://") && !target.starts_with('/') && lock::version_of(target).is_none())
                 .map(|target| (target.to_string(), true))
+                .chain([(lock::FILE.to_string(), false)])
                 .collect()
         }
         // A plugin and a packed package each carry all they need.
@@ -397,6 +405,10 @@ fn copy_scripts(scripts: &[PathBuf], project: &Path, out_dir: &Path) -> Result<u
     let mut count = 0usize;
     for s in scripts {
         let rel = s.strip_prefix(project).unwrap_or(s);
+        // Every root import is vendored to a path here, so only a nested package still has a name to resolve.
+        if rel.as_os_str() == lock::FILE {
+            continue;
+        }
         let dest = out_dir.join(rel);
         if let Some(p) = dest.parent() {
             fs::create_dir_all(p)?;
@@ -537,6 +549,36 @@ mod tests {
         paths.sort();
         assert_eq!(paths, ["src/entry.py", "src/json.wasm"]);
         assert_eq!(bundle.entry, "src/entry.py");
+    }
+
+    /* The lock rides beside the manifest it resolves, since a bundle reads a declared name the same way its project did. */
+    #[test]
+    fn a_bundle_carries_the_lock_beside_every_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path();
+        fs::create_dir(project.join("pkg")).unwrap();
+        fs::write(project.join("main.py"), "print(1)").unwrap();
+        fs::write(project.join("edge.json"), r#"{ "imports": {} }"#).unwrap();
+        fs::write(project.join("edge.lock"), "{}").unwrap();
+        fs::write(project.join("pkg/main.py"), "print(2)").unwrap();
+        fs::write(project.join("pkg/edge.json"), r#"{ "imports": {} }"#).unwrap();
+        fs::write(project.join("pkg/edge.lock"), "{}").unwrap();
+        let (bundle, _) = collect_bundle(&project.join("edge.json"), false).unwrap();
+        let mut paths: Vec<&str> = bundle.files.iter().map(|f| f.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["edge.json", "edge.lock", "main.py", "pkg/edge.json", "pkg/edge.lock", "pkg/main.py"]);
+    }
+
+    // A version says nothing about where its bytes are, so packing one the lock never resolved would pack nothing.
+    #[test]
+    fn a_version_no_lock_holds_stops_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path();
+        fs::write(project.join("main.py"), "import json").unwrap();
+        fs::write(project.join("edge.json"), r#"{ "imports": { "json": "0.1.0" } }"#).unwrap();
+        let Err(e) = collect_bundle(&project.join("edge.json"), false) else { panic!("an unlocked version should stop the build") };
+        let err = format!("{e:#}");
+        assert!(err.contains("'json' is not locked, run edge lock"), "{err}");
     }
 
     // A package keeps its own manifest, and the root one rides once under its fixed name.

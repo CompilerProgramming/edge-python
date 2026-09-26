@@ -120,7 +120,7 @@ const row = `${cell} border-t border-line-strong`
   </div>
 
   <div>
-    <CodeBlock data-language="bash">edge add {viewed === latest ? name : `${name}@${viewed.version}`}</CodeBlock>
+    <CodeBlock data-language="bash">edge add {viewed === latest ? name : `${name}@${viewed.version}`} && edge lock</CodeBlock>
 
     <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
       <p class="flex min-w-0 items-center gap-2 text-2xs text-fg-hint">

@@ -51,17 +51,20 @@ Edge Python ships no standard library, and nothing resolves until you declare it
 
 ```bash
 edge add json
+edge lock
 ```
 
-That writes `edge.json` beside your script:
+`edge add` writes the version into `edge.json` beside your script:
 
 ```json
 {
   "imports": {
-    "json": "https://cdn.edgepython.com/std/json.wasm"
+    "json": "0.1.0"
   }
 }
 ```
+
+`edge lock` then generates an `edge.lock` beside it, recording the URL and the digest that version resolves to.
 
 Now create `app.py`:
 
@@ -83,7 +86,7 @@ Run it:
 edge run app.py
 ```
 
-The manifest format lives in [edge.json](/docs/reference/modules#edgejson).
+The manifest format lives in [edge.json](/docs/reference/modules#edgejson), and the generated file in [edge.lock](/docs/reference/modules#edgelock).
 
 ## Next steps
 

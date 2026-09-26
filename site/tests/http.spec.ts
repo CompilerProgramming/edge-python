@@ -490,6 +490,30 @@ test.describe('publishing', () => {
     expect((await send(request, token, release(naming(), '0.1.0', {}, files))).status()).toBe(201)
   })
 
+  /* A version says nothing about where its bytes are, so one the bundle's own lock never resolved would reach a consumer as a module they cannot fetch. Every manifest answers to the lock beside it, a nested package included. */
+  test('takes a version its lock holds and refuses one nothing resolved', async ({ request }) => {
+    await signIn(request)
+    const token = await mintToken(request)
+    const held = JSON.stringify({ dep: { version: '0.1.0', url: 'https://example.com/dep.edge', digest: 'sha256-ab' } })
+    const nested = JSON.stringify({ imports: { dep: '0.1.0' } })
+
+    const bad: [string, Buffer][] = [
+      ['a version and no lock', release(naming(), '0.1.0', { imports: { dep: '0.1.0' } })],
+      ['a lock holding another release', release(naming(), '0.1.0', { imports: { dep: '0.2.0' } }, { 'edge.lock': held })],
+      ['a lock missing the name', release(naming(), '0.1.0', { imports: { dep: '0.1.0' } }, { 'edge.lock': '{}' })],
+      ['a lock that is not JSON', release(naming(), '0.1.0', { imports: { dep: '0.1.0' } }, { 'edge.lock': '{ nope' })],
+      ['a nested manifest with no lock beside it', release(naming(), '0.1.0', {}, { 'pkg/edge.json': nested })]
+    ]
+
+    for (const [why, buffer] of bad) {
+      expect((await send(request, token, buffer)).status(), why).toBe(400)
+    }
+
+    const name = naming()
+    expect((await send(request, token, release(name, '0.1.0', { imports: { dep: '0.1.0' } }, { 'edge.lock': held }))).status()).toBe(201)
+    expect((await send(request, token, release(name, '0.2.0', {}, { 'pkg/edge.json': nested, 'pkg/edge.lock': held }))).status()).toBe(201)
+  })
+
   /* A notice of any shape belongs in a bundle, whether the registry can name the license or not, since one it cannot read is not one that is missing. Three versions of one package, because claiming three names is rate limited and the names are not what is under test. */
   test('takes a notice it can name, one it cannot, and none at all', async ({ request }) => {
     await signIn(request)
@@ -511,7 +535,7 @@ test.describe('publishing', () => {
     expect((await request.get(`/api/packages/${naming()}`)).status()).toBe(404)
   })
 
-  /* A reach counts where `edge add` asks for a digest, which is somebody putting the package in a project. Reading the page is not that, so the figure the page shows counts the asks and not its own views. */
+  /* A reach counts where `edge add` asks what to declare, which is somebody putting the package in a project. Reading the page is not that, and neither is `edge lock` resolving what a project already took, so the figure the page shows counts the asks and not its own views. */
   test('counts a reach for the digest and not a look at the page', async ({ request }) => {
     const { name } = await published(request)
     const shown = async () => (await (await request.get(`/package/${name}`)).text()).match(/([\d.k]+) downloads/)?.[1]
@@ -522,5 +546,8 @@ test.describe('publishing', () => {
       expect((await request.get(`/api/packages/${name}`)).status()).toBe(200)
       expect(await shown(), `after ${at} asks`).toBe(String(at))
     }
+
+    expect((await request.get(`/api/packages/${name}?lock=1`)).status()).toBe(200)
+    expect(await shown(), 'after a lock refresh').toBe('3')
   })
 })

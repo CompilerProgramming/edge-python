@@ -18,6 +18,7 @@ edge init my-app       # scaffold a project
 edge publish app.edge  # send a packed .edge to the registry
 edge add network       # add a package to edge.json
 edge remove network    # remove a package from edge.json
+edge lock              # resolve edge.json into edge.lock
 edge uninstall         # remove the binary and the PATH entry
 ```
 
@@ -37,7 +38,7 @@ Building from source embeds `compiler.wasm`, so run `cargo wasm` first, or point
 
 ## `edge run`: run a script
 
-Runs a script and streams its output to the terminal. Bare imports resolve through [`edge.json`](/docs/reference/modules#edgejson), so declare each one with `edge add` first. Relative imports resolve against the importing file. Uncaught errors print a traceback to stderr and exit 1.
+Runs a script and streams its output to the terminal. Bare imports resolve through [`edge.json`](/docs/reference/modules#edgejson), so declare each one with `edge add` and resolve it with `edge lock` first. Relative imports resolve against the importing file. Uncaught errors print a traceback to stderr and exit 1.
 
 ```text
 $ edge run broken.py
@@ -73,9 +74,13 @@ Flags: `--port <n>` (default `5173`), `--host <addr>` (default `127.0.0.1`), `--
 
 ```text
 $ edge add math
-  + math       https://cdn.edgepython.com/std/math.wasm
+  + math       0.1.0
 
-  updated edge.json
+  updated edge.json, run edge lock to resolve it
+$ edge lock
+  + math       https://cdn.edgepython.com/pkg/math/0.1.0/app.edge
+
+  wrote edge.lock
 $ edge repl
 Edge Python 0.5.0  ·  .reset to start fresh  ·  .exit, Ctrl+C or Ctrl+D to quit
 >>> from math import sqrt
@@ -125,17 +130,30 @@ $ edge init my-app
 
 ## `edge add` / `edge remove`: package management
 
-Edits [`edge.json`](/docs/reference/modules#edgejson) by name, so you never paste URLs. Each line prints the name and the URL it wrote.
+Edits [`edge.json`](/docs/reference/modules#edgejson) by name, so you never paste URLs. Each line prints the name and what it wrote.
 
 ```text
 $ edge add math network
-  + math       https://cdn.edgepython.com/std/math.wasm
+  + math       0.1.0
   + network    https://cdn.edgepython.com/js/builtins/network/index.js
 
-  updated edge.json
+  updated edge.json, run edge lock to resolve it
 ```
 
-A name is looked up in the registry at its newest version, or at the one `json@0.1.0` names, and the entry it writes carries the digest of that version, so a build fails if those bytes ever change. Point a name at a custom URL with `edge add foo=https://example.com/foo.wasm`. It goes to `imports` too, whatever the URL, because each host tells a code module, a native module, and a JS module apart by the artifact. `edge add` keeps `extends` and any other key already in the manifest. `edge remove` deletes entries the same way.
+A name is looked up in the registry at its newest version, or at the one `json@0.1.0` names, and the entry it writes is that version alone. An unknown name or version aborts the whole command before any write. Point a name at a custom URL with `edge add foo=https://example.com/foo.wasm`. It goes to `imports` too, whatever the URL, because each host tells a code module, a native module, and a JS module apart by the artifact. `edge add` keeps `extends` and any other key already in the manifest. `edge remove` deletes entries the same way, and neither touches `edge.lock`.
+
+## `edge lock`: resolve the manifest
+
+Turns each version `edge.json` declares into the URL and digest of that release, and writes them to [`edge.lock`](/docs/reference/modules#edgelock) beside it. Commit the lock, since it is what every other command reads.
+
+```text
+$ edge lock
+  + json       https://cdn.edgepython.com/pkg/json/0.1.0/app.edge
+
+  wrote edge.lock
+```
+
+This is the only command that asks a registry where a name points. It rebuilds the whole lock each time, so running it again after editing `edge.json` is the way to bring the two back in step, and it also records a digest for a bare URL so those bytes are pinned too. `edge run`, `edge test` and `edge build` read the lock and never resolve a version themselves.
 
 ## `edge build`: pack the app
 
@@ -149,7 +167,7 @@ Packs the project and its imports into one artifact, in one of three modes for t
 
 Each mode packs differently. The default `.edge` carries the project and its custom imports, since `edge` is already present where it lands. `--app` appends the project to this `edge` binary, so `./app` runs it directly and honors the run flags `--save-state`, `--restore-state`, `--preempt` and `--events`. `--web` writes the JS host it carries under `dist/js/` with `compiler.wasm` beside it, so neither reaches the network, adds every declared module with what it needs from the same origin (its relative JavaScript and Python imports and a sibling `edge.json`), and rewrites `edge.json` to the vendored paths, so the `dist/` works offline with `dom` and `network` included.
 
-All three carry every module the manifest declares by URL, with the files it imports beside it, which is what makes the artifact the whole program and lets a registry read what it needs without opening a CLI.
+All three carry every module the manifest declares by URL, with the files it imports beside it, which is what makes the artifact the whole program and lets a registry read what it needs without opening a CLI. A declared version resolves through [`edge.lock`](/docs/reference/modules#edgelock) first, and a build refuses to pack while one is unlocked. A `.edge` and an app binary carry the lock beside each manifest they carry, so the artifact resolves its own names. A `--web` build rewrites every root import to a vendored path and so leaves the root lock out of `dist/`, while a nested package keeps its own.
 
 A `.edge` and an app binary also carry the `README.md` and any `LICENSE` at the project root, so attribution reaches whoever receives the artifact. A `.edge` carries the documentation too when `edge.json` declares a `docs` directory, under a reserved `@docs/` prefix no import can reach. An app binary leaves the pages behind, nobody reads documentation out of an executable.
 

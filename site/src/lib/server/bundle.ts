@@ -8,6 +8,10 @@ const MAX_TOTAL = 64 << 20
 // The prefix the CLI packs documentation under, which no import can reach.
 const DOCS = '@docs/'
 
+// A manifest and the lock that resolves what it declares, one pair per directory.
+const MANIFEST = 'edge.json'
+const LOCK = 'edge.lock'
+
 const text = new TextDecoder()
 
 /* Everything the registry needs about a release, read out of the artifact rather than taken on the publisher's word. The values stay unknown because naming them is not the same as vouching for them, the route still validates every one. */
@@ -18,6 +22,9 @@ export type Packed = {
   repository: unknown
   notice: string | null
   docs: Record<string, string>
+  // Each manifest the bundle carries beside the lock that resolves it, both as written.
+  manifests: Record<string, string>
+  locks: Record<string, string>
 }
 
 /* Reads a `.edge` the way the CLI wrote it, a flat length-prefixed archive with no compression, so the whole format is a magic string and a loop. */
@@ -72,8 +79,21 @@ export function packed(artifact: Uint8Array): Packed {
     description: manifest.description ?? null,
     repository: manifest.repository ?? null,
     notice: notice(files),
-    docs: docs(files)
+    docs: docs(files),
+    manifests: named(files, MANIFEST),
+    locks: named(files, LOCK)
   }
+}
+
+/* Every file with this name whatever directory it sits in, keyed by that directory, so a nested package answers for itself. */
+function named(files: Map<string, Uint8Array>, file: string): Record<string, string> {
+  const found: Record<string, string> = {}
+
+  for (const [path, bytes] of files) {
+    if (path === file || path.endsWith(`/${file}`)) found[path.slice(0, -file.length)] = text.decode(bytes)
+  }
+
+  return found
 }
 
 /* The LICENSE at the root whatever its extension, which the registry reads to name the license instead of believing a name. */

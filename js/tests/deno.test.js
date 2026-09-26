@@ -52,6 +52,54 @@ Deno.test("deno: a packed package imports from inside itself", async () => {
     if (out !== "" || lines.join("").trim() !== "hello edge") throw new Error(`unexpected ${JSON.stringify([out, lines])}`);
 });
 
+/* A published package declares its own dependency by version, so the host has to read the lock the package carries rather than ask a registry at run time. */
+Deno.test("deno: a packed package resolves its own version through the lock it carries", async () => {
+    const enc = new TextEncoder();
+    const framed = (bytes) => [...enc.encode(`${bytes.length}\n`), ...bytes];
+    const pack = (entry, files) => {
+        const out = [...enc.encode("EDGEPKG\x01"), ...framed(enc.encode(entry)), ...enc.encode(`${Object.keys(files).length}\n`)];
+        for (const [path, text] of Object.entries(files)) out.push(...framed(enc.encode(path)), ...framed(enc.encode(text)));
+        return new Uint8Array(out);
+    };
+    const dir = await Deno.makeTempDir();
+    const dep = pack("main.py", { "main.py": "def shout(word):\n    return word.upper()\n" });
+    await Deno.writeFile(`${dir}/dep.edge`, dep);
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", dep))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const url = new URL(`file://${dir}/dep.edge`).href;
+
+    const app = pack("main.py", {
+        "main.py": "from dep import shout\n\ndef greet(name):\n    return shout('hi ' + name)\n",
+        "edge.json": JSON.stringify({ imports: { dep: "0.1.0" } }),
+        "edge.lock": JSON.stringify({ dep: { version: "0.1.0", url, digest: `sha256-${digest}` } }),
+    });
+    await Deno.writeFile(`${dir}/app.edge`, app);
+
+    const engine = await boot("lock", [], { app: new URL(`file://${dir}/app.edge`).href });
+    const lines = [];
+    const { out } = await engine.run({ src: "from app import greet\nprint(greet('edge'))", baseUrl }, (t) => lines.push(t));
+    if (out !== "" || lines.join("").trim() !== "HI EDGE") throw new Error(`unexpected ${JSON.stringify([out, lines])}`);
+});
+
+// A version nothing resolved names the command that resolves it, rather than blaming the fetch it would have made.
+Deno.test("deno: a version no lock holds names edge lock", async () => {
+    const enc = new TextEncoder();
+    const framed = (bytes) => [...enc.encode(`${bytes.length}\n`), ...bytes];
+    const files = { "main.py": "print(1)\n", "edge.json": JSON.stringify({ imports: { dep: "0.1.0" } }) };
+    const out = [...enc.encode("EDGEPKG\x01"), ...framed(enc.encode("main.py")), ...enc.encode(`${Object.keys(files).length}\n`)];
+    for (const [path, text] of Object.entries(files)) out.push(...framed(enc.encode(path)), ...framed(enc.encode(text)));
+    const dir = await Deno.makeTempDir();
+    await Deno.writeFile(`${dir}/app.edge`, new Uint8Array(out));
+
+    const engine = await boot("unlocked", [], { app: new URL(`file://${dir}/app.edge`).href });
+    let failed = "";
+    try {
+        await engine.run({ src: "import app", baseUrl });
+    } catch (e) {
+        failed = String(e);
+    }
+    if (!failed.includes("'dep' is not locked, run edge lock")) throw new Error(`unexpected ${JSON.stringify(failed)}`);
+});
+
 Deno.test("deno: an undeclared name fails at compile time", async () => {
     const engine = await boot("undeclared", []);
     const { out } = await engine.run({ src: "import json\nprint(1)", baseUrl });

@@ -44,7 +44,7 @@ fn spawn(mut cmd: Command, stdin_data: &str, timeout: Duration) -> Result<Outcom
     Ok(Outcome { stdout, stderr, ok: status.success() })
 }
 
-/* The manifest every cell runs under, the official names as `edge add` writes them. */
+/* The manifest every cell runs under, each official name at the URL it answers, so no cell needs a lock. */
 // 010100101010 THESE URLS STOP RESOLVING ONCE THE CDN DROPS THE STD, POINT THEM AT THE REGISTRY WHEN EDGE-PYTHON-STD PUBLISHES.
 pub const MANIFEST: &str = r#"{
   "imports": {
