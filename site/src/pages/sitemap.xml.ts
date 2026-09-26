@@ -1,12 +1,16 @@
 import type { APIRoute } from 'astro'
 import { getCollection } from 'astro:content'
+import { env } from 'cloudflare:workers'
 import { tree } from '../lib/docs/tree'
+import { indexable } from '../lib/server/packages'
 
-// Profiles and packages stay out until they carry enough of their own to be worth a visit.
+// A package enters once it says what it is and documents it, and its author enters with it.
 export const GET: APIRoute = async ({ site, url }) => {
   const origin = (site ?? url).origin
   const docs = tree(await getCollection('docs'), '').flatMap((section) => section.docs)
-  const paths = ['/', ...docs.map((doc) => `/docs/${doc.slug}`)]
+  const { results: packages } = await indexable(env.DB)
+  const people = new Set(packages.map((each) => `/@${each.handle}`))
+  const paths = ['/', ...docs.map((doc) => `/docs/${doc.slug}`), ...packages.map((each) => `/package/${each.name}`), ...people]
 
   const body = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

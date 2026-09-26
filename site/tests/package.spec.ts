@@ -84,6 +84,17 @@ test('opens a page the aside names and refuses one it does not', async ({ page, 
   await expect(page.getByText('Not found')).toBeVisible()
 })
 
+test('lists a documented package and its author in the sitemap, and leaves an undocumented one out', async ({ request }) => {
+  const documented = await published(request, DOCS)
+  const bare = await published(request)
+  const sitemap = await (await request.get('/sitemap.xml')).text()
+
+  expect(sitemap).toContain(`/package/${documented.name}</loc>`)
+  expect(sitemap).toContain(`/@${documented.handle}</loc>`)
+  expect(sitemap).not.toContain(`/package/${bare.name}</loc>`)
+  expect(sitemap).not.toContain(`/@${bare.handle}</loc>`)
+})
+
 test('says nothing is there for a name nobody published', async ({ page }) => {
   await page.goto('/package/nobody-here')
   await expect(page.getByText('Not found')).toBeVisible()

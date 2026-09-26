@@ -172,6 +172,19 @@ export const searched = (db: D1Database, asked: string, limit = 6) =>
     .bind(MARK.open, MARK.close, phrased(asked), limit)
     .all<Hit>()
 
+/* A package worth a crawl, its newest live version described and documented, beside the author who holds it. */
+export const indexable = (db: D1Database) =>
+  db
+    .prepare(
+      `select distinct p.name, u.handle from package p
+         join user u on u.id = p.user_id
+         join version v on v.package = p.name
+         join page_search s on s.package = p.name
+       where v.description != ''
+         and v.published_at = (select max(published_at) from version where package = p.name and yanked_at is null)`
+    )
+    .all<{ name: string; handle: string }>()
+
 export const versionsOf = (db: D1Database, name: string) =>
   db
     .prepare('select version, digest, size, hosts, published_at, yanked_at from version where package = ? order by published_at desc')
