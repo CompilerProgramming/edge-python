@@ -12,6 +12,7 @@
     { "script": "from trap import boom\nrender(str(boom()))", "error": "native module trapped" },
     { "script": "from abi2 import boom\nrender('loaded')", "error": "speaks ABI v2" },
     { "script": "import calc\nrender(str(calc.add(2, 3)))", "expect": "5" },
+    { "script": "import net\ntry:\n    net.request('GET', 'https://evil.example/')\nexcept PermissionError as e:\n    render(str(e))", "expect": "'main' has no net:evil.example, edge.json grants it net:127.0.0.1" },
     { "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN", "script": "from json import dumps\nrender(dumps(True))", "expect": "true" },
     { "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN", "script": "from time import strftime, gmtime\nrender(strftime('%Y-%m-%d', gmtime(0)))", "expect": "1970-01-01" },
     { "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN", "script": "from time import strptime\nrender(strptime('31 Dec 99', '%d %b %y'))", "expect": "[1999,12,31,0,0,0,4,365,-1]" },

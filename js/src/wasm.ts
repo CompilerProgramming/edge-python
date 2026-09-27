@@ -20,6 +20,7 @@ export interface CompilerExports {
     set_host_error_by_id(id: number, kind: number, msg_handle: number): number
     last_yield_deadline_ns(): bigint
     set_preempt_interval?(n: number): void
+    set_wall_clock?(on: number): void
     set_limits?(heap: bigint, ops: bigint, calls: bigint): void
     set_source_name?(ptr: number, len: number): void
     save_state(): bigint

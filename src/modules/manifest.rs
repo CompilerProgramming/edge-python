@@ -173,10 +173,26 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /* Skip a string or string-keyed object, forgives future keys. Numeric, array, bool values surface as errors so typos don't pass silently. */
+    /* Skip a string, a list of strings or a string-keyed object, forgives future keys. Numeric and bool values surface as errors so typos don't pass silently. */
     fn skip_value(&mut self) -> Result<(), String> {
         match self.peek() {
             Some(b'"') => { let _ = self.read_string()?; Ok(()) }
+            // A list of strings, the shape of each holder in `permissions`.
+            Some(b'[') => {
+                self.pos += 1;
+                self.skip_ws();
+                if self.peek() == Some(b']') { self.pos += 1; return Ok(()); }
+                loop {
+                    self.skip_ws();
+                    let _ = self.read_string()?;
+                    self.skip_ws();
+                    match self.peek() {
+                        Some(b',') => { self.pos += 1; continue; }
+                        Some(b']') => { self.pos += 1; return Ok(()); }
+                        _ => return Err(s!("expected ',' or ']' in a list")),
+                    }
+                }
+            }
             Some(b'{') => {
                 self.pos += 1;
                 self.skip_ws();
@@ -196,7 +212,7 @@ impl<'a> Reader<'a> {
                     }
                 }
             }
-            _ => Err(s!("unsupported value in edge.json (only strings / string-objects)")),
+            _ => Err(s!("unsupported value in edge.json (only strings, lists of strings and string-objects)")),
         }
     }
 }
@@ -221,6 +237,14 @@ mod tests {
         assert_eq!(m.imports, alloc::vec![(String::from("ui"), String::from("./ui.js"))]);
         let err = parse_manifest(br#"{ "imports": {}, "system": { "time": "./time.js" } }"#).err();
         assert_eq!(err.as_deref(), Some("move the system entries into imports"));
+    }
+
+    #[test]
+    fn permissions_are_read_past() {
+        let m = parse_manifest(br#"{ "imports": { "a": "./a.py" }, "permissions": { "main": ["net:api.example.com", "time"], "all": [] } }"#).unwrap();
+        assert_eq!(m.imports, alloc::vec![(String::from("a"), String::from("./a.py"))]);
+        assert!(parse_manifest(br#"{ "permissions": { "main": [1] } }"#).is_err());
+        assert!(parse_manifest(br#"{ "permissions": { "main": ["net" "time"] } }"#).is_err());
     }
 
     #[test]

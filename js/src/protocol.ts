@@ -1,6 +1,7 @@
 /* Shapes crossing the main-thread/worker postMessage boundary. Plain data only, no DOM or WebWorker globals, so both the `dom` and `webworker` lib scopes can import it without mixing libs in one program. */
 
 import type { EdgeValue } from './rt.ts';
+import type { Permissions } from './system/grants.ts';
 
 /* Caps a run boots under, a field left out keeps the engine's sandbox value. */
 export interface Limits {
@@ -14,6 +15,8 @@ export interface LoadOpts {
     integrity?: boolean
     loaders?: string[]
     imports?: Record<string, string> | null
+    // What the embedder's root manifest grants, beside the imports it declares.
+    permissions?: Permissions | null
     version?: string | null
     limits?: Limits | null
 }

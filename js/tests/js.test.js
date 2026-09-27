@@ -15,8 +15,8 @@ const PKG = JSON.parse(readFileSync(new URL("./app/edge.json", import.meta.url))
 // Negative fixtures, only their own cases import them, abi2 fails to load by design.
 const FIXTURES = new Set(["trap", "abi2"]);
 // star-import every project module, official names sit at CDN urls and the cases import them explicitly
-const star = (m) => Object.entries(m).flatMap(([k, v]) => (k === "imports" ? star(v) : FIXTURES.has(k) || String(v).includes("://") ? [] : `from ${k} import *`));
-const PRELUDE = star(PKG).join("\n") + "\n";
+const star = (imports) => Object.entries(imports).flatMap(([k, v]) => (FIXTURES.has(k) || String(v).includes("://") ? [] : `from ${k} import *`));
+const PRELUDE = star(PKG.imports).join("\n") + "\n";
 const TYPES = {
     ".js": "text/javascript", ".wasm": "application/wasm", ".html": "text/html",
     ".py": "text/x-python", ".json": "application/json",

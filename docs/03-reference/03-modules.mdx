@@ -79,13 +79,14 @@ Bare names resolve through `edge.json`, the only manifest name. Every field is o
 ```
 
 - `imports`: bare name to spec (path, URL, or a `major.minor.patch` version naming a registry package). One map holds every module, the artifact behind each spec tells the host whether it is a code module, a native module, or a JS module. A version names a release and nothing else, [`edge.lock`](#edgelock) is what says where its bytes are.
+- `permissions`: which system module the program and each package it pulls in may use, and what each may reach, as `module:scope` entries per holder. Only the root manifest grants, see [System](/docs/reference/system#permissions).
 - `extends`: a directory whose `edge.json` is consulted when a name is not declared locally. Use it for monorepo sub-packages that share the parent's dependencies. Omit it for hermetic libraries. Cycles in the chain fail at compile time.
 - `edge`: the lowest engine the project runs on, `major.minor.patch`. It runs on that version or any later one, never on an earlier one, so an older CLI stops with `this project needs edge 0.7.0, this is 0.6.45` instead of failing on a field it cannot read. `edge init` writes the version that scaffolded the project, and omitting it runs anywhere. A package declares its own in the manifest it packs, so a dependency written for a later engine is refused where it loads rather than where it was declared.
 - `name`, `version`, `description`, `repository`, `docs`: what a package carries into a registry. The compiler ignores all five, the CLI checks their shape. A name is lowercase letters, digits and single hyphens starting with a letter, a version is `major.minor.patch` with digits only, a description is one line of 60 characters at most, a repository is an `https` url a listing can link, and `docs` is a relative directory inside the project.
 
 Only what nothing else can supply belongs here. An author and a date come from the account that publishes, and the license is read from the `LICENSE` file the artifact already carries, so none of the three is a field.
 - A `system` section is rejected with `edge.json at '<path>': move the system entries into imports`, in the compiler, the CLI, and the `<edge-python>` element alike.
-- Other unknown keys are ignored. Values must be strings or objects of strings. Numbers, arrays, and booleans are rejected. Supported string escapes are `\"`, `\\`, `\/`, `\n`, `\t`, `\r`. `\uXXXX` is not supported, so paste UTF-8 literally.
+- Other unknown keys are ignored. Values must be strings, lists of strings, or objects of them. Numbers and booleans are rejected. Supported string escapes are `\"`, `\\`, `\/`, `\n`, `\t`, `\r`. `\uXXXX` is not supported, so paste UTF-8 literally.
 
 Resolution follows four rules.
 
@@ -307,3 +308,4 @@ The build also needs the pinned StarlingMonkey release in `target/starling.wasm`
 - [ABI](/docs/reference/abi): the wire contract behind `.wasm` plugins.
 - [CLI](/docs/reference/cli): `edge add` writes manifest entries, `edge lock` resolves them, `edge build` vendors packages for offline use.
 - [Limits and errors](/docs/reference/limits-and-errors): the sandbox profile both hosts run under.
+- [System](/docs/reference/system): `net`, `time`, and the permissions that let a package use them.

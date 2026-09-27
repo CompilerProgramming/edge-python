@@ -1,6 +1,7 @@
 import type { EdgeValue } from './rt.ts';
 import { errMsg, hostCallError } from './util.ts';
 import type { Limits, MainThreadManifest, RunOpts, ExecResult, WorkerRequest, WorkerMessage } from './protocol.ts';
+import type { Permissions } from './system/grants.ts';
 
 /* A page-side module handed to `mainThreadModules`, either a flat handler map or a factory that receives `{ pushEvent }`. User-supplied handlers have arbitrary signatures, hence `any[]` here. */
 // deno-lint-ignore no-explicit-any
@@ -12,6 +13,7 @@ export interface CreateWorkerOpts {
     wasmUrl?: string
     mainThreadModules?: Record<string, MainThreadModuleSource>
     imports?: Record<string, string>
+    permissions?: Permissions
     integrity?: boolean
     loaders?: string[]
     version?: string | null

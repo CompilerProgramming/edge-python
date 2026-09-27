@@ -164,3 +164,100 @@ Deno.test("deno: frame() names the Web API it lacks", async () => {
     }
     if (message !== "frame() needs requestAnimationFrame, missing in this runtime") throw new Error(`unexpected rejection ${JSON.stringify(message)}`);
 });
+
+/* A project on disk, the edge.json a run reads its grants from beside its files. */
+async function project(files) {
+    const dir = await Deno.makeTempDir();
+    for (const [path, text] of Object.entries(files)) {
+        const at = `${dir}/${path}`;
+        await Deno.mkdir(at.slice(0, at.lastIndexOf("/")), { recursive: true });
+        await Deno.writeTextFile(at, text);
+    }
+    return new URL(`file://${dir}/`).href;
+}
+
+// What a run printed and what it failed with, from a fresh engine.
+async function output(name, src, base) {
+    const engine = await boot(name, []);
+    const lines = [];
+    const { out } = await engine.run({ src, baseUrl: base }, (t) => lines.push(t));
+    return { out, text: lines.join("").trim() };
+}
+
+Deno.test("deno: a system module answers only to its grant", async () => {
+    const bare = await output("ungranted", "import time", baseUrl);
+    if (!bare.out.includes("'main' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(bare)}`);
+    const base = await project({ "edge.json": JSON.stringify({ permissions: { main: ["time:wall"] } }) });
+    const src = "import time\nprint(time.now() > 10 ** 18)\ntry:\n    time.now('monotonic')\nexcept PermissionError as e:\n    print(e)";
+    const granted = await output("granted", src, base);
+    if (granted.out !== "" || granted.text !== "True\n'main' has no time:monotonic, edge.json grants it time:wall") throw new Error(`unexpected ${JSON.stringify(granted)}`);
+});
+
+Deno.test("deno: a grant belongs to the package it names", async () => {
+    const files = {
+        "clock/edge.json": JSON.stringify({ name: "clock" }),
+        "clock/main.py": "import time\n\ndef now():\n    return time.now()\n",
+    };
+    const manifest = (permissions) => JSON.stringify({ imports: { clock: "./clock/main.py" }, permissions });
+    const parent = await output("parent-only", "from clock import now\nprint(now() > 0)", await project({ ...files, "edge.json": manifest({ main: ["time:wall"] }) }));
+    if (!parent.out.includes("'clock' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(parent)}`);
+    const child = await output("child", "from clock import now\nprint(now() > 0)", await project({ ...files, "edge.json": manifest({ clock: ["time:wall"] }) }));
+    if (child.out !== "" || child.text !== "True") throw new Error(`unexpected ${JSON.stringify(child)}`);
+});
+
+// However deep a package sits, it answers to its own grant, never to the package that imported it.
+Deno.test("deno: a grandchild answers to its own grant", async () => {
+    const files = {
+        "clock/edge.json": JSON.stringify({ name: "clock", imports: { trace: "./trace/main.py" } }),
+        "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
+        "clock/trace/edge.json": JSON.stringify({ name: "trace" }),
+        "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n",
+    };
+    const manifest = (permissions) => JSON.stringify({ imports: { clock: "./clock/main.py" }, permissions });
+    const src = "from clock import now\nprint(now())";
+    const borrowed = await output("borrowed", src, await project({ ...files, "edge.json": manifest({ main: ["time:wall"], clock: ["time:wall"] }) }));
+    if (!borrowed.out.includes("'trace' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(borrowed)}`);
+    const own = await output("own", src, await project({ ...files, "edge.json": manifest({ trace: ["time:wall"] }) }));
+    if (own.out !== "" || own.text !== "True") throw new Error(`unexpected ${JSON.stringify(own)}`);
+});
+
+Deno.test("deno: net reaches only the hosts its package holds", async () => {
+    const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, (req) => new Response(`got ${new URL(req.url).pathname}`));
+    const port = server.addr.port;
+    const base = await project({ "edge.json": JSON.stringify({ permissions: { main: ["net:127.0.0.1"] } }) });
+    const src = [
+        "import net",
+        `r = net.request('GET', 'http://127.0.0.1:${port}/items')`,
+        "status, headers = net.response(r)",
+        "print(status, net.read(r), net.read(r))",
+        "try:",
+        `    net.request('GET', 'http://localhost:${port}/')`,
+        "except PermissionError as e:",
+        "    print(e)",
+    ].join("\n");
+    const got = await output("net", src, base);
+    await server.shutdown();
+    if (got.out !== "" || got.text !== "200 b'got /items' None\n'main' has no net:localhost, edge.json grants it net:127.0.0.1") throw new Error(`unexpected ${JSON.stringify(got)}`);
+});
+
+Deno.test("deno: the clock stays virtual until a package holds time", async () => {
+    let t0 = performance.now();
+    const virtual = await output("virtual", "sleep(3600)\nprint('an hour, at once')", baseUrl);
+    if (virtual.text !== "an hour, at once" || performance.now() - t0 > 2000) throw new Error(`unexpected ${JSON.stringify(virtual)}`);
+    const base = await project({ "edge.json": JSON.stringify({ permissions: { main: ["time:monotonic"] } }) });
+    t0 = performance.now();
+    const wall = await output("wall", "sleep(0.05)\nprint('waited')", base);
+    if (wall.text !== "waited" || performance.now() - t0 < 40) throw new Error(`the wall clock did not wait ${JSON.stringify(wall)}`);
+});
+
+Deno.test("deno: a malformed permissions section stops the run", async () => {
+    const base = await project({ "edge.json": JSON.stringify({ permissions: { main: "time:wall" } }) });
+    const engine = await boot("malformed", []);
+    let message = "";
+    try {
+        await engine.run({ src: "print(1)", baseUrl: base });
+    } catch (e) {
+        message = e.message;
+    }
+    if (!message.includes("edge.json at 'edge.json': permissions for 'main' must be a list of entries")) throw new Error(`unexpected ${JSON.stringify(message)}`);
+});

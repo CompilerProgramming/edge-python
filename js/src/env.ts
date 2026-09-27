@@ -1,7 +1,7 @@
 import { nativeTable } from './native.ts';
 import type { CompilerExports } from './wasm.ts';
 import type { Rt, EdgeValue } from './rt.ts';
-import { errMsg, writeBytes, ERR_RUNTIME } from './util.ts';
+import { errMsg, fault, writeBytes, ERR_RUNTIME, ERR_TYPE } from './util.ts';
 
 const TD = new TextDecoder();
 const TE = new TextEncoder();
@@ -10,6 +10,8 @@ export interface DeferredHostCall {
     module: string
     name: string
     args: EdgeValue[]
+    // A system call already running, the driver awaits it rather than asking the page.
+    pending?: Promise<unknown>
 }
 
 export interface CompilerEnv {
@@ -47,6 +49,29 @@ export function makeCompilerEnv({ getExports, onLine, fetchedSources, lockfile, 
             }
 
             const exports = getExports();
+
+            if (fn.__edge_kind === 'system') {
+                const handles = Array.from(new Uint32Array(exports.memory.buffer, argv_ptr, argc));
+                // The trailing slot holds the kwargs, which a system call never takes.
+                if (!rt || handles.pop() !== 0) {
+                    stashError(exports, `${fn.__edge_module}.${fn.__edge_name} takes positional arguments only`, ERR_TYPE);
+                    return 1;
+                }
+                try {
+                    const result = fn.call(...handles.map((h) => rt.decodeAny(h)));
+                    if (result instanceof Promise) {
+                        if (!captureHostCall) throw new Error(`${fn.__edge_module}.${fn.__edge_name} waits, and no driver awaits it`);
+                        captureHostCall(call_id, { module: fn.__edge_module, name: fn.__edge_name, args: [], pending: result });
+                        return 2;
+                    }
+                    setU32(out_ptr, rt.encodeAny(result as EdgeValue));
+                    return 0;
+                } catch (e) {
+                    const [kind, message] = fault(e);
+                    stashError(exports, message, kind);
+                    return 1;
+                }
+            }
 
             if (fn.__edge_kind === 'capability') {
                 /* Host appends a trailing kwargs handle (0 = no kwargs), JS capabilities don't model kwargs so drop it. */
@@ -133,9 +158,9 @@ export function makeCompilerEnv({ getExports, onLine, fetchedSources, lockfile, 
     };
 }
 
-function stashError(exports: CompilerExports, message: string): void {
+function stashError(exports: CompilerExports, message: string, kind = ERR_RUNTIME): void {
     const bytes = TE.encode(message);
     const ptr = writeBytes(exports, bytes);
-    exports.host_edge_throw(ERR_RUNTIME, ptr, bytes.length);
+    exports.host_edge_throw(kind, ptr, bytes.length);
     exports.wasm_free(ptr, Math.max(1, bytes.length));
 }

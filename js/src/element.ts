@@ -1,6 +1,7 @@
 import { createWorker } from "./index.ts";
 import type { WorkerHandle } from "./index.ts";
 import { isVersion, lockedSpec } from "./specs.ts";
+import type { Permissions } from "./system/grants.ts";
 
 /* Defines the custom element, a web component that loads the JS host from an HTML tag. */
 export class EdgePythonElement extends HTMLElement {
@@ -12,9 +13,11 @@ export class EdgePythonElement extends HTMLElement {
 
         // Each entry resolves against the manifest url, the artifact behind it decides where it runs.
         let imports: Record<string, string> | undefined;
+        let permissions: Permissions | undefined;
         if (manifestUrl) {
             const base = new URL(manifestUrl, location.href);
-            const manifest: { imports?: Record<string, string>, system?: unknown } = await fetch(base).then(r => r.json());
+            const manifest: { imports?: Record<string, string>, permissions?: Permissions, system?: unknown } = await fetch(base).then(r => r.json());
+            permissions = manifest.permissions;
             if (manifest.system !== undefined) throw new Error(`edge.json at '${base.href}': move the system entries into imports`);
             if (manifest.imports) {
                 // The worker never reads this manifest, so a version it declares is resolved here or nowhere.
@@ -28,6 +31,7 @@ export class EdgePythonElement extends HTMLElement {
         this.worker = await createWorker({
             wasmUrl: this.getAttribute("wasm") ?? "https://cdn.edgepython.com/compiler.wasm",
             imports,
+            permissions,
         });
         // `entry` is optional, omit it to just spin up the worker and drive it via run().
         if (file) await this.worker.run(await fetch(file).then(r => r.text()));

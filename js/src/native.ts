@@ -1,9 +1,10 @@
 import type { CompilerExports } from './wasm.ts';
+import type { EdgeValue } from './rt.ts';
 
 /* A registered native fn, tagged with dispatch metadata by the loader that produced it. */
 interface NativeFnBase {
     (...args: unknown[]): unknown
-    __edge_kind?: 'wasmpdk' | 'capability'
+    __edge_kind?: 'wasmpdk' | 'capability' | 'system'
     __edge_name?: string
 }
 
@@ -21,7 +22,15 @@ export interface CapabilityFn extends NativeFnBase {
     __edge_main_thread?: boolean
 }
 
-export type NativeFn = WasmPdkFn | CapabilityFn;
+/* A system call of one package, answering with a value or a promise the host settles later. */
+export interface SystemFn extends NativeFnBase {
+    __edge_kind: 'system'
+    __edge_name: string
+    __edge_module: string
+    call: (...args: EdgeValue[]) => unknown
+}
+
+export type NativeFn = WasmPdkFn | CapabilityFn | SystemFn;
 
 export interface NativeModuleResult {
     kind: 'wasmpdk' | 'capability'

@@ -7,6 +7,8 @@ import type { Locked } from './specs.ts';
 import type { CompilerExports } from './wasm.ts';
 import type { CacheBackend } from './cache/types.ts';
 import type { Rt } from './rt.ts';
+import { check } from './system/grants.ts';
+import type { Permissions } from './system/grants.ts';
 import { errMsg, writeBytes } from './util.ts';
 
 const TD = new TextDecoder();
@@ -22,6 +24,7 @@ export interface PrefetchCtx {
     fetchedSources: Map<string, Uint8Array>
     knownMissing: Set<string>
     importsMap?: Record<string, string> | null
+    permissions?: Permissions | null
     mainThreadSpecs?: Set<string>
     entryDir: string
     cache: CacheBackend
@@ -32,6 +35,13 @@ export interface PrefetchCtx {
     rt: Rt
     loadSystem: (url: string, label: string) => Promise<string[]>
     registerSystem: (spec: string, exportNames: string[], url: string) => void
+}
+
+/* Who a run's modules belong to, each manifest dir to its package, and what the root grants. */
+export interface Packages {
+    dirs: string[]
+    grants: Permissions
+    packageOf: (dir: string) => string
 }
 
 /* The last segment's extension without query or fragment, it picks how the artifact loads. */
@@ -78,7 +88,7 @@ function scanImports(src: string, exports: CompilerExports): ImportRecord[] {
 }
 
 /* Lazy BFS prefetch, bare names resolve through programmatic imports then edge.json, only used imports get fetched. */
-export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, lockfile: Map<string, string>, ctx: PrefetchCtx): Promise<void> {
+export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, lockfile: Map<string, string>, ctx: PrefetchCtx): Promise<Packages> {
     const { fetchedSources, knownMissing, importsMap, mainThreadSpecs, entryDir } = ctx;
     const visited = new Set<string>();
     const queue: string[] = [];
@@ -91,6 +101,7 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
     // Root-relative imports waiting on their importer's manifest chain to finish probing.
     const pendingRoot: { spec: string, dir: string }[] = []; // { spec, dir }
     const manifestDirs = new Set<string>(); // dirs whose edge.json fetched successfully
+    const names = new Map<string, string>(); // manifest dir -> the package name it declares
     const labels = new Map<string, string>(); // spec -> the name its first importer wrote, host-call errors show it
     const push = (spec: string, label: string): void => {
         if (!labels.has(spec)) labels.set(spec, label);
@@ -162,9 +173,9 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
         }
     };
 
-    // Synthetic root edge.json so the COMPILER resolves bare names at parse time the same way.
-    if (Object.keys(table).length > 0) {
-        fetchedSources.set('edge.json', TE.encode(JSON.stringify({ imports: table })));
+    // Synthetic root edge.json so the COMPILER resolves bare names at parse time the same way, with what the embedder grants.
+    if (Object.keys(table).length > 0 || ctx.permissions) {
+        fetchedSources.set('edge.json', TE.encode(JSON.stringify({ imports: table, ...(ctx.permissions && { permissions: ctx.permissions }) })));
         knownMissing.delete('edge.json');
     }
 
@@ -220,11 +231,12 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
         }
 
         if (spec.endsWith('edge.json')) {
-            let parsed: { imports?: Record<string, string>, system?: unknown, extends?: string };
+            let parsed: { name?: unknown, imports?: Record<string, string>, system?: unknown, extends?: string };
             try { parsed = JSON.parse(TD.decode(bytes)); }
             catch { retryRoot(); continue; }
             const dir = dirOf(spec);
             manifestDirs.add(dir);
+            if (typeof parsed.name === 'string') names.set(dir, parsed.name);
             // A leftover `system` section merges nothing, the compiler rejects the manifest when a bare import reaches it.
             if (parsed.system !== undefined) { retryRoot(); continue; }
             // Every version it declares becomes the url the lock beside it holds, before a name or the compiler sees one.
@@ -280,8 +292,32 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
         enqueueManifestChain(dir);
     }
 
+    // The root always has a manifest, so the program's own code is the package `main` even with none on disk.
+    let root = rootFor(entryDir);
+    if (root == null) {
+        root = '';
+        manifestDirs.add(root);
+        if (!fetchedSources.has('edge.json')) fetchedSources.set('edge.json', TE.encode('{}'));
+    }
+    let permissions: unknown;
+    try { permissions = JSON.parse(TD.decode(fetchedSources.get(root + 'edge.json') ?? TE.encode('{}'))).permissions; }
+    catch { /* a manifest that is not JSON is the compiler's to report */ }
+    const problem = check(permissions);
+    if (problem) failures.push(`edge.json at '${root}edge.json': ${problem}`);
+
     if (failures.length) {
         throw new Error(`could not pre-fetch every imported module:\n  ${failures.join('\n  ')}`);
     }
     // Unresolved bare names are left to the compiler's parse-time resolver, which emits the precise error.
+    const main = root;
+    return {
+        dirs: [...manifestDirs],
+        grants: (permissions ?? {}) as Permissions,
+        packageOf: (dir: string): string => {
+            for (let d: string | null = dir; d != null; d = parentDir(d)) {
+                if (manifestDirs.has(d)) return d === main ? 'main' : names.get(d) ?? d;
+            }
+            return '';
+        },
+    };
 }
