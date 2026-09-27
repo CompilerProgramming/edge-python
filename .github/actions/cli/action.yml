@@ -29,6 +29,17 @@ runs:
         echo "EDGE_COMPILER_WASM=$GITHUB_WORKSPACE/_inputs/compiler-cli.wasm" >> "$GITHUB_ENV"
         echo "EDGE_STARLING_WASM=$GITHUB_WORKSPACE/_inputs/starling.wasm" >> "$GITHUB_ENV"
 
+    # mozjs builds SpiderMonkey from source on every target, which needs clang, python and llvm-objdump.
+    - name: SpiderMonkey build tools
+      shell: bash
+      run: |
+        echo "MOZJS_FROM_SOURCE=1" >> "$GITHUB_ENV"
+        case "$RUNNER_OS" in
+          Linux) sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev python3 ;;
+          # Xcode's objdump is llvm-objdump under another name.
+          macOS) mkdir -p "$RUNNER_TEMP/bin" && ln -sf /usr/bin/objdump "$RUNNER_TEMP/bin/llvm-objdump" && echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH" ;;
+        esac
+
     # The host is TypeScript and strips in seconds, so it is built here rather than fetched.
     - name: Deno
       uses: denoland/setup-deno@v2
@@ -76,12 +87,6 @@ runs:
       with:
         targets: ${{ inputs.target }}
 
-    # musl-gcc compiles the C helpers of the wasmtime deps so the Linux binary links fully static.
-    - name: Install musl-tools
-      if: inputs.mode == 'release' && contains(inputs.target, 'linux-musl')
-      shell: bash
-      run: sudo apt-get update && sudo apt-get install -y musl-tools
-
     - name: Cache Rust (release)
       if: inputs.mode == 'release'
       uses: Swatinem/rust-cache@v2
@@ -97,9 +102,13 @@ runs:
         TARGET: ${{ inputs.target }}
       run: |
         case "$TARGET" in
-          *linux-musl) export "CC_${TARGET//-/_}=musl-gcc" ;;
+          # musl-gcc has no C++, so the static Linux build runs in Alpine, whose libc is musl.
+          *linux-musl)
+            docker run --rm -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -w "$GITHUB_WORKSPACE/cli" -e EDGE_COMPILER_WASM -e EDGE_STARLING_WASM -e OWNER="$(id -u):$(id -g)" \
+              rust:alpine sh -c 'sh ../.github/actions/cli/musl.sh && chown -R "$OWNER" target'
+            mkdir -p "target/$TARGET/release" && cp target/release/edge "target/$TARGET/release/edge" ;;
+          *) cargo build --locked --release --target "$TARGET" ;;
         esac
-        cargo build --locked --release --target "$TARGET"
 
     - name: Tar
       if: inputs.mode == 'release'

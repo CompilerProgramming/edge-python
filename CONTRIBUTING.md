@@ -42,6 +42,8 @@ cargo build --release # .rlib and cdylib for Rust embedders
 
 `cli/` embeds `compiler.wasm` and the JS host from `js/dist` at build time. Build them first, or point `EDGE_COMPILER_WASM` and `EDGE_JS_DIST` at copies. It precompiles StarlingMonkey from `target/starling.wasm` or `EDGE_STARLING_WASM`, keeps only its hash, and downloads the artifact from `EDGE_CDN_BASE` on the first JavaScript import. Releases embed the speed build from `cargo wasm-cli`.
 
+The system calls in `js/src/system` run in SpiderMonkey inside the CLI, through `mozjs`, which compiles SpiderMonkey from source on the first build and wants clang, python3 and `llvm-objdump` on the path. On macOS a symlink named `llvm-objdump` to `/usr/bin/objdump` serves, and CI sets `MOZJS_FROM_SOURCE=1` on every target. The static Linux binary builds inside `rust:alpine` through [`.github/actions/cli/musl.sh`](.github/actions/cli/musl.sh), since musl-gcc has no C++.
+
 The JS host in `js/src` is TypeScript, linted with `deno lint js/`.
 
 ## Testing
