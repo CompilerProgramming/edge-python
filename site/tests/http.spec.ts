@@ -565,11 +565,17 @@ test.describe('publishing', () => {
     expect(await shown()).toBe('0')
 
     for (let at = 1; at <= 3; at++) {
-      expect((await request.get(`/api/packages/${name}`)).status()).toBe(200)
+      const asked = await request.get(`/api/packages/${name}`)
+      expect(asked.status()).toBe(200)
       expect(await shown(), `after ${at} asks`).toBe(String(at))
+
+      // Held anywhere, this would count once for everybody who asked.
+      expect(asked.headers()['cache-control']).toBeUndefined()
     }
 
-    expect((await request.get(`/api/packages/${name}?lock=1`)).status()).toBe(200)
+    const refresh = await request.get(`/api/packages/${name}?lock=1`)
+    expect(refresh.status()).toBe(200)
     expect(await shown(), 'after a lock refresh').toBe('3')
+    expect(refresh.headers()['cache-control']).toMatch(/^public, max-age=\d+$/)
   })
 })

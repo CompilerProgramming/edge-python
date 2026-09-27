@@ -97,6 +97,19 @@ export const ensure_site_cdn = () => ensure_bucket(BUCKET, CDN_DOMAIN)
 // Respect Existing Headers, so the zone's four hour default never overrides CACHE.
 export const ensure_browser_cache = async () => client.zones.settings.edit('browser_cache_ttl', { zone_id: await zone_id(ZONE), value: 0 })
 
+// The edge holds what a route called public, so a shared address asking again never wakes the Worker.
+export const ensure_read_cache = async () =>
+  client.rulesets.phases.update('http_request_cache_settings', {
+    zone_id: await zone_id(ZONE),
+    rules: [
+      {
+        action: 'set_cache_settings',
+        expression: '(http.request.uri.path eq "/api/search" or starts_with(http.request.uri.path, "/api/packages/"))',
+        action_parameters: { cache: true, edge_ttl: { mode: 'respect_origin' } }
+      }
+    ]
+  })
+
 export const ensure_tmp_cdn = () => ensure_bucket(TMP_BUCKET, TMP_CDN_DOMAIN, TMP_EXPIRY_SECONDS)
 
 export function cdn_objects(tree: string): CdnObject[] {

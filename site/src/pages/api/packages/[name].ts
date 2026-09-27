@@ -1,7 +1,10 @@
 import type { APIRoute } from 'astro'
 import { env } from 'cloudflare:workers'
-import { json, tooMany } from '../../../lib/server/http'
+import { cached, json, tooMany } from '../../../lib/server/http'
 import { downloaded, keyOf, named, packageByName, versionsOf } from '../../../lib/server/packages'
+
+// How long an answer that counts nothing may be reused, since it changes only when a version is published.
+const CACHE_SECONDS = 60
 
 // What `edge add <name>` reads, so a manifest entry can carry the digest of the version it pinned.
 export const GET: APIRoute = async ({ params, url, request }) => {
@@ -22,10 +25,11 @@ export const GET: APIRoute = async ({ params, url, request }) => {
   if (asked && !release) return json({ error: `${name} has no version ${asked}.` }, 404)
   if (!release || release.yanked_at !== null) return json({ error: asked ? `${name} ${asked} is yanked.` : 'Every version of that package is yanked.' }, 410)
 
-  // A lock refresh asks the same question again about a package somebody already took, so it counts once.
-  if (url.searchParams.get('lock') !== '1') await downloaded(env.DB, name)
+  // A lock refresh asks again about a package somebody already took, so it neither counts nor reaches here twice.
+  const refresh = url.searchParams.get('lock') === '1'
+  if (!refresh) await downloaded(env.DB, name)
 
-  return json({
+  const answer = {
     name,
     version: release.version,
     digest: release.digest,
@@ -33,5 +37,7 @@ export const GET: APIRoute = async ({ params, url, request }) => {
     // Null until something establishes it, so a consumer reads no claim rather than every host.
     hosts: release.hosts,
     url: `${env.CDN}/${keyOf(name, release.version)}`
-  })
+  }
+
+  return refresh ? cached(answer, CACHE_SECONDS) : json(answer)
 }

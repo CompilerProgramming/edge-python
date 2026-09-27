@@ -42,7 +42,7 @@ const config: Config = {
     { name: 'OTP_EMAIL', namespace_id: '1002', simple: { limit: 3, period: 60 } },
     { name: 'PUBLISH_NAME', namespace_id: '1003', simple: { limit: 2, period: 60 } },
     { name: 'PUBLISH_VERSION', namespace_id: '1004', simple: { limit: 30, period: 60 } },
-    { name: 'READ_IP', namespace_id: '1005', simple: { limit: 120, period: 60 } },
+    { name: 'READ_IP', namespace_id: '1005', simple: { limit: 240, period: 60 } },
     { name: 'TOKENS_USER', namespace_id: '1006', simple: { limit: 10, period: 60 } }
   ]
 }

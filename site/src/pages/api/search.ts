@@ -1,7 +1,7 @@
 import type { APIRoute } from 'astro'
 import { getCollection } from 'astro:content'
 import { env } from 'cloudflare:workers'
-import { json, tooMany } from '../../lib/server/http'
+import { cached, json, tooMany } from '../../lib/server/http'
 import { MARK, named, searched } from '../../lib/server/packages'
 import { parts } from '../../lib/docs/sections'
 import { slugOf, tree } from '../../lib/docs/tree'
@@ -11,6 +11,9 @@ const TERM = 3
 const MAX = 64
 const ROOM = 50
 const KEEP = 6
+
+// Typing repeats the same prefixes, so a short reuse absorbs most of a keystroke search.
+const CACHE_SECONDS = 30
 
 export type Found = { title: string; where: string; href: string; snippet: string }
 
@@ -23,7 +26,7 @@ export const GET: APIRoute = async ({ url, request }) => {
 
   const [docs, packages, people] = await Promise.all([ours(asked), theirs(asked), them(asked)])
 
-  return json({ docs, packages, people })
+  return cached({ docs, packages, people }, CACHE_SECONDS)
 }
 
 /* Whoever publishes, by handle or by the name they chose, because a reader who remembers the author and not the package still knows where to look. */

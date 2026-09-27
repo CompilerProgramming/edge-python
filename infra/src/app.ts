@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url'
 import { client, account_id } from './client'
 import { ensure_access } from './resources/access'
-import { ensure_browser_cache, ensure_site_cdn, ensure_tmp_cdn } from './resources/cdn'
+import { ensure_browser_cache, ensure_read_cache, ensure_site_cdn, ensure_tmp_cdn } from './resources/cdn'
 import { ensure_database } from './resources/database'
 import { ensure_email } from './resources/email'
 import { ensure_redirect } from './resources/redirect'
@@ -15,6 +15,7 @@ export async function ensure() {
   await ensure_redirect(ZONE, WWW_DOMAIN, SITE_DOMAIN)
   await ensure_site_cdn()
   await ensure_browser_cache()
+  await ensure_read_cache()
   await ensure_tmp_cdn()
 }
 

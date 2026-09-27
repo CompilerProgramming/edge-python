@@ -2,6 +2,10 @@ import type { APIContext } from 'astro'
 
 export const json = (data: unknown, status = 200) => Response.json(data, { status })
 
+// An answer everyone gets alike, so a shared address asking again costs nothing.
+export const cached = (data: unknown, seconds: number) =>
+  Response.json(data, { headers: { 'cache-control': `public, max-age=${seconds}` } })
+
 export async function body<T extends Record<string, unknown>>(request: Request): Promise<Partial<T>> {
   try {
     return (await request.json()) as Partial<T>
