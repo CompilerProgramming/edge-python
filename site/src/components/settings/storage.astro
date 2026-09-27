@@ -1,15 +1,17 @@
 ---
 import Icon from '../ui/icon.astro'
 import { bytes, count } from '../../lib/format'
+import { MAX_STORAGE } from '../../lib/server/packages'
 
 interface Props {
   handle: string
   used: number
   quota: number
+  linked: boolean
   packages: { name: string; versions: number; size: number }[]
 }
 
-const { handle, used, quota, packages } = Astro.props
+const { handle, used, quota, linked, packages } = Astro.props
 
 // Every version of a package is stored, so the bar fills with what was published and never with what is live.
 const filled = Math.min(100, Math.round((used / quota) * 100))
@@ -45,6 +47,10 @@ const ask = `mailto:c.sutton.dylan@gmail.com?subject=${encodeURIComponent(subjec
         Every version counts, a yanked one included, since a published artifact is never deleted. <a href={ask} class="underline transition hover:text-fg">Ask for more room</a>
       </p>
     </div>
+
+    {!linked && (
+      <p class="ml-4 text-2xs text-fg-hint">Linking GitHub or Google raises this to {bytes(MAX_STORAGE)}. The smaller room on an address alone is what stops one person opening accounts for space.</p>
+    )}
   </section>
 
   <section class="flex flex-col gap-2">

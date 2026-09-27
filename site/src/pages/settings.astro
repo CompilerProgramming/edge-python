@@ -126,7 +126,7 @@ const row = 'flex items-center gap-2 w-full px-4 py-1.5 text-left hover:bg-line-
           {item.label === 'Profile' && <Profile user={user} />}
           {item.label === 'Account' && <Account user={user} linked={linked} />}
           {item.label === 'Tokens' && <Tokens tokens={tokens} />}
-          {item.label === 'Storage' && <Storage handle={handle} used={used} quota={room} packages={packages} />}
+          {item.label === 'Storage' && <Storage handle={handle} used={used} quota={room} linked={linked.some((provider) => provider !== 'email')} packages={packages} />}
           {item.label === 'Invoices' && <Invoices />}
           {item.label === 'Upkeep' && <Upkeep />}
         </div>
