@@ -297,6 +297,6 @@ run(main())
 
 ## Time
 
-The scheduler reads wall time from a host hook. The JS host wires it to `Date.now()` via the `host_now_ns` import and the CLI to the system clock. Without a hook, `sleep` advances a virtual clock so deterministic tests interleave correctly.
+The scheduler reads wall time from a host hook. The JS host wires it to `Date.now()` via the `host_now_ns` import and the CLI to the system clock. Without a hook, `sleep` advances a virtual clock so deterministic tests interleave correctly. On that clock a host call takes no time, so it answers before any `sleep` or `with_timeout` deadline passes.
 
 To run many of these programs side by side as message-passing tasks, see [Actors](/docs/reference/actors).

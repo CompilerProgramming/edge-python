@@ -393,6 +393,8 @@ impl<'a> VM<'a> {
             // Yield priority order, frame tick > sleep/timeout deadline > host call > event.
             if any_frame { return Err(VmErr::HostYield(SchedulerStatus::PendingFrame)); }
             match min_wake {
+                // On the virtual clock a host call takes no time, so it answers before any deadline.
+                Some(_) if any_host_call && self.time_hook.is_none() => return Err(VmErr::HostYield(SchedulerStatus::PendingHostCall)),
                 Some(w) => {
                     let now = self.now_ns();
                     if w > now {

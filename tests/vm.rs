@@ -327,6 +327,16 @@ mod test {
         }
 
         #[test]
+        fn a_host_call_answers_before_the_virtual_clock_reaches_a_timeout() {
+            let chunk = compile("from m import host_defer\nasync def child():\n    return host_defer()\nprint(with_timeout(5, child()))\n");
+            let mut vm = VM::with_limits(&chunk, Limits::sandbox());
+            assert!(matches!(vm.run(), Err(VmErr::HostYield(SchedulerStatus::PendingHostCall))));
+            assert!(vm.push_host_result_by_id(0, "answered").unwrap());
+            vm.run().expect("the call answered inside its timeout");
+            assert_eq!(vm.output, vec!["answered"]);
+        }
+
+        #[test]
         fn a_caught_gather_child_error_leaves_no_stale_position() {
             let src = "from m import host_defer\nasync def child():\n    host_defer()\ntry:\n    gather(child())\nexcept RuntimeError:\n    print('caught')\nx = 1 / 0\n";
             let (out, tb) = run(src, "RuntimeError: boom");
