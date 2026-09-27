@@ -47,10 +47,7 @@ export const POST: APIRoute = async ({ request }) => {
 
   // A name nobody holds is the scarce thing, so it costs more than another version of your own.
   const limit = held ? env.PUBLISH_VERSION : env.PUBLISH_NAME
-  // Keyed by both, or a fresh account from one machine would open a fresh bucket.
-  const ip = request.headers.get('cf-connecting-ip') ?? userId
-  const burst = await Promise.all([limit.limit({ key: userId }), limit.limit({ key: ip })])
-  if (burst.some((asked) => !asked.success)) return json({ error: 'Too many packages published. Try again later.' }, 429)
+  if (!(await limit.limit({ key: userId })).success) return json({ error: 'Too many packages published. Try again later.' }, 429)
 
   if (!held && (await claimedToday(env.DB, userId)) >= MAX_NEW_NAMES) {
     return json({ error: `You can claim ${MAX_NEW_NAMES} names a day.` }, 429)

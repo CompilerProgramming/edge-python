@@ -29,7 +29,7 @@ export const handleWait = (changedAt: number | null) =>
 // A name others already link to is held after its owner moves, so nobody takes it to stand in for them.
 export const VACATED_WAIT = 90 * 86_400_000
 
-/* Who left this handle, when it is still held. Null once the hold is over or nobody left it, and the id lets that person take it back. */
+// Who left this handle while it is still held, so that person alone can take it back.
 export async function vacatedBy(db: D1Database, handle: string) {
   const held = await db
     .prepare('select left_by, vacated_at from vacated where handle = ?')
@@ -135,7 +135,7 @@ export async function linkedProviders(db: D1Database, userId: string) {
   return results.map((row) => row.provider)
 }
 
-// Its own number when one was set, otherwise what the way it signs in is worth, since an address is cheap to farm and a provider is not.
+// Its own number when one was set, otherwise what the way it signs in is worth.
 export async function roomFor(db: D1Database, userId: string) {
   const held = await db.prepare('select quota from user where id = ?').bind(userId).first<{ quota: number | null }>()
   if (held?.quota != null) return held.quota
