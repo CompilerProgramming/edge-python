@@ -1,10 +1,12 @@
 use super::js::Called;
 use super::{read, read_u32, rt, stage, unstage, write, write_u32, Exports, Native, State};
 use anyhow::{anyhow, Result};
+use compiler::abi::WireValue;
 use wasmtime::{Caller, Linker};
 
 // The RUNTIME error kind of the ABI.
 pub const ERR_RUNTIME: i32 = 2;
+pub const ERR_CUSTOM: i32 = 6;
 
 /* The five `env` imports compiler.wasm declares, bound to the store state. */
 pub fn link(linker: &mut Linker<State>) -> Result<()> {
@@ -92,6 +94,35 @@ fn call_native(caller: &mut Caller<'_, State>, id: i32, call_id: i32, argv_ptr: 
             }
             Ok(status)
         }
+        Native::System { module, name, package } => {
+            let raw = read(caller, ex.memory, argv_ptr, argc.max(1) * 4);
+            let handles: Vec<u32> = raw.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+            // The trailing slot holds the kwargs, which a system call never takes.
+            let Some((&0, positional)) = handles.split_last() else {
+                throw(caller, &ex, &format!("TypeError: {module}.{name} takes positional arguments only"));
+                return Ok(1);
+            };
+            let mut args = Vec::with_capacity(positional.len());
+            for &handle in positional {
+                match rt::decode(caller, &ex, handle) {
+                    Ok(value) => args.push(value),
+                    Err(e) => {
+                        throw(caller, &ex, &e);
+                        return Ok(1);
+                    }
+                }
+            }
+            let state = caller.data();
+            let called = match state.events.clone() {
+                Some(events) => super::system::invoke(state.run, &package, &module, &name, &args, call_id as u32, events),
+                None => Err(format!("RuntimeError: {module}.{name} has no interpreter to answer")),
+            };
+            let answer = called.map(|called| match called {
+                super::system::Called::Value(value) => Some(value),
+                super::system::Called::Pending => None,
+            });
+            answered(caller, &ex, out_ptr, call_id, answer)
+        }
         Native::Js { runtime, name } => {
             // The trailing kwargs slot is dropped, JavaScript exports take positional values.
             let raw = read(caller, ex.memory, argv_ptr, (argc - 1).max(0) * 4);
@@ -132,13 +163,38 @@ fn call_native(caller: &mut Caller<'_, State>, id: i32, call_id: i32, argv_ptr: 
     }
 }
 
-/* Stashes the error the compiler raises once the call returns 1, a class prefix picks its kind. */
-pub(super) fn throw(caller: &mut Caller<'_, State>, ex: &Exports, msg: &str) {
-    let (kind, msg) = match msg.split_once(": ") {
+/* Hands a call's answer to the compiler, a value now, a park for one that settles later, or an error. */
+fn answered(caller: &mut Caller<'_, State>, ex: &Exports, out_ptr: i32, call_id: i32, answer: Result<Option<WireValue>, String>) -> wasmtime::Result<i32> {
+    match answer.and_then(|value| value.map(|v| rt::encode(caller, ex, &v)).transpose()) {
+        Ok(Some(handle)) => {
+            write_u32(caller, ex.memory, out_ptr, handle);
+            Ok(0)
+        }
+        Ok(None) => {
+            caller.data_mut().deferred.push(call_id as u32);
+            Ok(2)
+        }
+        Err(e) => {
+            throw(caller, ex, e.as_str());
+            Ok(1)
+        }
+    }
+}
+
+/* The error kind a message raises as, picked by its class prefix, a custom kind keeps the class in the message. */
+pub(super) fn kind_of(msg: &str) -> (i32, &str) {
+    match msg.split_once(": ") {
         Some(("TypeError", rest)) => (0, rest),
         Some(("ValueError", rest)) => (1, rest),
+        Some(("RuntimeError", rest)) => (ERR_RUNTIME, rest),
+        Some(("OSError" | "PermissionError" | "TimeoutError", _)) => (ERR_CUSTOM, msg),
         _ => (ERR_RUNTIME, msg),
-    };
+    }
+}
+
+/* Stashes the error the compiler raises once the call returns 1, a class prefix picks its kind. */
+pub(super) fn throw(caller: &mut Caller<'_, State>, ex: &Exports, msg: &str) {
+    let (kind, msg) = kind_of(msg);
     if let Ok(ptr) = stage(caller, ex, msg.as_bytes()) {
         let _ = ex.host_edge_throw.call(&mut *caller, (kind, ptr, msg.len() as i32));
         unstage(caller, ex, ptr, msg.len());

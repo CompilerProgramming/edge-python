@@ -52,11 +52,7 @@ pub const MANIFEST: &str = r#"{
     "re": "https://cdn.edgepython.com/std/re.wasm",
     "math": "https://cdn.edgepython.com/std/math.wasm",
     "struct": "https://cdn.edgepython.com/std/struct.wasm",
-    "test": "https://cdn.edgepython.com/std/test.py",
-    "dom": "https://cdn.edgepython.com/js/builtins/dom/entry.py",
-    "storage": "https://cdn.edgepython.com/js/builtins/storage/index.js",
-    "network": "https://cdn.edgepython.com/js/builtins/network/index.js",
-    "time": "https://cdn.edgepython.com/js/builtins/time/index.js"
+    "test": "https://cdn.edgepython.com/std/test.py"
   }
 }
 "#;

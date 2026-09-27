@@ -201,6 +201,12 @@ pub enum Native {
         runtime: usize,
         name: String,
     },
+    // A system call, opened for one package and answered by SpiderMonkey.
+    System {
+        module: String,
+        name: String,
+        package: String,
+    },
 }
 
 // Refuses linear memory growth past the cap, an untrusted run cannot outgrow its slot.
@@ -236,6 +242,14 @@ pub struct State {
     // Wall-clock ns an untrusted run must finish by, host-side waits honor it too.
     pub deadline: Option<u64>,
     pub js: Vec<js::JsRuntime>,
+    // The key this instance opened its system modules under, closed with it.
+    pub run: u64,
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        system::close(self.run);
+    }
 }
 
 /* The compiler exports the host drives, bound once per instance. */
@@ -260,6 +274,7 @@ pub struct Exports {
     pub set_host_error_by_id: TypedFunc<(i32, i32, i32), i32>,
     pub last_yield_deadline_ns: TypedFunc<(), i64>,
     pub set_preempt_interval: TypedFunc<i32, ()>,
+    pub set_wall_clock: TypedFunc<i32, ()>,
     pub save_state: TypedFunc<(), i64>,
     pub restore_state: TypedFunc<(i32, i32), i32>,
     pub host_edge_op: EdgeOp,
@@ -303,6 +318,7 @@ impl Exports {
             set_host_error_by_id: f!("set_host_error_by_id"),
             last_yield_deadline_ns: f!("last_yield_deadline_ns"),
             set_preempt_interval: f!("set_preempt_interval"),
+            set_wall_clock: f!("set_wall_clock"),
             save_state: f!("save_state"),
             restore_state: f!("restore_state"),
             host_edge_op: f!("host_edge_op"),

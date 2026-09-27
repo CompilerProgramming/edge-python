@@ -1,6 +1,6 @@
-use super::{cache_root, cdn, get, js, plugins, Instance, ORIGIN};
+use super::{cache_root, cdn, get, js, plugins, system, Instance, ORIGIN};
 use crate::lock::{self, Lock};
-use compiler::modules::{dir_of, join_relative, parse_integrity, parse_manifest, scan_imports, walk_up_dirs, ImportSpec};
+use compiler::modules::{dir_of, join_relative, parse_integrity, parse_manifest, scan_imports, system_spec, walk_up_dirs, ImportSpec};
 use compiler::util::sha256::{hex_encode, sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
@@ -55,6 +55,8 @@ struct Walk<'a> {
     origins: HashMap<String, (String, Option<String>)>,
     // Files of every imported package, keyed under the package spec it came in as.
     mounted: HashMap<String, Vec<u8>>,
+    // Every manifest read, by its dir, for the package name and the permissions it carries.
+    manifests: HashMap<String, serde_json::Value>,
 }
 
 impl<'a> Walk<'a> {
@@ -73,6 +75,7 @@ impl<'a> Walk<'a> {
             missing: HashSet::new(),
             origins: HashMap::new(),
             mounted: HashMap::new(),
+            manifests: HashMap::new(),
         }
     }
 
@@ -103,11 +106,65 @@ impl<'a> Walk<'a> {
                 },
             }
         }
+        self.serve_system();
         self.refuse_undeclared();
         if self.failures.is_empty() {
             return Ok(());
         }
         Err(self.failures.iter().map(|f| format!("error: {f}")).collect::<Vec<_>>().join("\n"))
+    }
+
+    /* Serves the system modules to every package the walk met, opened with its scopes or refused when the root grants it none. */
+    fn serve_system(&mut self) {
+        let root = match self.root_for(&self.project.entry_dir) {
+            Some(Some(root)) => norm(&root).to_string(),
+            _ => String::new(),
+        };
+        // An untrusted run holds no permission, whatever its manifest says.
+        let permissions = match self.project.untrusted {
+            true => serde_json::Value::Null,
+            false => self.manifests.get(&root).and_then(|m| m.get("permissions")).cloned().unwrap_or(serde_json::Value::Null),
+        };
+        // A run that reads no clock sleeps on the virtual one, so what it prints never depends on when it runs.
+        let clock = permissions.as_object().into_iter().flat_map(|holders| holders.values()).filter_map(|entries| entries.as_array()).flatten().any(|e| e.as_str().is_some_and(|e| e.starts_with("time:")));
+        if let Err(e) = self.inst.set_wall_clock(clock) {
+            self.failures.push(e);
+        }
+        if !permissions.is_null()
+            && let Some(problem) = system::check(&permissions)
+        {
+            self.failures.push(format!("edge.json at '{root}edge.json': {problem}"));
+            return;
+        }
+        // SpiderMonkey only starts for a program that imports a name no manifest declares, the only way to reach a system module.
+        if self.pending_bare.is_empty() {
+            return;
+        }
+        let modules = system::modules();
+        let mut dirs: Vec<String> = self.manifest_dirs.iter().cloned().collect();
+        dirs.sort();
+        for dir in dirs {
+            let pkg = self.package_of(&dir, &root);
+            for module in &modules {
+                let spec = system_spec(module, &dir);
+                let served = match system::scopes(&permissions, &pkg, module) {
+                    Some(held) => self.inst.register_system(&spec, &pkg, module, &held),
+                    None => self.inst.register_error(&spec, &format!("'{pkg}' imports {module}, which edge.json does not grant it")),
+                };
+                if let Err(e) = served {
+                    self.failures.push(e);
+                }
+            }
+        }
+    }
+
+    /* The package a manifest dir belongs to, `main` for the root, else the name its manifest declares or the dir itself. */
+    fn package_of(&self, dir: &str, root: &str) -> String {
+        let dir = norm(dir);
+        if dir == root {
+            return "main".to_string();
+        }
+        self.manifests.get(dir).and_then(|m| m.get("name")).and_then(|n| n.as_str()).map_or_else(|| dir.to_string(), str::to_string)
     }
 
     /* A bare name no manifest declared fails at its import, with the command that declares it. */
@@ -255,6 +312,9 @@ impl<'a> Walk<'a> {
         }
         let dir = dir_of(spec);
         self.manifest_dirs.insert(dir.clone());
+        if let Ok(value) = serde_json::from_slice(&bytes) {
+            self.manifests.insert(norm(&dir).to_string(), value);
+        }
         // Every version it declares becomes the url and digest its lock holds, before a name or the compiler sees it.
         let resolved = match self.resolve_versions(spec, &parsed.imports) {
             Ok(resolved) => resolved,
@@ -441,6 +501,11 @@ impl<'a> Walk<'a> {
         }
         Ok(bytes)
     }
+}
+
+/* A dir as one spelling, since `./lib/` and `lib/` are the same place under the project. */
+fn norm(dir: &str) -> &str {
+    dir.trim_start_matches("./")
 }
 
 fn target(spec: &str) -> &str {

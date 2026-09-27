@@ -79,6 +79,8 @@ fn resolves_relative_imports_from_the_script_dir() {
 #[test]
 fn sleep_waits_on_the_wall_clock() {
     let dir = scratch("sleep");
+    // Only a run some package holds a clock for sleeps on the wall clock, the rest pass at once.
+    std::fs::write(dir.join("edge.json"), r#"{ "permissions": { "main": ["time:monotonic"] } }"#).unwrap();
     std::fs::write(dir.join("main.py"), "await sleep(0.3)\nprint(\"woke\")\n").unwrap();
     let started = std::time::Instant::now();
     let (out, _, code) = run_in(&dir, &["run", "main.py"], None);
@@ -324,7 +326,8 @@ fn serve(mut stream: std::net::TcpStream) {
             last_event_id = Some(value.trim().to_string());
         }
     }
-    let http = |body: &str| format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    // A page on another port reads it too, so a run with --web reaches the same fixture.
+    let http = |body: &str| format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{body}", body.len());
     let events = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
     // An event stream stays open until the client goes away.
     let mut hold = || while matches!(reader.read(&mut [0u8; 64]), Ok(n) if n > 0) {};
@@ -356,6 +359,40 @@ fn serve(mut stream: std::net::TcpStream) {
             }
         },
         _ => drop(stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")),
+    }
+}
+
+/* The same program answers the same natively and in the browser, the system calls being the same files in both. */
+#[test]
+fn system_calls_answer_the_same_with_and_without_web() {
+    let port = spawn_fixture();
+    let dir = scratch("system-calls");
+    std::fs::write(dir.join("edge.json"), r#"{ "permissions": { "main": ["net:127.0.0.1", "time:wall"] } }"#).unwrap();
+    let program = [
+        "import net",
+        "import time",
+        &format!("r = net.request('GET', 'http://127.0.0.1:{port}/text')"),
+        "status, headers = net.response(r)",
+        "body = b''",
+        "chunk = net.read(r)",
+        "while chunk is not None:",
+        "    body += chunk",
+        "    chunk = net.read(r)",
+        "print(status, body, time.now() > 10 ** 18)",
+        "try:",
+        "    net.request('GET', 'http://evil.example/')",
+        "except PermissionError as e:",
+        "    print(e)",
+        "try:",
+        "    time.now('monotonic')",
+        "except PermissionError as e:",
+        "    print(e)",
+    ];
+    std::fs::write(dir.join("main.py"), program.join("\n") + "\n").unwrap();
+    let want = "200 b'hello from mock' True\n'main' has no net:evil.example, edge.json grants it net:127.0.0.1\n'main' has no time:monotonic, edge.json grants it time:wall\n";
+    for args in [&["run", "main.py"][..], &["run", "--web", "main.py"][..]] {
+        let (out, err, code) = run_in(&dir, args, None);
+        assert_eq!((out.as_str(), code), (want, 0), "{args:?} stderr: {err}");
     }
 }
 

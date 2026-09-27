@@ -44,6 +44,9 @@ export interface Packages {
     packageOf: (dir: string) => string
 }
 
+// A dir as one spelling, since `./lib/` and `lib/` are the same place under the root.
+const norm = (dir: string): string => dir.replace(/^(\.\/)+/, '');
+
 /* The last segment's extension without query or fragment, it picks how the artifact loads. */
 const extOf = (spec: string): string => {
     const path = spec.replace(/[?#].*$/, '');
@@ -236,7 +239,7 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
             catch { retryRoot(); continue; }
             const dir = dirOf(spec);
             manifestDirs.add(dir);
-            if (typeof parsed.name === 'string') names.set(dir, parsed.name);
+            if (typeof parsed.name === 'string') names.set(norm(dir), parsed.name);
             // A leftover `system` section merges nothing, the compiler rejects the manifest when a bare import reaches it.
             if (parsed.system !== undefined) { retryRoot(); continue; }
             // Every version it declares becomes the url the lock beside it holds, before a name or the compiler sees one.
@@ -309,13 +312,13 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
         throw new Error(`could not pre-fetch every imported module:\n  ${failures.join('\n  ')}`);
     }
     // Unresolved bare names are left to the compiler's parse-time resolver, which emits the precise error.
-    const main = root;
+    const main = norm(root);
     return {
         dirs: [...manifestDirs],
         grants: (permissions ?? {}) as Permissions,
         packageOf: (dir: string): string => {
             for (let d: string | null = dir; d != null; d = parentDir(d)) {
-                if (manifestDirs.has(d)) return d === main ? 'main' : names.get(d) ?? d;
+                if (manifestDirs.has(d)) return norm(d) === main ? 'main' : names.get(norm(d)) ?? norm(d);
             }
             return '';
         },

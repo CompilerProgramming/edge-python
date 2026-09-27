@@ -565,5 +565,94 @@
     },
     "run": ["run", "--web", "--preempt", "500", "main.py"],
     "fails": ["--preempt belongs to the native engine"]
+  },
+  {
+    "given": {
+      "edge.json": "{}\n",
+      "main.py": "import time\n"
+    },
+    "run": ["run", "main.py"],
+    "fails": ["'main' imports time, which edge.json does not grant it"]
+  },
+  {
+    "given": {
+      "edge.json": "{\"permissions\": {\"main\": [\"time:wall\"]}}\n",
+      "main.py": "import time\nprint(time.now() > 10 ** 18)\ntry:\n    time.now('monotonic')\nexcept PermissionError as e:\n    print(e)\n"
+    },
+    "run": ["run", "main.py"],
+    "stdout": ["True", "'main' has no time:monotonic, edge.json grants it time:wall"]
+  },
+  {
+    "given": {
+      "clock/edge.json": "{\"name\": \"clock\", \"imports\": {\"trace\": \"./trace/main.py\"}}\n",
+      "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
+      "clock/trace/edge.json": "{\"name\": \"trace\"}\n",
+      "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n",
+      "main.py": "from clock import now\nprint(now())\n",
+      "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"], \"clock\": [\"time:wall\"]}}\n"
+    },
+    "run": ["run", "main.py"],
+    "fails": ["'trace' imports time, which edge.json does not grant it"]
+  },
+  {
+    "given": {
+      "clock/edge.json": "{\"name\": \"clock\", \"imports\": {\"trace\": \"./trace/main.py\"}}\n",
+      "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
+      "clock/trace/edge.json": "{\"name\": \"trace\"}\n",
+      "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n",
+      "main.py": "from clock import now\nprint(now())\n",
+      "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}, \"permissions\": {\"trace\": [\"time:wall\"]}}\n"
+    },
+    "run": ["run", "main.py"],
+    "stdout": ["True"]
+  },
+  {
+    "given": {
+      "edge.json": "{\"imports\": {\"helper\": \"./helper.py\"}, \"permissions\": {\"main\": [\"time:wall\"]}}\n",
+      "helper.py": "import time\n\ndef later():\n    return time.now() > 0\n",
+      "main.py": "from helper import later\nprint(later())\n"
+    },
+    "run": ["run", "main.py"],
+    "stdout": ["True"]
+  },
+  {
+    "given": {
+      "edge.json": "{\"permissions\": {\"main\": [\"net:127.0.0.1\"]}}\n",
+      "main.py": "import net\nr = net.request('GET', 'http://127.0.0.1:1/')\nnet.response(r)\n"
+    },
+    "run": ["run", "main.py"],
+    "fails": ["OSError: net.request to http://127.0.0.1:1/ failed"]
+  },
+  {
+    "given": {
+      "edge.json": "{\"permissions\": {\"main\": \"time:wall\"}}\n",
+      "main.py": "print(1)\n"
+    },
+    "run": ["run", "main.py"],
+    "fails": ["permissions for 'main' must be a list of entries"]
+  },
+  {
+    "given": {
+      "edge.json": "{}\n",
+      "main.py": "sleep(3600)\nprint('an hour, at once')\n"
+    },
+    "run": ["run", "main.py"],
+    "stdout": ["an hour, at once"]
+  },
+  {
+    "given": {
+      "edge.json": "{}\n",
+      "main.py": "import time\n"
+    },
+    "run": ["run", "--web", "main.py"],
+    "fails": ["'main' imports time, which edge.json does not grant it"]
+  },
+  {
+    "given": {
+      "edge.json": "{}\n",
+      "main.py": "sleep(3600)\nprint('an hour, at once')\n"
+    },
+    "run": ["run", "--web", "main.py"],
+    "stdout": ["an hour, at once"]
   }
 ]

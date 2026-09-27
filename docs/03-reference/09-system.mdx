@@ -92,7 +92,7 @@ When no package holds a `time` scope the engine runs on its virtual clock. `slee
 | `send(id, data)` | Sends `bytes` or a `str` on a socket |
 | `close(id)` | Aborts a request or closes a socket |
 
-`headers` is a list of `[name, value]` pairs or a dict, and `body` is `bytes`, a `str` or `None`. A failure to connect or read raises `OSError` from the call that meets it. In a browser the request is a `fetch` from the Web Worker, so CORS applies on top of the grant.
+`headers` is a list of `[name, value]` pairs or a dict, and `body` is `bytes`, a `str` or `None`. A failure to connect or read raises `OSError` from the call that meets it. In a browser the request is a `fetch` from the Web Worker, so CORS applies on top of the grant. The CLI runs the same calls in SpiderMonkey, with its own HTTP and WebSocket clients underneath, so a program answers the same with and without `--web`.
 
 ```python
 import net

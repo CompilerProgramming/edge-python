@@ -205,6 +205,16 @@ Deno.test("deno: a grant belongs to the package it names", async () => {
     if (child.out !== "" || child.text !== "True") throw new Error(`unexpected ${JSON.stringify(child)}`);
 });
 
+// A module the root imports by a ./ path sits in the root's own dir, so it is the program's code.
+Deno.test("deno: a helper the root imports by a ./ path belongs to main", async () => {
+    const base = await project({
+        "edge.json": JSON.stringify({ imports: { helper: "./helper.py" }, permissions: { main: ["time:wall"] } }),
+        "helper.py": "import time\n\ndef later():\n    return time.now() > 0\n",
+    });
+    const got = await output("helper", "from helper import later\nprint(later())", base);
+    if (got.out !== "" || got.text !== "True") throw new Error(`unexpected ${JSON.stringify(got)}`);
+});
+
 // However deep a package sits, it answers to its own grant, never to the package that imported it.
 Deno.test("deno: a grandchild answers to its own grant", async () => {
     const files = {

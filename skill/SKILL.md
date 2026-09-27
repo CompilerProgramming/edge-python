@@ -290,7 +290,7 @@ from lib.helpers import slugify as sl
 
 Not supported. `from . import x` and any form of dynamic import.
 
-Bare names resolve through `edge.json`, walking up from the importing file with the nearest manifest winning. The manifest maps each name to a path, a URL, or a `major.minor.patch` version naming a registry package under `imports`, and `extends` may name a parent manifest. A version resolves through the `edge.lock` beside the manifest that declared it, which every host reads before the compiler sees the manifest, so the compiler only ever meets a path or a URL. An `edge` field names the lowest engine the project runs on, `major.minor.patch`, and it runs on that version or any later one, never on an earlier one, which stops with `this project needs edge 0.7.0, this is 0.6.45`. The artifact decides the kind, `.py` is a code module, `.wasm` a native plugin and `.js` a JavaScript module, which the JS host runs on the page's main thread and the CLI in StarlingMonkey, so a manifest never classifies a package. A leftover `system` section fails with `edge.json at '<path>': move the system entries into imports`. `name`, `version`, `description`, `repository` and `docs` are the registry fields, ignored by the compiler and shape-checked by the CLI. Only what nothing else supplies belongs there, so an author and a date come from the publishing account and the license is read from the packed `LICENSE` file.
+Bare names resolve through `edge.json`, walking up from the importing file with the nearest manifest winning. The manifest maps each name to a path, a URL, or a `major.minor.patch` version naming a registry package under `imports`, and `extends` may name a parent manifest. A version resolves through the `edge.lock` beside the manifest that declared it, which every host reads before the compiler sees the manifest, so the compiler only ever meets a path or a URL. An `edge` field names the lowest engine the project runs on, `major.minor.patch`, and it runs on that version or any later one, never on an earlier one, which stops with `this project needs edge 0.7.0, this is 0.6.45`. The artifact decides the kind, `.py` is a code module, `.wasm` a native plugin and `.js` a JavaScript module, which the JS host runs on the page's main thread and the CLI in StarlingMonkey, so a manifest never classifies a package. A leftover `system` section fails with `edge.json at '<path>': move the system entries into imports`. `permissions` grants the system modules, see that section. `name`, `version`, `description`, `repository` and `docs` are the registry fields, ignored by the compiler and shape-checked by the CLI. Only what nothing else supplies belongs there, so an author and a date come from the publishing account and the license is read from the packed `LICENSE` file.
 
 ```json
 {
@@ -730,77 +730,55 @@ pass. division by zero raises
 
 ## System modules
 
-Four system libraries, each declared with `edge add <name>` then `edge lock`. All four are JavaScript modules. The JS host runs them on the page's main thread, the CLI in StarlingMonkey, a runtime it downloads once on the first JavaScript import. That runtime has `fetch`, streams, timers, `crypto` and `URL`, but no `Intl`, `WebSocket` or page globals, and it is always UTC. A module that reaches a missing global fails at that call with `module 'network' needs 'WebSocket', missing in this runtime`, the same text a JavaScript runtime without a page gives for `dom` and `storage`.
+The network and the clock come from two system modules that ship inside Edge Python, `net` and `time`. They need no `imports` entry, only a grant from the root `edge.json`, and an import without one fails at compile time.
 
-| Module | CLI | JS host |
-|---|---|---|
-| `time` | Runs, always UTC, `tzname()` raises for lack of `Intl` | Runs, IANA timezone |
-| `network` | `fetch` family and SSE, `ws_*` raises for lack of `WebSocket`, no CORS | Runs, CORS applies in a browser |
-| `storage` | Imports, the first call raises for lack of `localStorage` | Browser only |
-| `dom` | Imports, the first call raises for lack of `document` | Behind a Python facade, browser only |
+```python
+import time
+```
+
+```text Error
+'main' imports time, which edge.json does not grant it
+```
+
+`permissions` maps each holder to a list of `module:scope` entries. The holder is `main` for the program's own code, `all` for every package, or a package name for that package alone. `net:<host>` allows exactly that host, and `time:wall`, `time:monotonic` and `time:zone` allow one clock call each. An entry without a scope, like `"net"`, lets the package import the module and reach nothing.
+
+```json
+{
+  "permissions": {
+    "main": ["net:api.example.com", "time:wall"],
+    "analytics": ["net:api.telemetry.com"]
+  }
+}
+```
+
+Only the root grants. A dependency lists what it needs in its own `edge.json` in the same shape, which grants it nothing, and trust is never inherited, so the root writes out every entry for every package however deep. A package is the nearest `edge.json` above its files. Each call checks its scope again, a call outside the grant raises `PermissionError`, a subclass of `OSError`, and a request or socket belongs to the package that opened it. An `eval` group holds no permission.
 
 ### time
 
-`time()`, `time_ns()`, `monotonic()`, `monotonic_ns()`, `perf_counter()`, `perf_counter_ns()`, and a suspending `sleep(secs)`. `gmtime` and `localtime` return a JSON string of the nine struct_time fields, decode it with `json.loads`. `mktime`, `strftime`, `strptime`, `asctime` and `ctime` convert between forms. `timezone()`, `altzone()`, `daylight()` and `tzname()` are calls. The CLI is always UTC, so `localtime` equals `gmtime` there.
-
-<!-- 010100101010 THIS CELL IMPORTS A PACKAGE EDGE-PYTHON-STD HAS NOT PUBLISHED YET, TURN ITS txt FENCE BACK INTO text TO RUN IT AGAIN. -->
-```python
-import json
-from time import gmtime, time
-
-print(json.loads(gmtime(0))[:3])
-print(type(time()).__name__)
-```
-
-```txt Output
-[1970, 1, 1]
-float
-```
-
-The CLI's runtime has no `Intl`, so `tzname()` raises there.
-
-<!-- 010100101010 THIS CELL IMPORTS A PACKAGE EDGE-PYTHON-STD HAS NOT PUBLISHED YET, TURN ITS txt FENCE BACK INTO text TO RUN IT AGAIN. -->
-```python
-from time import tzname
-
-print(tzname())
-```
-
-```txt Error
-module 'time' needs 'Intl', missing in this runtime
-```
-
-### network
-
-`fetch(url[, options_json])` returns a JSON string with `id`, `ok`, `status`, `headers` and `body`. `fetch_text` and `fetch_json` return the body directly and raise on non-2xx responses. All three suspend until the response arrives. WebSockets use `ws_open`, `ws_send`, `ws_close` and `ws_state`, SSE uses `sse_open`, `sse_close` and `sse_state`, and both stream events through `receive()` as JSON payloads with a `type` field. `abort_request(id)` cancels an in-flight request. SSE runs on every host, WebSockets need the runtime's `WebSocket`, so in the CLI `ws_open` raises `module 'network' needs 'WebSocket', missing in this runtime`.
+`now()` returns nanoseconds since the epoch, `now('monotonic')` nanoseconds that never go back, and `zone()` the pair `[name, offset]`, the IANA zone and its offset in seconds. Without a `time` scope anywhere the engine runs on its virtual clock, so a `sleep` passes at once and in order and a host call takes no time.
 
 ```python
-from network import fetch_json
-
-data = fetch_json("https://api.example.com/items")
-items = json.loads(data)
+sleep(3600)
+print("an hour, at once")
 ```
 
-### storage
+```text Output
+an hour, at once
+```
 
-Browser only, elsewhere the first call raises `module 'storage' needs 'localStorage', missing in this runtime`. Synchronous key-value access through `local_get`, `local_set`, `local_remove`, `local_clear`, `local_keys` and the `session_*` twins, values are strings so encode structured data with `json.dumps`. IndexedDB through suspending calls, `idb_open`, `idb_put`, `idb_get`, `idb_delete`, `idb_keys` and `idb_close`.
+### net
+
+`request(method, url, headers, body)` returns an id at once, `response(id)` waits for `[status, headers]`, and `read(id)` returns the next body chunk as `bytes` or `None` at the end. `connect(url)` opens a WebSocket whose messages come through `read`, `send(id, data)` writes to it and `close(id)` aborts either. Headers are `[name, value]` pairs or a dict and a body is `bytes`, a `str` or `None`. A failed connection raises `OSError` from the call that meets it, and in a browser CORS applies on top of the grant.
 
 ```python
-import storage
+import net
 
-storage.local_set("k", "v")
-print(storage.local_get("k"))
+r = net.request("GET", "https://api.example.com/items", [["accept", "application/json"]], None)
+status, headers = net.response(r)
+body = net.read(r)
 ```
 
-### dom
-
-Browser only, in the CLI the first call raises `module '_dom' needs 'document', missing in this runtime`. Handles are opaque ints, multi-result queries return CSV strings of handles, structured results return JSON strings, and async results arrive through `receive()`. The surface covers selection and traversal (`query`, `query_all`, `closest`, `parent`, `children`, siblings), creation and mutation (`create_element`, `append_child`, `insert_before`, `remove`, `replace_children`, `clone_node`), content and attributes (`get_text`, `set_text`, `get_html`, `set_html`, `get_attribute`, `set_attribute`, class and data helpers), style and layout (`set_style`, `rect`, `scroll_top`, `focus`), events (`bind_event`, `unbind_event`, `dispatch_event`, `click`), forms and files, observers, animations, media and platform dialogs. A `batch()` context manager buffers the mutating calls and applies them with one host call on exit.
-
-```python
-import dom
-
-print(dom.tag_name(dom.body()))
-```
+The CLI and the browser run the same JavaScript for these calls, the browser in its Worker and the CLI in SpiderMonkey, so a program answers the same with and without `--web`.
 
 ## Actors
 

@@ -62,6 +62,7 @@ impl Host {
             events: None,
             deadline: deadline.map(|ticks| now_ns().saturating_add(ticks.saturating_mul(TICK_NS))),
             js: Vec::new(),
+            run: super::system::run_id(),
         };
         let mut store = Store::new(&self.runtime.engine, state);
         store.limiter(|s: &mut State| &mut s.limiter as &mut dyn ResourceLimiter);
@@ -208,6 +209,27 @@ impl Instance {
     pub(super) fn register_native(&mut self, spec: &str, names: &[String], base: usize) -> Result<(), String> {
         let joined = names.join("\n");
         self.register_pair(spec, joined.as_bytes(), |store, ex, (s, sl), (p, pl)| ex.register_native_module.call(store, (s, sl, p, pl, base as i32)))
+    }
+
+    /* Serves `module` to `pkg` under `spec`, opened with the scopes that package holds. */
+    pub(super) fn register_system(&mut self, spec: &str, pkg: &str, module: &str, held: &[String]) -> Result<(), String> {
+        if let Some((base, names)) = self.store.data().registered.get(spec).cloned() {
+            return self.register_native(spec, &names, base);
+        }
+        let state = self.store.data_mut();
+        let names = super::system::open(state.run, pkg, module, held);
+        let base = state.natives.len();
+        for name in &names {
+            state.natives.push(super::Native::System { module: module.to_string(), name: name.clone(), package: pkg.to_string() });
+        }
+        state.registered.insert(spec.to_string(), (base, names.clone()));
+        self.register_native(spec, &names, base)
+    }
+
+    /* Sleeps the next boot on the host's clock, or on the virtual one for a run no package holds time. */
+    pub(super) fn set_wall_clock(&mut self, on: bool) -> Result<(), String> {
+        let ex = self.ex.clone();
+        ex.set_wall_clock.call(&mut self.store, on as i32).map_err(|e| e.to_string())
     }
 
     /* Starts the JavaScript runtime for `spec` and registers the exports its factory returns. */
@@ -500,8 +522,9 @@ impl Vm {
                     ex.set_host_result_by_id.call(&mut *store, (id as i32, handle as i32))
                 }
                 Err(msg) => {
-                    let handle = rt::encode(&mut *store, ex, &WireValue::Bytes(msg.into_bytes())).map_err(|e| anyhow!(e))?;
-                    ex.set_host_error_by_id.call(&mut *store, (id as i32, super::env::ERR_RUNTIME, handle as i32))
+                    let (kind, msg) = super::env::kind_of(&msg);
+                    let handle = rt::encode(&mut *store, ex, &WireValue::Bytes(msg.as_bytes().to_vec())).map_err(|e| anyhow!(e))?;
+                    ex.set_host_error_by_id.call(&mut *store, (id as i32, kind, handle as i32))
                 }
             }
         };
