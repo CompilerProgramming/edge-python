@@ -209,6 +209,8 @@ $ edge publish app.edge
 
 A name is first come and permanent, and a version is never overwritten, so publishing the same one twice is refused. The artifact is stored exactly as it was packed, so the registry never reads the bundle format.
 
+One artifact is 10 MB at most, an account claims 10 names and publishes 60 versions a day, and its packages add up to a room the account can see in its settings. That room is 50 MB for an account that signs in by address alone and a gigabyte for one with GitHub or Google linked, since an address is cheap to come by and a provider account is not. Ask for more where the figure is shown.
+
 ## `edge actor`: actor pool
 
 Runs many edge-python programs as cooperative actors over a few threads, described by an `actor.yml`. See [Actors](/docs/reference/actors) for the manifest, groups, server, and untrusted code.

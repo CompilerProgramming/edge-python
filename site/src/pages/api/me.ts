@@ -1,6 +1,6 @@
 import type { APIRoute } from 'astro'
 import { env } from 'cloudflare:workers'
-import { deleteUser, handleTaken, handleWait, publicUser, updateProfile, userById } from '../../lib/server/users'
+import { deleteUser, handleTaken, handleWait, publicUser, updateProfile, userById, vacatedBy } from '../../lib/server/users'
 import { endSession } from '../../lib/server/session'
 import { spend } from '../../lib/server/otp'
 import { body, json } from '../../lib/server/http'
@@ -23,6 +23,10 @@ export const PATCH: APIRoute = async ({ request, locals }) => {
   const problem = typeof handle === 'string' ? validateHandle(handle) : 'Pick a handle.'
   if (problem) return json({ error: problem }, 400)
   if (await handleTaken(env.DB, handle!, user.id)) return json({ error: `@${handle} is already taken.` }, 409)
+
+  // One you left yourself is yours to take back, somebody else's is held while others still link to it.
+  const held = await vacatedBy(env.DB, handle!)
+  if (held && held.left_by !== user.id) return json({ error: `@${handle} was given up recently and is held for now.` }, 409)
 
   const icon = Number(avatar?.icon)
   if (!Number.isInteger(icon) || icon < 1 || icon > ICONS || !PALETTES.includes(avatar?.palette as Palette)) return json({ error: 'Pick an avatar.' }, 400)

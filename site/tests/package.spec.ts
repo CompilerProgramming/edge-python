@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { mintToken, packed, published, test } from './helpers'
+import { mintToken, packed, published, signedIn, test } from './helpers'
 
 const INTRO = `---
 title: Introduction
@@ -82,6 +82,19 @@ test('opens a page the aside names and refuses one it does not', async ({ page, 
 
   await page.goto(`/package/${name}/nope`)
   await expect(page.getByText('Not found')).toBeVisible()
+})
+
+// An address is cheap to farm and a linked provider is not, so an account with only an address gets the smaller room.
+test('shows an email account the room it gets and how to ask for more', async ({ page, context }) => {
+  await signedIn(context)
+
+  await page.goto('/settings')
+  await page.locator('[data-panel="Storage"]').first().click()
+
+  const panel = page.locator('[data-view="Storage"]')
+  await expect(panel).toContainText('of 50.0 MB')
+  await expect(panel).toContainText('Nothing published yet.')
+  await expect(panel.getByRole('link', { name: 'Ask for more room' })).toHaveAttribute('href', /^mailto:.*subject=/)
 })
 
 test('lists a documented package and its author in the sitemap, and leaves an undocumented one out', async ({ request }) => {

@@ -18,7 +18,7 @@ const NAME = /^[a-z][a-z0-9-]*$/
 const VERSION = /^\d{1,9}\.\d{1,9}\.\d{1,9}$/
 
 export const MAX_NAME = 40
-export const MAX_ARTIFACT = 32 << 20
+export const MAX_ARTIFACT = 10 << 20
 export const MAX_DESCRIPTION = 200
 export const MAX_REPOSITORY = 256
 export const MAX_NOTICE = 64 << 10
@@ -26,10 +26,12 @@ export const MAX_PAGES = 64
 export const MAX_PAGE = 128 << 10
 export const MAX_LOCK = 256 << 10
 
-// A rate limiter can only count seconds, so the day's worth of new names is counted here instead.
+// A rate limiter can only count seconds, so the day's worth is counted here instead.
 export const MAX_NEW_NAMES = 10
+export const MAX_NEW_VERSIONS = 60
 
-// What one account's artifacts may add up to, since a version costs the same room as a name and nothing reclaims it.
+// What one account's artifacts may add up to, since nothing reclaims the room a version takes.
+export const STARTER_STORAGE = 50 << 20
 export const MAX_STORAGE = 1 << 30
 const DAY = 86_400_000
 
@@ -113,6 +115,20 @@ export const claimedToday = async (db: D1Database, userId: string) =>
     .prepare('select count(*) as taken from package where user_id = ? and created_at > ?')
     .bind(userId, Date.now() - DAY)
     .first<{ taken: number }>())?.taken ?? 0)
+
+// A rate limiter counts a burst, and a day of bursts is a different thing.
+export const publishedToday = async (db: D1Database, userId: string) =>
+  ((await db
+    .prepare('select count(*) as sent from version v join package p on p.name = v.package where p.user_id = ? and v.published_at > ?')
+    .bind(userId, Date.now() - DAY)
+    .first<{ sent: number }>())?.sent ?? 0)
+
+// Every version of every package, a yanked one included, since its bytes are still stored.
+export const storedBytes = async (db: D1Database, userId: string) =>
+  ((await db
+    .prepare('select coalesce(sum(v.size), 0) as room from version v join package p on p.name = v.package where p.user_id = ?')
+    .bind(userId)
+    .first<{ room: number }>())?.room ?? 0)
 
 export const packageByName = (db: D1Database, name: string) =>
   db.prepare('select * from package where name = ?').bind(name).first<Package>()
@@ -229,7 +245,7 @@ export const indexable = (db: D1Database) =>
     )
     .all<{ name: string; handle: string }>()
 
-/* The room one account's packages take, every version of each, a yanked one included since its bytes are still stored. */
+// The same room, split by package, which is what a panel shows.
 export const stored = (db: D1Database, userId: string) =>
   db
     .prepare(

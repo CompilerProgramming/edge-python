@@ -10,6 +10,8 @@ export const POST: APIRoute = async ({ request, locals }) => {
   // A token publishes, and a release is attributed, so the account has to be nameable before it holds one.
   if (!locals.user.handle) return json({ error: 'Pick a handle before you mint a token.' }, 403)
 
+  if (!(await env.TOKENS_USER.limit({ key: locals.user.id })).success) return json({ error: 'Too many tokens minted. Try again later.' }, 429)
+
   const { name, salt, hash, replaces } = await body<{ name: string; salt: string; hash: string; replaces: string }>(request)
   const trimmed = name?.trim()
 

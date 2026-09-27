@@ -3,7 +3,7 @@ import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, type APIRequestContext } from '@playwright/test'
 import { MAILS, arriving, mailedCode, mintToken, packed, published, signIn, test, unique } from './helpers'
-import { MAX_DESCRIPTION, MAX_NOTICE } from '../src/lib/server/packages'
+import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NOTICE } from '../src/lib/server/packages'
 
 const DOCS = fileURLToPath(new URL('../../docs/', import.meta.url))
 
@@ -287,7 +287,7 @@ test.describe('changing a handle', () => {
 
   // Naming yourself at sign-up is free, so the wait only starts once a handle actually moves.
   test('allows one move and then holds the handle for seven days', async ({ request }) => {
-    await signIn(request)
+    const { handle: left } = await signIn(request)
 
     const held = unique()
     const moved = await request.patch('/api/me', { data: profile(held) })
@@ -302,6 +302,17 @@ test.describe('changing a handle', () => {
     const rest = await request.patch('/api/me', { data: { ...profile(held), bio: 'still editable' } })
     expect(rest.status()).toBe(200)
     expect(await (await request.get(`/@${held}`)).text()).toContain('still editable')
+
+    // The one they left is theirs to take back, since others still link to it and nobody else should answer there.
+    expect(await (await request.get(`/api/handles/${left}`)).json()).toEqual({ available: true })
+
+    await request.post('/api/auth/signout')
+    await signIn(request)
+
+    expect(await (await request.get(`/api/handles/${left}`)).json()).toEqual({ available: false })
+    const stranger = await request.patch('/api/me', { data: profile(left) })
+    expect(stranger.status()).toBe(409)
+    expect((await stranger.json()).error).toBe(`@${left} was given up recently and is held for now.`)
   })
 })
 
@@ -461,6 +472,16 @@ test.describe('publishing', () => {
     for (const [why, buffer] of bad) {
       expect((await send(request, token, buffer)).status(), why).toBe(400)
     }
+  })
+
+  /* Room is refused before the bytes are stored, since nothing reclaims it afterwards, and the cap on one artifact is what keeps a single publish from filling a shelf. */
+  test('refuses an artifact past the cap and says what room is left', async ({ request }) => {
+    await signIn(request)
+    const token = await mintToken(request)
+
+    const over = await send(request, token, Buffer.concat([release(naming(), '0.1.0'), Buffer.alloc(MAX_ARTIFACT)]))
+    expect(over.status()).toBe(413)
+    expect((await over.json()).error).toBe(`An artifact is ${MAX_ARTIFACT} bytes at most.`)
   })
 
   /* The bundle is opened here, so bytes that are not an archive never reach storage and a hand-built request cannot skip the read. */

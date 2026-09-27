@@ -11,13 +11,16 @@ import Tokens from '../components/settings/tokens.astro'
 import Storage from '../components/settings/storage.astro'
 import Invoices from '../components/settings/invoices.astro'
 import Upkeep from '../components/settings/upkeep.astro'
-import { linkedProviders } from '../lib/server/users'
+import { linkedProviders, roomFor } from '../lib/server/users'
 import { userTokens } from '../lib/server/tokens'
-import { MAX_STORAGE, stored } from '../lib/server/packages'
+import { stored } from '../lib/server/packages'
 
 const { user } = Astro.locals
 if (!user) return Astro.redirect('/')
 if (!user.handle) return Astro.redirect('/?welcome')
+
+// Read out here, since a panel is drawn inside a callback and the guard above narrows nothing there.
+const handle = user.handle
 
 type Item = { label: string; icon: ComponentProps<typeof Icon>['name'] }
 
@@ -33,6 +36,7 @@ const linked = await linkedProviders(env.DB, user.id)
 const held = await userTokens(env.DB, user.id)
 
 const { results: packages } = await stored(env.DB, user.id)
+const room = await roomFor(env.DB, user.id)
 const used = packages.reduce((total, each) => total + each.size, 0)
 
 const day = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -122,7 +126,7 @@ const row = 'flex items-center gap-2 w-full px-4 py-1.5 text-left hover:bg-line-
           {item.label === 'Profile' && <Profile user={user} />}
           {item.label === 'Account' && <Account user={user} linked={linked} />}
           {item.label === 'Tokens' && <Tokens tokens={tokens} />}
-          {item.label === 'Storage' && <Storage handle={user.handle} used={used} quota={MAX_STORAGE} packages={packages} />}
+          {item.label === 'Storage' && <Storage handle={handle} used={used} quota={room} packages={packages} />}
           {item.label === 'Invoices' && <Invoices />}
           {item.label === 'Upkeep' && <Upkeep />}
         </div>

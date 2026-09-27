@@ -3,10 +3,12 @@ import { env } from 'cloudflare:workers'
 import { sha256hex } from '../../lib/crypto'
 import { json } from '../../lib/server/http'
 import { tokenUser } from '../../lib/server/tokens'
+import { roomFor } from '../../lib/server/users'
+import { bytes as sized } from '../../lib/format'
 import type { Packed } from '../../lib/server/bundle'
 import { packed } from '../../lib/server/bundle'
 import type { Page } from '../../lib/server/packages'
-import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NEW_NAMES, MAX_NOTICE, checkLocks, checkPages, claimedToday, described, floored, keyOf, linked, named, noticed, packageByName, publish, versionExists, versioned } from '../../lib/server/packages'
+import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NEW_NAMES, MAX_NEW_VERSIONS, MAX_NOTICE, checkLocks, checkPages, claimedToday, described, floored, keyOf, linked, named, noticed, packageByName, publish, publishedToday, storedBytes, versionExists, versioned } from '../../lib/server/packages'
 
 /* The artifact is the only thing sent. Everything a listing shows is read out of it here, so a publisher declares nothing twice and cannot declare it differently from what they shipped. */
 export const POST: APIRoute = async ({ request }) => {
@@ -45,10 +47,24 @@ export const POST: APIRoute = async ({ request }) => {
 
   // A name nobody holds is the scarce thing, so it costs more than another version of your own.
   const limit = held ? env.PUBLISH_VERSION : env.PUBLISH_NAME
-  if (!(await limit.limit({ key: userId })).success) return json({ error: 'Too many packages published. Try again later.' }, 429)
+  // Keyed by both, or a fresh account from one machine would open a fresh bucket.
+  const ip = request.headers.get('cf-connecting-ip') ?? userId
+  const burst = await Promise.all([limit.limit({ key: userId }), limit.limit({ key: ip })])
+  if (burst.some((asked) => !asked.success)) return json({ error: 'Too many packages published. Try again later.' }, 429)
 
   if (!held && (await claimedToday(env.DB, userId)) >= MAX_NEW_NAMES) {
     return json({ error: `You can claim ${MAX_NEW_NAMES} names a day.` }, 429)
+  }
+
+  if ((await publishedToday(env.DB, userId)) >= MAX_NEW_VERSIONS) {
+    return json({ error: `You can publish ${MAX_NEW_VERSIONS} versions a day.` }, 429)
+  }
+
+  // Refused before the bytes are stored, since nothing reclaims the room afterwards.
+  const room = await roomFor(env.DB, userId)
+  const used = await storedBytes(env.DB, userId)
+  if (used + bytes.byteLength > room) {
+    return json({ error: `Your packages use ${sized(used)} of ${sized(room)}. Ask for more room at ${env.SITE}/settings.` }, 413)
   }
 
   if (await versionExists(env.DB, name, version)) return json({ error: `${name} ${version} is already published.` }, 409)

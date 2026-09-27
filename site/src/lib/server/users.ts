@@ -1,6 +1,7 @@
 import { random } from '../crypto'
 import type { Avatar, Palette } from '../account/avatar'
 import type { Me, Public } from '../account/auth'
+import { MAX_STORAGE, STARTER_STORAGE } from './packages'
 
 export type User = {
   id: string
@@ -12,6 +13,7 @@ export type User = {
   created_at: number
   updated_at: number
   handle_changed_at: number | null
+  quota: number | null
 }
 
 // The signed-in row carries the address its codes go to, which a join brings in from account.
@@ -23,6 +25,19 @@ export const HANDLE_WAIT = 7 * 86_400_000
 /* How long is left on the wait, or zero when the handle is free to change. */
 export const handleWait = (changedAt: number | null) =>
   changedAt === null ? 0 : Math.max(0, changedAt + HANDLE_WAIT - Date.now())
+
+// A name others already link to is held after its owner moves, so nobody takes it to stand in for them.
+export const VACATED_WAIT = 90 * 86_400_000
+
+/* Who left this handle, when it is still held. Null once the hold is over or nobody left it, and the id lets that person take it back. */
+export async function vacatedBy(db: D1Database, handle: string) {
+  const held = await db
+    .prepare('select left_by, vacated_at from vacated where handle = ?')
+    .bind(handle)
+    .first<{ left_by: string | null; vacated_at: number }>()
+
+  return held && Date.now() - held.vacated_at < VACATED_WAIT ? { left_by: held.left_by } : null
+}
 
 export type Identity = { provider: 'github' | 'google' | 'email'; providerId: string; email: string; name?: string | null }
 
@@ -64,11 +79,16 @@ export const handleTaken = async (db: D1Database, handle: string, except?: strin
 /* Saves the profile, and starts the wait only when the handle actually moved. */
 export async function updateProfile(db: D1Database, id: string, profile: { handle: string; name: string; avatar: Avatar; bio?: string }, moved: boolean) {
   const now = Date.now()
+  const leaving = moved ? (await userById(db, id))?.handle : null
 
-  await db
-    .prepare('update user set handle = ?, name = ?, avatar_icon = ?, avatar_palette = ?, bio = coalesce(?, bio), updated_at = ?, handle_changed_at = coalesce(?, handle_changed_at) where id = ?')
-    .bind(profile.handle, profile.name, profile.avatar.icon, profile.avatar.palette, profile.bio ?? null, now, moved ? now : null, id)
-    .run()
+  await db.batch([
+    db
+      .prepare('update user set handle = ?, name = ?, avatar_icon = ?, avatar_palette = ?, bio = coalesce(?, bio), updated_at = ?, handle_changed_at = coalesce(?, handle_changed_at) where id = ?')
+      .bind(profile.handle, profile.name, profile.avatar.icon, profile.avatar.palette, profile.bio ?? null, now, moved ? now : null, id),
+    // The one it takes stops being held, the one it leaves starts.
+    db.prepare('delete from vacated where handle = ?').bind(profile.handle),
+    ...(leaving ? [db.prepare('insert or replace into vacated (handle, left_by, vacated_at) values (?, ?, ?)').bind(leaving, id, now)] : [])
+  ])
 
   return (await userById(db, id))!
 }
@@ -115,6 +135,15 @@ export async function linkedProviders(db: D1Database, userId: string) {
   return results.map((row) => row.provider)
 }
 
+// Its own number when one was set, otherwise what the way it signs in is worth, since an address is cheap to farm and a provider is not.
+export async function roomFor(db: D1Database, userId: string) {
+  const held = await db.prepare('select quota from user where id = ?').bind(userId).first<{ quota: number | null }>()
+  if (held?.quota != null) return held.quota
+
+  const linked = await linkedProviders(db, userId)
+  return linked.some((provider) => provider !== 'email') ? MAX_STORAGE : STARTER_STORAGE
+}
+
 // Links an OAuth identity to the signed-in user, one already linked elsewhere stays where it is.
 export async function linkAccount(db: D1Database, userId: string, identity: Identity) {
   await db
@@ -129,11 +158,16 @@ export async function unlinkAccount(db: D1Database, userId: string, provider: st
 
 // Sessions, credentials and tokens all cascade from the user row, so one delete is the whole account.
 /* Takes the account and leaves its packages standing, because a name others import cannot vanish with the person behind it. They pass to the reserved account, so a listing always has an author to show and a shelf of them has a page. */
-export const deleteUser = (db: D1Database, id: string) =>
-  db.batch([
+export async function deleteUser(db: D1Database, id: string) {
+  const leaving = (await userById(db, id))?.handle
+
+  // Held with nobody named, since the account that could take it back is the one going away.
+  await db.batch([
     db.prepare('update package set user_id = ? where user_id = ?').bind(UNCLAIMED, id),
+    ...(leaving ? [db.prepare('insert or replace into vacated (handle, left_by, vacated_at) values (?, null, ?)').bind(leaving, Date.now())] : []),
     db.prepare('delete from user where id = ?').bind(id)
   ])
+}
 
 // The account that holds a package whose author is gone, seeded and never sign-in-able.
 export const UNCLAIMED = 'u_unclaimed'

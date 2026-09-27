@@ -1,10 +1,12 @@
 import type { APIRoute } from 'astro'
 import { env } from 'cloudflare:workers'
-import { json } from '../../../lib/server/http'
+import { json, tooMany } from '../../../lib/server/http'
 import { downloaded, keyOf, named, packageByName, versionsOf } from '../../../lib/server/packages'
 
 // What `edge add <name>` reads, so a manifest entry can carry the digest of the version it pinned.
-export const GET: APIRoute = async ({ params, url }) => {
+export const GET: APIRoute = async ({ params, url, request }) => {
+  if (await tooMany(env.READ_IP, request)) return json({ error: 'Too many requests. Try again later.' }, 429)
+
   const name = String(params.name ?? '').toLowerCase()
   if (!named(name)) return json({ error: 'No such package.' }, 404)
 

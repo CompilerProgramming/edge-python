@@ -1,11 +1,15 @@
 import type { APIRoute } from 'astro'
 import { env } from 'cloudflare:workers'
-import { handleTaken } from '../../../lib/server/users'
+import { handleTaken, vacatedBy } from '../../../lib/server/users'
 import { json } from '../../../lib/server/http'
 import { validateHandle } from '../../../lib/account/handle'
 
 export const GET: APIRoute = async ({ params, locals }) => {
   const handle = params.handle ?? ''
+  if (validateHandle(handle) || (await handleTaken(env.DB, handle, locals.user?.id))) return json({ available: false })
 
-  return json({ available: !validateHandle(handle) && !(await handleTaken(env.DB, handle, locals.user?.id)) })
+  // One this visitor left is theirs to take back, anybody else's is held.
+  const held = await vacatedBy(env.DB, handle)
+
+  return json({ available: !held || held.left_by === locals.user?.id })
 }

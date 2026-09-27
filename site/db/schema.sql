@@ -8,7 +8,15 @@ create table user (
   created_at integer not null,
   updated_at integer not null,
   handle_changed_at integer,
+  quota integer,
   check ((avatar_icon is null) = (avatar_palette is null))
+) strict;
+
+-- A handle somebody leaves is held here, against everybody but the person who left it.
+create table vacated (
+  handle text primary key,
+  left_by text,
+  vacated_at integer not null
 ) strict;
 
 create table account (

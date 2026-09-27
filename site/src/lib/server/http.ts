@@ -11,3 +11,9 @@ export async function body<T extends Record<string, unknown>>(request: Request):
 }
 
 export const ip = (context: APIContext) => context.request.headers.get('cf-connecting-ip') ?? context.clientAddress
+
+/* Whether this caller has asked too often, keyed by the address since nothing here needs an account. */
+export async function tooMany(limiter: RateLimit, request: Request) {
+  const ip = request.headers.get('cf-connecting-ip')
+  return ip ? !(await limiter.limit({ key: ip })).success : false
+}
