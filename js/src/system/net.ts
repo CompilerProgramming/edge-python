@@ -2,8 +2,6 @@ import type { EdgeValue } from '../rt.ts';
 import { SystemError } from './error.ts';
 import { need } from './grants.ts';
 
-const TE = new TextEncoder();
-
 type Message = Uint8Array | string | null;
 
 /* What an id answers to, a request in flight or an open socket. */
@@ -18,10 +16,10 @@ const text = (value: EdgeValue, what: string): string => {
     return value;
 };
 
-const bytes = (value: EdgeValue): Uint8Array<ArrayBuffer> | undefined => {
+const body = (value: EdgeValue): Uint8Array<ArrayBuffer> | string | undefined => {
     if (value === null || value === undefined) return undefined;
     if (value instanceof Uint8Array) return value as Uint8Array<ArrayBuffer>;
-    if (typeof value === 'string') return TE.encode(value);
+    if (typeof value === 'string') return value;
     throw new SystemError('ValueError', 'a body must be bytes, a str or None');
 };
 
@@ -34,13 +32,13 @@ const pairs = (value: EdgeValue): [string, string][] => {
     });
 };
 
-/* The host part of an absolute url, what a net scope names. */
+/* The host part of an absolute url, what a net scope names, read here since not every host has URL. */
 const hostOf = (url: string): string => {
-    try {
-        return new URL(url).hostname.toLowerCase();
-    } catch {
-        throw new SystemError('ValueError', `'${url}' is not an absolute url`);
-    }
+    const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(url)?.[1] ?? '';
+    const host = authority.slice(authority.lastIndexOf('@') + 1);
+    const name = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0] ?? '';
+    if (!name) throw new SystemError('ValueError', `'${url}' is not an absolute url`);
+    return name.toLowerCase();
 };
 
 const failed = (what: string, e: unknown) => new SystemError('OSError', `${what} failed, ${e instanceof Error ? e.message : String(e)}`);
@@ -68,11 +66,11 @@ export default function net(pkg: string, held: string[]) {
     };
 
     /* Starts a request and returns its id at once, the head and the body arrive through response and read. */
-    function request(method: EdgeValue, url: EdgeValue, headers: EdgeValue = null, body: EdgeValue = null): number {
+    function request(method: EdgeValue, url: EdgeValue, headers: EdgeValue = null, content: EdgeValue = null): number {
         const target = text(url, 'a url');
         need(pkg, 'net', held, hostOf(target));
         const controller = new AbortController();
-        const answer = fetch(target, { method: text(method ?? 'GET', 'a method'), headers: pairs(headers), body: bytes(body), signal: controller.signal });
+        const answer = fetch(target, { method: text(method ?? 'GET', 'a method'), headers: pairs(headers), body: body(content), signal: controller.signal });
         const head = answer.then((res): [number, [string, string][]] => {
             const received: [string, string][] = [];
             res.headers.forEach((value, name) => received.push([name, value]));
@@ -130,7 +128,7 @@ export default function net(pkg: string, held: string[]) {
         const found = stream(id);
         if (found.kind !== 'socket') throw new SystemError('ValueError', 'send takes a socket from net.connect');
         if (found.socket.readyState !== WebSocket.OPEN) throw new SystemError('OSError', 'the socket is not open');
-        found.socket.send(typeof data === 'string' ? data : bytes(data) ?? new Uint8Array(0));
+        found.socket.send(body(data) ?? new Uint8Array(0));
         return null;
     }
 

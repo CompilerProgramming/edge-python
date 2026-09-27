@@ -6,6 +6,7 @@ pub mod js;
 mod plugins;
 mod resolver;
 mod rt;
+pub mod system;
 mod vm;
 
 pub use resolver::Project;
