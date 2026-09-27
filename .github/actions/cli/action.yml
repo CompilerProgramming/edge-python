@@ -67,7 +67,7 @@ runs:
       shell: bash
       working-directory: cli
       run: |
-        cargo clippy --all-targets -- -D warnings
+        cargo clippy --locked --all-targets -- -D warnings
         cargo check
 
     - name: Toolchain (release)
@@ -99,7 +99,7 @@ runs:
         case "$TARGET" in
           *linux-musl) export "CC_${TARGET//-/_}=musl-gcc" ;;
         esac
-        cargo build --release --target "$TARGET"
+        cargo build --locked --release --target "$TARGET"
 
     - name: Tar
       if: inputs.mode == 'release'
@@ -133,7 +133,7 @@ runs:
     - name: Build the plugin fixture
       if: inputs.mode == 'test' && (inputs.suite == 'engine' || inputs.suite == '')
       shell: bash
-      run: cargo build --release --target wasm32-unknown-unknown -p slugify-mod
+      run: cargo build --locked --release --target wasm32-unknown-unknown -p slugify-mod
 
     # The web suite drives a real browser, and the runner image is not a contract, so one is installed.
     - name: Install Chromium
@@ -150,9 +150,9 @@ runs:
       working-directory: cli
       run: |
         case "${{ inputs.suite }}" in
-          engine)  cargo test --bin edge --test cli --test run -- --skip builtin_corpora_mirror_the_web_api ;;
-          network) cargo test --test run builtin_corpora_mirror_the_web_api ;;
-          actors)  cargo test --test actor ;;
-          skill)   cargo build && (cd ../skill && SKILL_EDGE="$GITHUB_WORKSPACE/cli/target/debug/edge" cargo test) ;;
-          *)       cargo test ;;
+          engine)  cargo test --locked --bin edge --test cli --test run -- --skip builtin_corpora_mirror_the_web_api ;;
+          network) cargo test --locked --test run builtin_corpora_mirror_the_web_api ;;
+          actors)  cargo test --locked --test actor ;;
+          skill)   cargo build --locked && (cd ../skill && SKILL_EDGE="$GITHUB_WORKSPACE/cli/target/debug/edge" cargo test --locked) ;;
+          *)       cargo test --locked ;;
         esac

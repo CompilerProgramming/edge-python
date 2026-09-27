@@ -108,6 +108,9 @@ export const ensure_read_cache = async () =>
         action_parameters: { cache: true, edge_ttl: { mode: 'respect_origin' } }
       }
     ]
+  }).catch((error) => {
+    if ((error as { status?: number }).status !== 403) throw error
+    throw new Error(`CLOUDFLARE_API_TOKEN cannot write cache rules on "${ZONE}". Add the "Cache Rules" zone permission with edit access.`)
   })
 
 export const ensure_tmp_cdn = () => ensure_bucket(TMP_BUCKET, TMP_CDN_DOMAIN, TMP_EXPIRY_SECONDS)
