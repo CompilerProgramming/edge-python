@@ -3,6 +3,9 @@ import { SystemError } from './error.ts';
 /* The permissions section of the root edge.json, each holder to its entries, `module` or `module:scope`. */
 export type Permissions = Record<string, string[]>;
 
+// The holders beside package names, so no package may be named either.
+export const RESERVED = ['all', 'main'];
+
 // What a scope of each system module may be, a host for net and a clock for time.
 const SCOPES: Record<string, (scope: string) => boolean> = {
     net: (host) => host.length > 0 && !/[\s/]/.test(host),
@@ -42,6 +45,17 @@ export function scopes(permissions: Permissions, pkg: string, module: string): s
         if (scope !== null) held.push(scope);
     }
     return held;
+}
+
+/* What `pkg` asks for in its own main and all that the root does not grant. */
+export function unmet(permissions: Permissions, pkg: string, section: Permissions): string[] {
+    const asks = new Set([...(section['main'] ?? []), ...(section['all'] ?? [])]);
+    return [...asks].filter((ask) => {
+        const [module, scope] = split(ask);
+        const held = scopes(permissions, pkg, module);
+        // A bare module asks only to import it, which any entry for it grants.
+        return held === null || (scope !== null && !held.includes(scope));
+    });
 }
 
 /* Raises PermissionError unless `held` holds `scope`, naming what the package was granted instead. */

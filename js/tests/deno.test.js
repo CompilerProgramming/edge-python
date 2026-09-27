@@ -205,6 +205,16 @@ Deno.test("deno: a grant belongs to the package it names", async () => {
     if (child.out !== "" || child.text !== "True") throw new Error(`unexpected ${JSON.stringify(child)}`);
 });
 
+// A package named main answers to its dir, so it never borrows the grant of main.
+Deno.test("deno: a package named main never takes the grant of main", async () => {
+    const got = await output("named-main", "from clock import now\nprint(now() > 0)", await project({
+        "clock/edge.json": JSON.stringify({ name: "main" }),
+        "clock/main.py": "import time\n\ndef now():\n    return time.now()\n",
+        "edge.json": JSON.stringify({ imports: { clock: "./clock/main.py" }, permissions: { main: ["time:wall"] } }),
+    }));
+    if (!got.out.includes("'clock/' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(got)}`);
+});
+
 // A module the root imports by a ./ path sits in the root's own dir, so it is the program's code.
 Deno.test("deno: a helper the root imports by a ./ path belongs to main", async () => {
     const base = await project({

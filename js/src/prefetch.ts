@@ -7,7 +7,7 @@ import type { Locked } from './specs.ts';
 import type { CompilerExports } from './wasm.ts';
 import type { CacheBackend } from './cache/types.ts';
 import type { Rt } from './rt.ts';
-import { check } from './system/grants.ts';
+import { check, RESERVED } from './system/grants.ts';
 import type { Permissions } from './system/grants.ts';
 import { errMsg, writeBytes } from './util.ts';
 
@@ -239,7 +239,8 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
             catch { retryRoot(); continue; }
             const dir = dirOf(spec);
             manifestDirs.add(dir);
-            if (typeof parsed.name === 'string') names.set(norm(dir), parsed.name);
+            // A package named all or main answers to its dir, so it never takes their grants.
+            if (typeof parsed.name === 'string' && !RESERVED.includes(parsed.name)) names.set(norm(dir), parsed.name);
             // A leftover `system` section merges nothing, the compiler rejects the manifest when a bare import reaches it.
             if (parsed.system !== undefined) { retryRoot(); continue; }
             // Every version it declares becomes the url the lock beside it holds, before a name or the compiler sees one.
