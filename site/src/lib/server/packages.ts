@@ -38,6 +38,9 @@ const DAY = 86_400_000
 /* A name that reads the same in a url, an import and a listing. */
 export const named = (name: string) => name.length <= MAX_NAME && NAME.test(name) && !name.endsWith('-') && !name.includes('--')
 
+// The holders a permissions section names beside packages, so no package may take either name.
+export const RESERVED = new Set(['all', 'main'])
+
 export const versioned = (version: string) => VERSION.test(version)
 
 export const described = (text: unknown) => text == null || (typeof text === 'string' && text.length <= MAX_DESCRIPTION)

@@ -462,6 +462,7 @@ test.describe('publishing', () => {
     const token = await mintToken(request)
 
     const bad: [string, Buffer][] = [
+      ['a name permissions reserve', release('main', '0.1.0')],
       ['an ssh remote', release(naming(), '0.1.0', { repository: 'git@github.com:you/charts.git' })],
       ['a notice past the cap', release(naming(), '0.1.0', {}, { LICENSE: 'x'.repeat(MAX_NOTICE + 1) })],
       ['a description past the cap', release(naming(), '0.1.0', { description: 'x'.repeat(MAX_DESCRIPTION + 1) })],
