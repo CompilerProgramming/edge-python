@@ -1,8 +1,10 @@
 use anyhow::{anyhow, bail, Result};
+use serde_json::{json, Map, Value};
 use std::io::Read;
 use std::path::Path;
 
-use crate::host::{cdn, get, site};
+use crate::asks;
+use crate::host::{cdn, get, site, system};
 use crate::lock::{self, Entry, Lock};
 use crate::manifest::Manifest;
 use crate::ui;
@@ -40,6 +42,7 @@ pub fn add(path: &Path, pkgs: &[String]) -> Result<()> {
         bail!("nothing to add: pass one or more package names");
     }
     // Validate every spec first so a single unknown name aborts before any write or print.
+    let mut releases = Lock::default();
     let resolved: Vec<(&str, String)> = pkgs
         .iter()
         .map(|spec| {
@@ -47,22 +50,39 @@ pub fn add(path: &Path, pkgs: &[String]) -> Result<()> {
             let target = match url {
                 Some(url) => url,
                 // A version is all the manifest keeps, `edge lock` is what turns it into an address.
-                None => release(name, version, false)?.version.unwrap_or_default(),
+                None => {
+                    let entry = release(name, version, false)?;
+                    let version = entry.version.clone().unwrap_or_default();
+                    releases.insert(name, entry);
+                    version
+                }
             };
             Ok::<_, anyhow::Error>((name, target))
         })
         .collect::<Result<_>>()?;
 
+    let added: Map<String, Value> = resolved.iter().map(|(name, target)| (name.to_string(), Value::String(target.clone()))).collect();
+    let packages = asks::packages(path, &added, &releases)?;
     let mut m = Manifest::load(path)?;
     let versions = resolved.iter().any(|(_, target)| lock::version_of(target).is_some());
     for (name, target) in resolved {
         ui::added(name, &target);
         m.imports.insert(name.to_string(), target);
     }
+    let mut asking = false;
+    for package in packages.iter().filter(|p| !p.section.is_null()) {
+        // Against an empty grant every ask comes back unmet, which lists them all.
+        let asked = system::unmet(&json!({}), &package.name, &package.section);
+        if !asked.is_empty() {
+            ui::asks(&package.who(), &asked);
+            asking = true;
+        }
+    }
     m.save(path)?;
-    ui::note(match versions {
-        true => "updated edge.json, run edge lock to resolve it",
-        false => "updated edge.json",
+    ui::note(match (asking, versions) {
+        (true, _) => "updated edge.json, grant what they ask for under permissions, then run edge lock",
+        (false, true) => "updated edge.json, run edge lock to resolve it",
+        (false, false) => "updated edge.json",
     });
     Ok(())
 }
@@ -104,6 +124,8 @@ pub fn lock(path: &Path) -> Result<()> {
         lock.insert(name, entry);
     }
 
+    // Nothing is written until the root grants what every package in the tree asks for.
+    asks::check(path, &lock)?;
     let written = lock.save(path)?;
     ui::note(&format!("wrote {}", written.display()));
     Ok(())

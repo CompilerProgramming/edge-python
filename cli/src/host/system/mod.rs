@@ -57,6 +57,11 @@ pub fn scopes(permissions: &Value, pkg: &str, module: &str) -> Option<Vec<String
     serde_json::from_value(bridge(c"__edge_scopes", json!({ "permissions": permissions, "pkg": pkg, "module": module }), None)).unwrap_or(None)
 }
 
+/* What `pkg` asks for in its own permissions section that the root does not grant it. */
+pub fn unmet(permissions: &Value, pkg: &str, section: &Value) -> Vec<String> {
+    serde_json::from_value(bridge(c"__edge_unmet", json!({ "permissions": permissions, "pkg": pkg, "section": section }), None)).unwrap_or_default()
+}
+
 fn key(run: u64, pkg: &str, module: &str) -> String {
     format!("{run}:{pkg}\u{0}{module}")
 }
@@ -195,6 +200,8 @@ mod tests {
         assert_eq!(scopes(&permissions, "analytics", "net"), None);
         assert_eq!(check(&permissions), None);
         assert_eq!(check(&json!({ "main": ["fs:/"] })).as_deref(), Some("permissions for 'main' name 'fs', which is not a system module (net, time)"));
+        let asks = json!({ "main": ["net", "time:wall"], "all": ["time:zone"], "other": ["net:evil.example"] });
+        assert_eq!(unmet(&permissions, "http", &asks), ["time:zone"]);
     }
 
     #[test]

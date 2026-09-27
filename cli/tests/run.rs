@@ -277,6 +277,37 @@ fn a_declared_version_is_locked_once_and_then_runs() {
     assert_eq!((out.as_str(), code), ("HI EDGE\n", 0), "stderr was: {err}");
 }
 
+/* add shows what a package asks, and lock writes nothing until the root grants it. */
+#[test]
+fn a_package_asks_and_lock_waits_for_the_grant() {
+    let lib = scratch("askdep");
+    std::fs::write(lib.join("edge.json"), "{ \"name\": \"greet\", \"version\": \"0.1.0\", \"permissions\": { \"main\": [\"net:api.example.com\"] } }\n").unwrap();
+    std::fs::write(lib.join("main.py"), "def shout(word):\n    return word.upper()\n").unwrap();
+    let (_, err, code) = run_in(&lib, &["build", "--out", "dep.edge"], None);
+    assert_eq!(code, 0, "build failed: {err}");
+    let port = spawn_registry(std::fs::read(lib.join("dep.edge")).unwrap(), "0.1.0");
+    let site = format!("http://127.0.0.1:{port}");
+    let env = [("EDGE_SITE_BASE", site.as_str()), ("EDGE_CDN_BASE", site.as_str())];
+
+    let app = scratch("askapp");
+    std::fs::write(app.join("main.py"), "from greet import shout\nprint(shout('granted'))\n").unwrap();
+    std::fs::write(app.join("edge.json"), "{}\n").unwrap();
+    let (out, err, code) = run_env(&app, &["add", "greet"], &env, None);
+    assert_eq!(code, 0, "add failed: {err}");
+    assert!(out.contains("greet 0.1.0 asks net:api.example.com"), "add showed the ask: {out}");
+
+    let (_, err, code) = run_env(&app, &["lock"], &env, None);
+    assert!(err.contains("edge.json does not grant what these packages ask for\n  greet 0.1.0   net:api.example.com\n"), "stderr was: {err}");
+    assert_eq!(code, 1);
+    assert!(!app.join("edge.lock").exists(), "a refused lock writes nothing");
+
+    std::fs::write(app.join("edge.json"), "{ \"imports\": { \"greet\": \"0.1.0\" }, \"permissions\": { \"greet\": [\"net:api.example.com\"] } }\n").unwrap();
+    let (_, err, code) = run_env(&app, &["lock"], &env, None);
+    assert_eq!(code, 0, "lock failed: {err}");
+    let (out, err, code) = run_env(&app, &["run", "main.py"], &env, None);
+    assert_eq!((out.as_str(), code), ("GRANTED\n", 0), "stderr was: {err}");
+}
+
 #[derive(serde::Deserialize)]
 struct CorpusCase {
     src: String,

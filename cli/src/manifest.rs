@@ -6,6 +6,9 @@ use std::path::Path;
 // A short description reads as one line in a listing, past this it is a readme.
 const MAX_DESCRIPTION: usize = 60;
 
+// The holders beside package names, so no package may be named either.
+pub const RESERVED: [&str; 2] = ["all", "main"];
+
 /* The manifest as `edge add` edits it, the registry fields, `imports`, and every other key kept as written. */
 #[derive(Default, Serialize, Deserialize)]
 pub struct Manifest {
@@ -51,6 +54,11 @@ impl Manifest {
             && !named(name)
         {
             bail!("edge.json at '{at}': name '{name}' must be lowercase letters, digits and single hyphens, starting with a letter");
+        }
+        if let Some(name) = &self.name
+            && RESERVED.contains(&name.as_str())
+        {
+            bail!("edge.json at '{at}': name '{name}' is reserved for permissions");
         }
         if let Some(version) = &self.version
             && !versioned(version)
@@ -171,6 +179,8 @@ mod tests {
             (r#"{ "name": "1slug" }"#, "must be lowercase"),
             (r#"{ "name": "slug--ify" }"#, "must be lowercase"),
             (r#"{ "name": "slugify-" }"#, "must be lowercase"),
+            (r#"{ "name": "main" }"#, "is reserved for permissions"),
+            (r#"{ "name": "all" }"#, "is reserved for permissions"),
             (r#"{ "version": "1.0" }"#, "must be major.minor.patch"),
             (r#"{ "version": "1.0.0-rc1" }"#, "must be major.minor.patch"),
             (r#"{ "description": "  " }"#, "description is empty"),

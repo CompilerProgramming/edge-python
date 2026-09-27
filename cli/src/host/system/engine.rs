@@ -19,7 +19,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 const WEB: &str = include_str!("web.js");
 // The only JavaScript that can ever load, the system calls `js/dist` carries.
 const SYSTEM_DIR: &str = "src/system/";
-const ENTRY: &str = "import { SYSTEM } from './system/index.js';\nimport { check, scopes } from './system/grants.js';\nglobalThis.__edge = { open: SYSTEM, check, scopes };\n";
+const ENTRY: &str = "import { SYSTEM } from './system/index.js';\nimport { check, scopes, unmet } from './system/grants.js';\nglobalThis.__edge = { open: SYSTEM, check, scopes, unmet };\n";
 
 /* What the thread keeps between calls, the calls waiting to settle and the pipe's requests and sockets. */
 struct State {

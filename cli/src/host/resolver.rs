@@ -121,20 +121,19 @@ impl<'a> Walk<'a> {
             _ => String::new(),
         };
         // An untrusted run holds no permission, whatever its manifest says.
-        let permissions = match self.project.untrusted {
-            true => serde_json::Value::Null,
-            false => self.manifests.get(&root).and_then(|m| m.get("permissions")).cloned().unwrap_or(serde_json::Value::Null),
+        let declared = match self.project.untrusted {
+            true => None,
+            false => self.manifests.get(&root).and_then(|m| m.get("permissions")).cloned(),
         };
+        if let Some(problem) = declared.as_ref().and_then(system::check) {
+            self.failures.push(format!("edge.json at '{root}edge.json': {problem}"));
+            return;
+        }
+        let permissions = declared.unwrap_or_else(|| serde_json::json!({}));
         // A run that reads no clock sleeps on the virtual one, so what it prints never depends on when it runs.
         let clock = permissions.as_object().into_iter().flat_map(|holders| holders.values()).filter_map(|entries| entries.as_array()).flatten().any(|e| e.as_str().is_some_and(|e| e.starts_with("time:")));
         if let Err(e) = self.inst.set_wall_clock(clock) {
             self.failures.push(e);
-        }
-        if !permissions.is_null()
-            && let Some(problem) = system::check(&permissions)
-        {
-            self.failures.push(format!("edge.json at '{root}edge.json': {problem}"));
-            return;
         }
         // SpiderMonkey only starts for a program that imports a name no manifest declares, the only way to reach a system module.
         if self.pending_bare.is_empty() {
@@ -164,7 +163,9 @@ impl<'a> Walk<'a> {
         if dir == root {
             return "main".to_string();
         }
-        self.manifests.get(dir).and_then(|m| m.get("name")).and_then(|n| n.as_str()).map_or_else(|| dir.to_string(), str::to_string)
+        // A package named all or main answers to its dir, so it never takes their grants.
+        let name = self.manifests.get(dir).and_then(|m| m.get("name")).and_then(|n| n.as_str()).filter(|n| !crate::manifest::RESERVED.contains(n));
+        name.map_or_else(|| dir.to_string(), str::to_string)
     }
 
     /* A bare name no manifest declared fails at its import, with the command that declares it. */
@@ -556,7 +557,7 @@ fn fetch_manifest(url: &str) -> Option<Vec<u8>> {
 }
 
 /* Downloads once into the user cache, a `.lock` sidecar pins the digest like the JS host lockfile. */
-fn fetch_cached(url: &str, expected: Option<[u8; 32]>) -> Result<Vec<u8>, String> {
+pub fn fetch_cached(url: &str, expected: Option<[u8; 32]>) -> Result<Vec<u8>, String> {
     let dir = cache_dir()?;
     let ext = url.rsplit('.').next().unwrap_or("bin");
     // Keyed by the address actually fetched, so a staging origin never fills a production entry.

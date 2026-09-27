@@ -213,6 +213,26 @@ fn eval_group_runs_a_bundled_project_over_the_wire() {
     assert_eq!(got, vec!["bundled and run"], "stdout was {got:?}, stderr {err:?}");
 }
 
+/* An eval group holds no permission, even when the bundle it runs grants itself one. */
+#[test]
+fn an_eval_group_holds_no_permission_whatever_its_bundle_grants() {
+    let payload = bundle("main.py", &[
+        ("main.py", "import time\nprint(time.now() > 0)\n"),
+        ("edge.json", "{ \"permissions\": { \"main\": [\"time:wall\"] } }\n"),
+    ]);
+    let scratch = std::env::temp_dir().join(format!("edge-actor-grant-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&scratch);
+    let manifest = scratch.join("actor.yml");
+    std::fs::write(&manifest, "runtime:\n  listen: tcp://127.0.0.1:7812\n  control: tcp://127.0.0.1:9812\ngroups:\n  runners:\n    eval: true\n").unwrap();
+
+    let mut child = edge().args(["actor", manifest.to_str().unwrap()]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let reply = post_eval("127.0.0.1:9812", "/eval/runners", &format!("EDGEPKG:{}", base64_encode(&payload)));
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(reply.contains("'main' imports time, which edge.json does not grant it"), "reply was {reply:?}");
+}
+
 // Polls /stats until it carries `want`, messages settle after the publish returns.
 fn status_until(addr: &str, want: &str) -> String {
     let mut body = String::new();

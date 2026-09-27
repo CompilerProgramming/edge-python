@@ -110,6 +110,10 @@
         const { permissions, pkg, module } = JSON.parse(json);
         return JSON.stringify(globalThis.__edge.scopes(permissions, pkg, module));
     };
+    globalThis.__edge_unmet = (json) => {
+        const { permissions, pkg, section } = JSON.parse(json);
+        return JSON.stringify(globalThis.__edge.unmet(permissions, pkg, section));
+    };
     globalThis.__edge_open = (json) => {
         const { key, module, pkg, held } = JSON.parse(json);
         const system = globalThis.__edge.open[module](pkg, held);

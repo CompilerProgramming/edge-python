@@ -95,9 +95,9 @@ A persistent interpreter across prompts. Imports, definitions and mutations surv
 
 ### edge init, edge add, edge remove, edge lock
 
-`edge init [name]` scaffolds `main.py`, an empty `edge.json` and `index.html`, with `--bare` skipping the HTML. `edge add json network` looks each name up in the registry at its newest version, or at the one `json@0.1.0` names, writes one `imports` entry holding that version alone, and prints it. `edge add foo=<url>` registers a custom URL verbatim, also under `imports`, since each host tells a `.py`, `.wasm` or `.js` module apart by the artifact. `edge add` keeps `extends` and any other key already there. `edge remove` deletes entries. Unknown names abort the whole command before any write, and neither command touches `edge.lock`.
+`edge init [name]` scaffolds `main.py`, an empty `edge.json` and `index.html`, with `--bare` skipping the HTML. `edge add json network` looks each name up in the registry at its newest version, or at the one `json@0.1.0` names, writes one `imports` entry holding that version alone, and prints it with what the package asks the root to grant. `edge add foo=<url>` registers a custom URL verbatim, also under `imports`, since each host tells a `.py`, `.wasm` or `.js` module apart by the artifact. `edge add` keeps `extends` and any other key already there. `edge remove` deletes entries. Unknown names abort the whole command before any write, and neither command touches `edge.lock`.
 
-`edge lock` turns each declared version into the URL and digest of that release and writes `edge.lock` beside the manifest, rebuilding the whole file each time. It is the only command that asks the registry where a name points, so `edge run`, `edge test` and `edge build` read the lock and resolve nothing themselves. A version with no entry, or one whose entry holds another release, fails with `'json' is not locked, run edge lock`.
+`edge lock` turns each declared version into the URL and digest of that release and writes `edge.lock` beside the manifest, rebuilding the whole file each time. It is the only command that asks the registry where a name points, so `edge run`, `edge test` and `edge build` read the lock and resolve nothing themselves. A version with no entry, or one whose entry holds another release, fails with `'json' is not locked, run edge lock`. It also walks every package in the tree, each through its own `edge.lock`, and writes nothing while the root's `permissions` misses what one asks for, a check `edge run`, `edge test` and `edge build` repeat before compiling.
 
 ### edge serve
 
@@ -751,7 +751,7 @@ import time
 }
 ```
 
-Only the root grants. A dependency lists what it needs in its own `edge.json` in the same shape, which grants it nothing, and trust is never inherited, so the root writes out every entry for every package however deep. A package is the nearest `edge.json` above its files. Each call checks its scope again, a call outside the grant raises `PermissionError`, a subclass of `OSError`, and a request or socket belongs to the package that opened it. An `eval` group holds no permission.
+Only the root grants. A dependency lists what it needs in its own `edge.json` in the same shape, which grants it nothing, and trust is never inherited, so the root writes out every entry for every package however deep. `edge lock` stops until the root grants every ask, a package that asks needs a `name`, and no package may be named `all` or `main`. A package is the nearest `edge.json` above its files. Each call checks its scope again, a call outside the grant raises `PermissionError`, a subclass of `OSError`, and a request or socket belongs to the package that opened it. An `eval` group holds no permission.
 
 ### time
 

@@ -9,7 +9,7 @@ mod rt;
 pub mod system;
 mod vm;
 
-pub use resolver::Project;
+pub use resolver::{fetch_cached, Project};
 pub use vm::{Completion, Instance, Status, Vm};
 
 use anyhow::{anyhow, Result};

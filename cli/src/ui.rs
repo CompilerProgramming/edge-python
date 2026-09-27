@@ -10,6 +10,11 @@ pub fn added(name: &str, url: &str) {
     println!("  + {name:<10} {url}");
 }
 
+/// What a package just added asks the root to grant it.
+pub fn asks(who: &str, entries: &[String]) {
+    println!("    {who} asks {}", entries.join(", "));
+}
+
 /// A `- name` line for a removed package.
 pub fn removed(name: &str) {
     println!("  - {name}");

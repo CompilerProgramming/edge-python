@@ -1,4 +1,6 @@
 mod actor;
+/// What every package a project pulls in asks for, held against what its root edge.json grants.
+mod asks;
 mod cmd;
 /// The docs convention a package ships its pages under, checked at build time.
 mod docs;
@@ -176,8 +178,13 @@ fn main() -> Result<()> {
 
     // Every command that compiles the project reads what engine it asks for first, so an old binary says so.
     let compiles = matches!(cli.cmd, Cmd::Run { .. } | Cmd::Test { .. } | Cmd::Build { .. } | Cmd::Repl | Cmd::Actor { .. });
+    let checked = || -> Result<()> {
+        manifest::Manifest::check_engine(&manifest_path)?;
+        // The tree is held to what edge lock checked, so a later edit cannot slip past.
+        asks::check(&manifest_path, &lock::Lock::beside(&manifest_path)?)
+    };
     if compiles
-        && let Err(e) = manifest::Manifest::check_engine(&manifest_path)
+        && let Err(e) = checked()
     {
         ui::error(&e);
         std::process::exit(1);
