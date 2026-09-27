@@ -46,6 +46,11 @@ headless_chrome = { version = "1", features = ["fetch"] }
 # Precompiles compiler.wasm, the std packages and the JavaScript runtime for the build target.
 wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "all-arch", "std", "component-model"] }
 
+# The static musl fix from https://github.com/servo/mozjs/pull/821, dropped once a release carries it.
+[patch.crates-io]
+mozjs = { git = "https://github.com/dylan-sutton-chavez/mozjs", rev = "7f79d396fb3636f69684c42f105e303e27ccd5ae" }
+mozjs_sys = { git = "https://github.com/dylan-sutton-chavez/mozjs", rev = "7f79d396fb3636f69684c42f105e303e27ccd5ae" }
+
 [profile.release]
 opt-level = "z"
 lto = true

@@ -3458,3 +3458,13 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "mozjs"
+version = "0.26.5"
+source = "git+https://github.com/dylan-sutton-chavez/mozjs?rev=7f79d396fb3636f69684c42f105e303e27ccd5ae#7f79d396fb3636f69684c42f105e303e27ccd5ae"
+
+[[patch.unused]]
+name = "mozjs_sys"
+version = "153.3.0-2"
+source = "git+https://github.com/dylan-sutton-chavez/mozjs?rev=7f79d396fb3636f69684c42f105e303e27ccd5ae#7f79d396fb3636f69684c42f105e303e27ccd5ae"
