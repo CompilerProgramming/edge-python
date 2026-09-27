@@ -84,31 +84,23 @@ test('scrolls the highlight with the source', async ({ page }) => {
   expect(view.drift).toBe(0)
 })
 
-test('runs the documented example and reports the elapsed time', async ({ page }) => {
+test('runs the documented example from the keyboard and reports the elapsed time', async ({ page }) => {
+  const input = editor(page)
+  const source = await input.inputValue()
   const expected = await page.locator('[data-playground]').getAttribute('data-expected')
 
-  await page.getByRole('button', { name: 'Run' }).click()
+  await input.press('ControlOrMeta+Enter')
 
   // The output is server rendered, so only the elapsed time tells us the run actually finished.
   await expect(status(page)).toHaveText(/^Output, \d+(\.\d+)?(ms|s)$/, { timeout: 30000 })
   await expect(page.locator('[data-output]')).toHaveText(expected!.trim())
-})
-
-test('runs from the keyboard without touching the source', async ({ page }) => {
-  const input = editor(page)
-  await input.focus()
-  await input.press('ControlOrMeta+Enter')
-
-  const source = await input.inputValue()
-  await expect(status(page)).toHaveText(/^Output, /, { timeout: 30000 })
   await expect(input).toHaveValue(source)
 })
 
-test('reports a mismatch against the documented output', async ({ page }) => {
+test('runs an edit once typing pauses and reports a mismatch against the documented output', async ({ page }) => {
   const input = editor(page)
   await clear(page)
   await input.pressSequentially('print("something else"')
 
-  await page.getByRole('button', { name: 'Run' }).click()
   await expect(status(page)).toHaveText('Output, differs', { timeout: 30000 })
 })

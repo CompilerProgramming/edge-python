@@ -24,7 +24,7 @@ function load(): Promise<Core> {
     ([{ createHighlighterCore }, { createJavaScriptRegexEngine }]) =>
       createHighlighterCore({
         themes: [import('shiki/themes/github-light.mjs'), import('shiki/themes/github-dark.mjs')],
-        langs: [import('shiki/langs/python.mjs')],
+        langs: [import('shiki/langs/python.mjs'), import('shiki/langs/json.mjs')],
         engine: createJavaScriptRegexEngine({ forgiving: true })
       }) as Promise<Core>
   )

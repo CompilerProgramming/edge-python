@@ -1,8 +1,29 @@
-const PAIRS: Record<string, string> = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'" }
-const OPENERS = new Set(Object.keys(PAIRS))
-const CLOSERS = new Set(Object.values(PAIRS))
-const STRING_START = /^([fFrRbBuU]{0,2})("""|'''|"|')/
-const DEDENT = /^\s*(?:elif|else|except|finally|case)\b[^:]*:$/
+type Language = {
+  pairs: Record<string, string>
+  string: RegExp
+  comment?: string
+  opens: RegExp
+  dedent?: RegExp
+}
+
+// What each language decides about typing in it, keyed by the grammar that paints it.
+const LANGUAGES = {
+  python: {
+    pairs: { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'" },
+    string: /^([fFrRbBuU]{0,2})("""|'''|"|')/,
+    comment: '#',
+    opens: /[:\[({][ \t]*$/,
+    dedent: /^\s*(?:elif|else|except|finally|case)\b[^:]*:$/
+  },
+  json: {
+    pairs: { '[': ']', '{': '}', '"': '"' },
+    string: /^()(")/,
+    opens: /[\[{][ \t]*$/
+  }
+} satisfies Record<string, Language>
+
+export type Lang = keyof typeof LANGUAGES
+
 const WHITESPACE = /[ \t]/
 
 const TAB = 2
@@ -40,21 +61,21 @@ const lineRange = (text: string, from: number, to: number) => {
   return { start, end: next === -1 ? text.length : next }
 }
 
-const stringContext = (text: string, caret: number) => {
+const stringContext = (text: string, caret: number, language: Language) => {
   let i = 0
   let quote = ''
   let formatted = false
 
   while (i < caret) {
     if (!quote) {
-      if (text[i] === '#') {
+      if (text[i] === language.comment) {
         const next = text.indexOf('\n', i)
         if (next === -1 || next >= caret) return { inString: false, formatted: false }
         i = next + 1
         continue
       }
 
-      const match = text.slice(i).match(STRING_START)
+      const match = text.slice(i).match(language.string)
       if (match && i + match[0].length <= caret) {
         quote = match[2]!
         formatted = /[fF]/.test(match[1]!)
@@ -97,36 +118,37 @@ const dedentCommon = (text: string) => {
 const unwrapFence = (text: string) => text.match(/^```python\n([\s\S]*?)\n```\s*$/)?.[1] ?? text
 
 export const transitions = {
-  character(text: string, caret: number, key: string): Edit | null {
-    if (CLOSERS.has(key) && text[caret] === key) {
+  character(text: string, caret: number, key: string, language: Language): Edit | null {
+    if (Object.values(language.pairs).includes(key) && text[caret] === key) {
       return { from: caret, to: caret, insert: '', caret: caret + 1 }
     }
 
-    if (!OPENERS.has(key)) return null
+    if (!language.pairs[key]) return null
 
-    const { inString, formatted } = stringContext(text, caret)
+    const { inString, formatted } = stringContext(text, caret, language)
     if (inString && !(formatted && key === '{')) return null
 
-    if ((key === '"' || key === "'") && text[caret - 2] === key && text[caret - 1] === key) {
+    const triple = key.repeat(3)
+    if (language.string.exec(triple)?.[2] === triple && text[caret - 2] === key && text[caret - 1] === key) {
       return { from: caret - 2, to: caret, insert: key.repeat(6), caret: caret + 1 }
     }
 
-    return { from: caret, to: caret, insert: key + PAIRS[key], caret: caret + 1, pair: true }
+    return { from: caret, to: caret, insert: key + language.pairs[key], caret: caret + 1, pair: true }
   },
 
-  wrap(text: string, from: number, to: number, key: string): Edit {
+  wrap(text: string, from: number, to: number, key: string, language: Language): Edit {
     return {
       from,
       to,
-      insert: key + text.slice(from, to) + PAIRS[key],
+      insert: key + text.slice(from, to) + language.pairs[key],
       select: [from + 1, to + 1]
     }
   },
 
-  backspace(text: string, caret: number, pairedAt: number): Edit | null {
+  backspace(text: string, caret: number, pairedAt: number, language: Language): Edit | null {
     if (caret === 0) return null
 
-    if (caret === pairedAt && PAIRS[text[caret - 1]!] === text[caret]) {
+    if (caret === pairedAt && language.pairs[text[caret - 1]!] === text[caret]) {
       return { from: caret - 1, to: caret + 1, insert: '', caret: caret - 1 }
     }
 
@@ -161,15 +183,15 @@ export const transitions = {
     }
   },
 
-  enter(text: string, caret: number): Edit {
+  enter(text: string, caret: number, language: Language): Edit {
     const line = lineAt(text, caret)
     const before = line.body.slice(0, line.column)
     const indent = before.match(/^[ \t]*/)![0]
-    const deeper = /[:\[({][ \t]*$/.test(before) ? ' '.repeat(TAB) : ''
+    const deeper = language.opens.test(before) ? ' '.repeat(TAB) : ''
     const pad = indent + deeper
 
     const opener = before.replace(/[ \t]+$/, '').slice(-1)
-    const split = ['[', '(', '{'].includes(opener) && PAIRS[opener] === text[caret]
+    const split = ['[', '(', '{'].includes(opener) && language.pairs[opener] === text[caret]
 
     return {
       from: caret,
@@ -179,10 +201,10 @@ export const transitions = {
     }
   },
 
-  colon(text: string, caret: number): Edit | null {
+  colon(text: string, caret: number, language: Language): Edit | null {
     const line = lineAt(text, caret)
     const body = line.body.slice(0, line.column) + ':' + line.body.slice(line.column)
-    if (!DEDENT.test(body)) return null
+    if (!language.dedent?.test(body)) return null
 
     const removed = Math.min(indentOf(body), TAB)
 
@@ -236,13 +258,16 @@ export const transitions = {
 export type EditorOptions = {
   input: HTMLTextAreaElement
   view: HTMLElement
-  highlight: (code: string) => string
+  highlight: (code: string, lang: Lang) => string
   onRun: (source: string) => void
   minLines?: number
+  lang?: Lang
 }
 
 export function createEditor(options: EditorOptions) {
-  const { input, view, highlight, onRun, minLines = 1 } = options
+  const { input, view, highlight, onRun, minLines = 1, lang = 'python' } = options
+  const language: Language = LANGUAGES[lang]
+  const closers = new Set(Object.values(language.pairs))
   const listeners = new AbortController()
   const { signal } = listeners
 
@@ -286,7 +311,7 @@ export function createEditor(options: EditorOptions) {
 
   const render = () => {
     const code = input.value
-    view.innerHTML = highlight(code) + (code.endsWith('\n') ? ' ' : '')
+    view.innerHTML = highlight(code, lang) + (code.endsWith('\n') ? ' ' : '')
   }
 
   // setSelectionRange moves the caret without scrolling to it, so past the visible height it walks off-screen silently.
@@ -381,14 +406,14 @@ export function createEditor(options: EditorOptions) {
       from !== to
         ? event.key === 'Tab' && event.shiftKey ? transitions.outdent(text, from, to)
         : event.key === 'Tab' ? transitions.indent(text, from, to)
-        : OPENERS.has(event.key) ? transitions.wrap(text, from, to, event.key)
+        : language.pairs[event.key] ? transitions.wrap(text, from, to, event.key, language)
         : null
-        : event.key === 'Backspace' ? transitions.backspace(text, from, pairedAt)
-        : event.key === 'Enter' ? transitions.enter(text, from)
+        : event.key === 'Backspace' ? transitions.backspace(text, from, pairedAt, language)
+        : event.key === 'Enter' ? transitions.enter(text, from, language)
         : event.key === 'Tab' && event.shiftKey ? transitions.untab(text, from)
         : event.key === 'Tab' ? transitions.tab(text, from)
-        : event.key === ':' ? transitions.colon(text, from)
-        : OPENERS.has(event.key) || CLOSERS.has(event.key) ? transitions.character(text, from, event.key)
+        : event.key === ':' ? transitions.colon(text, from, language)
+        : language.pairs[event.key] || closers.has(event.key) ? transitions.character(text, from, event.key, language)
         : null
 
     if (apply(edit)) event.preventDefault()
