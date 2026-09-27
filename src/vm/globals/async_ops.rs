@@ -347,8 +347,14 @@ impl<'a> VM<'a> {
     }
 
     fn splice_outer_placeholder(&mut self, outer: Val, value: Val) {
-        if let HeapObj::Coroutine(_, _, stack, _, _, _, _) = self.heap.get_mut(outer)
-            && let Some(top) = stack.last_mut() { *top = value; }
+        if let HeapObj::Coroutine(_, _, stack, _, _, sync_frames, _) = self.heap.get_mut(outer) {
+            // Parked inside a plain helper, the placeholder sits on the innermost helper's stack.
+            let top = match sync_frames.last_mut() {
+                Some(frame) => frame.stack_delta.last_mut(),
+                None => stack.last_mut(),
+            };
+            if let Some(top) = top { *top = value; }
+        }
     }
 
     /* Single scheduler driver, picks a Ready coro and steps it. On no Ready, classifies the wait-state and yields to the host (PendingTimer / PendingFrame / PendingHostCall / PendingEvent) or returns Ok when nothing alive remains. */
