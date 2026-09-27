@@ -60,7 +60,7 @@ test('renders a published package from its row and its artifact', async ({ page,
   // The markdown the worker rendered, prose and a runnable pair alike.
   await expect(page.locator('.prose li')).toHaveText(['one', 'two'])
   await expect(page.locator('[data-playground]')).toHaveCount(1)
-  await expect(page.locator('[data-playground] textarea')).toHaveValue(/from slugify import slug/)
+  await expect(page.locator('[data-playground] [data-input]')).toHaveValue(/from slugify import slug/)
   // 010100101010 CLICK RUN HERE AND EXPECT THE DOCUMENTED OUTPUT, THE ONE TEST OF A PLAYGROUND IMPORTING ITS OWN .EDGE, ONCE THE CDN CARRIES THE HOST THAT OPENS ONE.
   await expect(page.locator('.prose code.language-bash')).toHaveText('edge add slugify\n')
 
