@@ -90,7 +90,7 @@ Only what nothing else can supply belongs here. An author and a date come from t
 Resolution follows four rules.
 
 1. **Walk-up.** A bare name is resolved against the nearest `edge.json`, walking up from the importing file's directory. Each manifest is a package boundary, the same pattern as Node's `node_modules` discovery. The chain is capped at 32 hops.
-2. **Hermetic.** The nearest manifest wins. If it does not declare the name and has no `extends`, compilation fails. A deep dependency cannot borrow a parent's aliases.
+2. **Hermetic.** The nearest manifest wins. If it does not declare the name and has no `extends`, the name is a system module the host serves to that package, and compilation fails when the host serves none or refuses it. A deep dependency cannot borrow a parent's aliases.
 3. **Relative to the importer.** A leading-dot spec resolves against the file that contains the import, so a transitively imported `lib/a.py` doing `from .b import g` finds `lib/b.py`.
 4. **Spec shapes.** A spec containing `://` or starting with `/` is used as is. A spec starting with `./` or `../` is joined against the importer's directory. A spec of three numeric parts is a version, which the host replaces with its locked URL before the compiler reads the manifest, so the compiler only ever sees a path or a URL. Any other spec with a `/` is joined against the nearest `edge.json` directory. Anything else is a bare name for the walk-up.
 

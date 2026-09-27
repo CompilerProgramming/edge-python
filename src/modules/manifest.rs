@@ -67,6 +67,11 @@ pub fn dir_of(spec: &str) -> String {
     }
 }
 
+/* The spec a host registers a system module under for the package whose manifest sits in `dir`. */
+pub fn system_spec(name: &str, dir: &str) -> String {
+    s!("system:", str name, "@", str dir)
+}
+
 /* Resolve `target` against `dir`. Absolute forms pass through, `../` pops parents, `./` strips only when base is non-empty. */
 pub fn join_relative(dir: &str, target: &str) -> String {
     if target.contains("://") || target.starts_with('/') || target.starts_with("mt:") {
@@ -216,6 +221,12 @@ mod tests {
         assert_eq!(m.imports, alloc::vec![(String::from("ui"), String::from("./ui.js"))]);
         let err = parse_manifest(br#"{ "imports": {}, "system": { "time": "./time.js" } }"#).err();
         assert_eq!(err.as_deref(), Some("move the system entries into imports"));
+    }
+
+    #[test]
+    fn a_system_module_is_spelled_per_package() {
+        assert_eq!(system_spec("net", ""), "system:net@");
+        assert_eq!(system_spec("time", "https://cdn/pkg/clock/0.1.0/app.edge/"), "system:time@https://cdn/pkg/clock/0.1.0/app.edge/");
     }
 
     #[test]

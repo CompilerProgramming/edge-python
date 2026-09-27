@@ -89,14 +89,16 @@ fn source_name() -> Option<String> {
 fn boot_vm(chunk: Rc<SSAChunk>, limits: Limits) -> VM<'static> {
     // SAFETY the slot's Rc outlives the VM, `Slot::clear_run` drops VMs before chunks.
     let chunk_static: &'static SSAChunk = unsafe { &*Rc::as_ptr(&chunk) };
-    let preempt = with_slot(|s| {
+    let (preempt, wall_clock) = with_slot(|s| {
         s.chunks.push(chunk);
-        s.preempt_every
+        (s.preempt_every, s.wall_clock)
     });
     let mut vm = VM::with_limits(chunk_static, limits);
     vm.print_hook = Some(stream_print);
     vm.send_hook = Some(send_host);
-    vm.set_time_hook(now_ns_host);
+    if wall_clock {
+        vm.set_time_hook(now_ns_host);
+    }
     vm.set_preempt_interval(preempt);
     vm
 }
@@ -507,6 +509,12 @@ use crate::vm::snapshot;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn set_preempt_interval(n: u32) {
     with_slot(|s| s.preempt_every = n as usize);
+}
+
+/* Whether the next boot sleeps on the host's clock, 0 keeps the virtual clock for a run nobody granted time. */
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn set_wall_clock(on: u32) {
+    with_slot(|s| s.wall_clock = on != 0);
 }
 
 /* Serialize the parked run into the out buffer, its length, -1 when none. */

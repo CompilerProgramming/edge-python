@@ -23,6 +23,7 @@ const EXC_PARENTS: &[(&str, &str)] = &[
     ("OverflowError", "ArithmeticError"),
     ("ArithmeticError", "Exception"),
     ("OSError", "Exception"),
+    ("PermissionError", "OSError"),
     ("NameError", "Exception"),
     ("StopIteration", "Exception"),
     ("StopAsyncIteration", "Exception"),

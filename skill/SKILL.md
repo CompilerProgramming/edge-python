@@ -394,7 +394,7 @@ b'\xff\x00' 1
 
 ### Exceptions
 
-The catchable tree under `Exception` is `ArithmeticError` with `OverflowError` and `ZeroDivisionError`, `LookupError` with `IndexError` and `KeyError`, `RuntimeError` with `RecursionError` and `NotImplementedError`, plus `ValueError`, `TypeError`, `AttributeError`, `NameError`, `OSError`, `StopIteration`, `StopAsyncIteration`, `AssertionError`, `MemoryError` and `TimeoutError`. Under `BaseException` sit `SystemExit` and `CancelledError`, which `except Exception` does not catch.
+The catchable tree under `Exception` is `ArithmeticError` with `OverflowError` and `ZeroDivisionError`, `LookupError` with `IndexError` and `KeyError`, `RuntimeError` with `RecursionError` and `NotImplementedError`, `OSError` with `PermissionError`, plus `ValueError`, `TypeError`, `AttributeError`, `NameError`, `StopIteration`, `StopAsyncIteration`, `AssertionError`, `MemoryError` and `TimeoutError`. Under `BaseException` sit `SystemExit` and `CancelledError`, which `except Exception` does not catch.
 
 Handlers name one class, a tuple or nothing, and a bare `except` must come last. `except X as e` binds the exception and `e.args` is its argument tuple. `finally` runs on every exit path including `return`, `break` and `continue`.
 

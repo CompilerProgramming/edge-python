@@ -5,7 +5,7 @@ use crate::value::{HeapPool, Val, VmErr};
 use crate::lexer::{lex, Token, TokenType};
 
 pub mod manifest;
-pub use manifest::{Manifest, parse_manifest, walk_up_dirs, dir_of, join_relative};
+pub use manifest::{Manifest, parse_manifest, walk_up_dirs, dir_of, join_relative, system_spec};
 
 /* Plain fn-pointer alias for hand-written Rust natives, the `Arc<dyn Fn ...>` form lives in `ExternFnPtr` below. Third arg is the kwargs slot, `None` for plain positional calls, `Some(dict_val)` when the caller used `name=value`, natives that don't accept kwargs ignore it. */
 pub type ExternFnPlain = fn(&mut HeapPool, &[Val], Option<Val>) -> Result<Val, VmErr>;

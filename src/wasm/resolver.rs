@@ -1,4 +1,4 @@
-use crate::modules::{NativeBinding, Resolved, Resolver, partition_bindings, parse_manifest, walk_up_dirs, dir_of, join_relative};
+use crate::modules::{NativeBinding, Resolved, Resolver, partition_bindings, parse_manifest, walk_up_dirs, dir_of, join_relative, system_spec};
 use crate::util::hash::FxHashSet;
 use alloc::{boxed::Box, string::{String, ToString}, vec::Vec};
 use crate::s;
@@ -59,6 +59,8 @@ impl WasmHostResolver {
         let mut visited: FxHashSet<String> = FxHashSet::default();
         let mut search_dir = start_dir.to_string();
         let mut hops: u32 = 0;
+        // The nearest manifest names the package the import comes from.
+        let mut package: Option<String> = None;
         loop {
             if hops > MAX_PACKAGES_HOPS {
                 return Err(s!(
@@ -77,8 +79,9 @@ impl WasmHostResolver {
                 }
             }
             let Some((dir, target, ext)) = hit else {
-                return Err(undeclared(name));
+                return self.resolve_system(name, package.as_deref());
             };
+            package.get_or_insert_with(|| dir.clone());
             if let Some(target) = target {
                 let canonical = join_relative(&dir, &target);
                 return self.resolve_canonical(&canonical);
@@ -93,8 +96,19 @@ impl WasmHostResolver {
                 search_dir = next;
                 continue;
             }
+            return self.resolve_system(name, package.as_deref());
+        }
+    }
+
+    /* A name no manifest declares may be a system module, which the host serves or refuses per package. */
+    fn resolve_system(&self, name: &str, package: Option<&str>) -> Result<Resolved, String> {
+        let Some(dir) = package else { return Err(undeclared(name)) };
+        let spec = system_spec(name, dir);
+        let served = refusal(&spec).is_some() || with_runtime(|rt| rt.registry.iter().any(|(s, _)| *s == spec));
+        if !served {
             return Err(undeclared(name));
         }
+        self.resolve_canonical(&spec)
     }
 
     /* Nearest ancestor dir holding an edge.json, probed live like the bare-name walk-up. */

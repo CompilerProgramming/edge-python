@@ -415,10 +415,13 @@ Distinct from the sealed plugin imports above, these are exports on `compiler.wa
 | `state_globals` | `() -> u32` | Write the parked run's module-level bindings as JSON into the out buffer. Returns its byte length. |
 | `state_stack` | `() -> u32` | Write the parked run's coroutines as JSON into the out buffer. Returns its byte length. |
 | `set_preempt_interval` | `(n: u32)` | Yield `PREEMPTED` every `n` loop back-edges so a program with no suspension point stays snapshottable. Defaults to `0`, disabled. Applies to the next `run_start` / `restore_state`. |
+| `set_wall_clock` | `(on: u32)` | `1` sleeps on the host's clock, `0` keeps the virtual clock, for a run no package was granted `time`. Defaults to `1`. Applies to the next `run_start` / `restore_state`. |
 | `vm_create` | `() -> u32` | Add an interpreter slot and return its id. |
 | `vm_select` | `(id: u32) -> i32` | Point every per-run export at slot `id`. Returns `0`, or `1` when no such slot exists. |
 | `vm_drop` | `(id: u32) -> i32` | Free slot `id` and its run. Returns `0`, or `1` when there is nothing to drop. Slot `0` always stays. |
 | `register_module_error` | `(spec_ptr: *const u8, spec_len: u32, msg_ptr: *const u8, msg_len: u32)` | Refuse a spec or bare name. Importing it fails at compile time, at the import, with `msg`. |
+
+A system module registers per package, under `system:<name>@<dir>` where `dir` is the directory of that package's `edge.json`. A bare name no manifest declares resolves there, to the module when the host registered it with `register_native_module`, or to its refusal with `register_module_error`.
 
 `set_limits` and `set_source_name` are read at boot, so a host calls them before `run_start`, the same way it writes the entry dir. The CLI passes each group's `limits` and the script path through them.
 

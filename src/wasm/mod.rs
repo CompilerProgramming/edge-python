@@ -79,6 +79,8 @@ pub(super) struct Slot {
     pub preempt_every: usize,
     /* Caps for the next boot, the sandbox profile until the host sets its own. */
     pub limits: Option<Limits>,
+    /* Whether the next boot sleeps on the host's clock, off keeps the virtual one. */
+    pub wall_clock: bool,
     /* Entry frame name in tracebacks, empty renders the anonymous marker. */
     pub source_name: String,
     /* Entry dir rooting the source's quoted imports. */
@@ -98,6 +100,7 @@ impl Slot {
             input: Vec::new(),
             preempt_every: 0,
             limits: None,
+            wall_clock: true,
             source_name: String::new(),
             entry_dir: String::new(),
             chunks: Vec::new(),

@@ -557,7 +557,7 @@ pub const BUILTIN_TYPES: &[&str] = &[
     "IndexError", "AttributeError", "RuntimeError",
     "ZeroDivisionError", "OverflowError", "MemoryError",
     "RecursionError", "StopIteration", "NotImplementedError",
-    "OSError", "IOError", "ImportError", "ModuleNotFoundError",
+    "OSError", "PermissionError", "IOError", "ImportError", "ModuleNotFoundError",
     "AssertionError", "ArithmeticError", "LookupError",
     "CancelledError", "TimeoutError", "SystemExit",
 ];

@@ -598,6 +598,7 @@
   {"src": "name = 'edge'\nprint(f'{name=}')", "output": ["name='edge'"]},
   {"src": "items = [1, 2, 3]\nprint(f'{len(items)=}')", "output": ["len(items)=3"]},
   {"src": "try:\n    raise ValueError('bad input')\nexcept ValueError as e:\n    print(e)", "output": ["bad input"]},
+  {"src": "try:\n    raise PermissionError('api.example.com')\nexcept OSError as e:\n    print(type(e).__name__, e)", "output": ["PermissionError api.example.com"]},
   {"src": "try:\n    raise TypeError('wrong')\nexcept TypeError as e:\n    print(e.args)", "output": ["('wrong',)"]},
   {"src": "try:\n    raise KeyError('a', 'b')\nexcept KeyError as e:\n    print(e.args)", "output": ["('a', 'b')"]},
   {"src": "try:\n    raise ValueError\nexcept ValueError as e:\n    print('caught')", "output": ["caught"]},
