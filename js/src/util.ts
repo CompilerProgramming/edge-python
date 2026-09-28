@@ -3,12 +3,6 @@ import { SystemError } from './system/error.ts';
 
 export const errMsg = (e: unknown): string => e instanceof Error ? e.message : String(e);
 
-/* A ReferenceError out of a host module names the Web API this runtime lacks. */
-export const hostCallError = (module: string, e: unknown): string => {
-    const m = e instanceof ReferenceError ? /^(\w+) is not defined$/.exec(e.message) : null;
-    return m ? `module '${module}' needs '${m[1]}', missing in this runtime` : errMsg(e);
-};
-
 // The error kinds of abi/src/lib.rs a host raises through, a custom one carries its class in the message.
 export const ERR_TYPE = 0;
 export const ERR_RUNTIME = 2;

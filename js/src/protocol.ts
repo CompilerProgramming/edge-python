@@ -1,6 +1,5 @@
 /* Shapes crossing the main-thread/worker postMessage boundary. Plain data only, no DOM or WebWorker globals, so both the `dom` and `webworker` lib scopes can import it without mixing libs in one program. */
 
-import type { EdgeValue } from './rt.ts';
 import type { Permissions } from './system/grants.ts';
 
 /* Caps a run boots under, a field left out keeps the engine's sandbox value. */
@@ -13,17 +12,11 @@ export interface Limits {
 export interface LoadOpts {
     wasmUrl?: string
     integrity?: boolean
-    loaders?: string[]
     imports?: Record<string, string> | null
     // What the embedder's root manifest grants, beside the imports it declares.
     permissions?: Permissions | null
     version?: string | null
     limits?: Limits | null
-}
-
-export interface MainThreadManifest {
-    name: string
-    exports: string[]
 }
 
 export interface RunOpts {
@@ -41,17 +34,9 @@ export interface ExecResult {
     exitCode?: number
 }
 
-export type HostCallResponse =
-    | { type: 'host-call-response', reqId: number, value: EdgeValue }
-    | { type: 'host-call-response', reqId: number, error: string };
-
-export type LoadSystemResponse =
-    | { type: 'load-system-response', reqId: number, exports: string[] }
-    | { type: 'load-system-response', reqId: number, error: string };
-
 /* Requests main to worker. `reqId` correlates each 'response'/'error' answer, fire-and-forget types omit it. */
 export type WorkerRequest =
-    | { type: 'load', reqId: number, opts: LoadOpts, mainThreadManifests: MainThreadManifest[] }
+    | { type: 'load', reqId: number, opts: LoadOpts }
     | ({ type: 'run', reqId: number } & RunOpts)
     | { type: 'set-preempt-interval', reqId: number, interval: number }
     | { type: 'pause', reqId: number }
@@ -63,14 +48,10 @@ export type WorkerRequest =
     | { type: 'reset', reqId: number }
     | { type: 'clear-cache', reqId: number }
     | { type: 'push-event', reqId?: number, message: string }
-    | { type: 'dispose', reqId?: number }
-    | HostCallResponse
-    | LoadSystemResponse;
+    | { type: 'dispose', reqId?: number };
 
 /* Pushes worker to main. 'response' answers a request's reqId, the rest are unsolicited. */
 export type WorkerMessage =
     | { type: 'line', text: string }
-    | { type: 'host-call', reqId: number, module: string, name: string, args: EdgeValue[] }
-    | { type: 'load-system', reqId: number, url: string, label: string }
     | { type: 'response', reqId?: number, result: unknown }
     | { type: 'error', reqId?: number, message: string };

@@ -1,7 +1,6 @@
 import { decodeBundle } from './bundle.ts';
-import { fetchWithLockfile, requestUrl } from './fetch.ts';
+import { fetchWithLockfile } from './fetch.ts';
 import { loadNativeModule, nativeTable } from './native.ts';
-import type { NativeLoader } from './native.ts';
 import { dirOf, isVersion, joinRel, lockedSpec, parentDir } from './specs.ts';
 import type { Locked } from './specs.ts';
 import type { CompilerExports } from './wasm.ts';
@@ -25,16 +24,12 @@ export interface PrefetchCtx {
     knownMissing: Set<string>
     importsMap?: Record<string, string> | null
     permissions?: Permissions | null
-    mainThreadSpecs?: Set<string>
     entryDir: string
     cache: CacheBackend
     baseUrl?: string | null
     integrityActive: boolean
-    loaders: NativeLoader[]
     compilerExports: CompilerExports
     rt: Rt
-    loadSystem: (url: string, label: string) => Promise<string[]>
-    registerSystem: (spec: string, exportNames: string[], url: string) => void
 }
 
 /* Who a run's modules belong to, each manifest dir to its package, and what the root grants. */
@@ -92,7 +87,7 @@ function scanImports(src: string, exports: CompilerExports): ImportRecord[] {
 
 /* Lazy BFS prefetch, bare names resolve through programmatic imports then edge.json, only used imports get fetched. */
 export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, lockfile: Map<string, string>, ctx: PrefetchCtx): Promise<Packages> {
-    const { fetchedSources, knownMissing, importsMap, mainThreadSpecs, entryDir } = ctx;
+    const { fetchedSources, knownMissing, importsMap, entryDir } = ctx;
     const visited = new Set<string>();
     const queue: string[] = [];
     // Module specs that never registered, thrown together at the end so the user sees a clear cause.
@@ -105,7 +100,7 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
     const pendingRoot: { spec: string, dir: string }[] = []; // { spec, dir }
     const manifestDirs = new Set<string>(); // dirs whose edge.json fetched successfully
     const names = new Map<string, string>(); // manifest dir -> the package name it declares
-    const labels = new Map<string, string>(); // spec -> the name its first importer wrote, host-call errors show it
+    const labels = new Map<string, string>(); // spec -> the name its first importer wrote, refusals show it
     const push = (spec: string, label: string): void => {
         if (!labels.has(spec)) labels.set(spec, label);
         queue.push(spec);
@@ -192,19 +187,12 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
         if (visited.has(spec)) continue;
         visited.add(spec);
 
-        // An inline page module (programmatic object) already registered before prefetch, nothing to fetch.
-        if (mainThreadSpecs && mainThreadSpecs.has(spec)) continue;
-
-        // JavaScript runs on the page, which imports it and returns the export names to register as stubs.
+        // No JavaScript loads besides the host's own, so a .js import fails where it is written.
         const ext = extOf(spec);
         if (ext === '.js' || ext === '.mjs') {
-            if (spec.includes('#sha256-')) { failures.push(`'${spec}' is a JavaScript module, the page imports it and cannot check a #sha256- pin`); continue; }
-            const url = requestUrl(spec, ctx.baseUrl);
-            let exportNames: string[];
-            try { exportNames = await ctx.loadSystem(url, labels.get(spec) ?? spec); }
-            catch (e) { failures.push(`'${spec}' failed to load as a JavaScript module: ${errMsg(e)}`); continue; }
-            ctx.registerSystem(spec, exportNames, url);
-            mainThreadSpecs?.add(spec);
+            const specBytes = TE.encode(spec);
+            const msg = TE.encode(`module '${labels.get(spec) ?? spec}' is JavaScript, ship a .py or a .wasm`);
+            exports.register_module_error(writeBytes(exports, specBytes), specBytes.length, writeBytes(exports, msg), msg.length);
             continue;
         }
 
@@ -267,7 +255,7 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
         if (ext === '.wasm' || (ext !== '.py' && isWasm(bytes))) {
             let names: string[], fns;
             try {
-                ({ names, fns } = await loadNativeModule(spec, bytes, ctx));
+                ({ names, fns } = await loadNativeModule(bytes, ctx.compilerExports));
             } catch (e) {
                 // Bytes fetched but the module won't load (bad ABI / corrupt wasm), a scheme issue would have failed at fetch.
                 failures.push(`'${spec}' failed to load as a wasm module: ${errMsg(e)}`);

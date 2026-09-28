@@ -9,10 +9,9 @@ import { nativeTable, resetNativeTable, waiting } from '../native.ts';
 import { SYSTEM } from '../system/index.ts';
 import { scopes } from '../system/grants.ts';
 import type { Permissions } from '../system/grants.ts';
-import type { NativeLoader } from '../native.ts';
 import type { CompilerExports } from '../wasm.ts';
 import type { CacheBackend } from '../cache/types.ts';
-import type { Limits, LoadOpts, MainThreadManifest, RunOpts, ExecResult } from '../protocol.ts';
+import type { Limits, LoadOpts, RunOpts, ExecResult } from '../protocol.ts';
 import { errMsg, fault, writeBytes } from '../util.ts';
 
 const TE = new TextEncoder();
@@ -39,14 +38,13 @@ let wasmModule: WebAssembly.Module | null = null;
 let compilerExports: CompilerExports | null = null;
 let cache: CacheBackend | null = null;
 let integrityActive = false;
-let loaders: NativeLoader[] = [];
 let importsMap: Record<string, string> | null = null;
 let permissionsMap: Permissions | null = null;
 // Resolves run()'s current `await` when a `PendingEvent` wake-up arrives via `pushEvent`.
 let eventWaiter: (() => void) | null = null;
 // Events `pushEvent`'d before the VM was ready (no `compilerExports`, or no paused run yet). Drained at the next `PENDING_EVENT` yield.
 const pendingEvents: string[] = [];
-/* Deferred host calls captured by env.host_call_native, keyed by the VM-assigned call_id. Drained concurrently in the PENDING_HOST_CALL branch. */
+/* System calls still waiting, captured by env.host_call_native, keyed by the VM-assigned call_id. Drained concurrently in the PENDING_HOST_CALL branch. */
 const pendingHostCalls = new Map<number, DeferredHostCall>();
 // Back-edges between preempt yields, 0 disables.
 let preemptEvery = 0;
@@ -59,15 +57,9 @@ let running = false;
 let pauseAck: ((parked: boolean) => void) | null = null;
 // Resolves at resume() to release a preempt hold.
 let resumeGate: (() => void) | null = null;
-/* (name, args) => Promise<value>. Set by worker.ts (postMessage round-trip) or by a main-thread embedder. */
-let hostCallDelegate: ((module: string, name: string, args: EdgeValue[]) => Promise<EdgeValue>) | null = null;
-/* JavaScript imports load on the page on demand, (url, label) => Promise<exportNames>. */
-let loadSystemDelegate: ((url: string, label: string) => Promise<string[]>) | null = null;
 // Source and missing caches outlive runs, no refetch or edge.json re-probe until `clearCache()`.
 const fetchedSources = new Map<string, Uint8Array>();
 const knownMissing = new Set<string>();
-/* Synthetic native modules (handlers live on main thread). Registered on a fresh instance, incremental runs keep the existing native table. */
-let mainThreadManifests: MainThreadManifest[] = [];
 // The package dirs this instance already serves system modules to, and what they opened.
 const servedDirs = new Set<string>();
 let opened: { close(): void }[] = [];
@@ -79,7 +71,7 @@ const requireExports = (): CompilerExports => {
 };
 
 /* Engine orchestrator, internal to the Worker. Consumers use `createWorker` in `src/index.ts`. Lifecycle is `load` once -> many `run` cycles -> `dispose`, and each run instantiates the compiler fresh with no state leak. */
-export async function load({ wasmUrl, integrity = true, loaders: loaderUrls = [], imports = null, permissions = null, version = null, limits: caps = null }: LoadOpts, manifests: MainThreadManifest[] = []): Promise<{ integrityActive: boolean, loadMs: number }> {
+export async function load({ wasmUrl, integrity = true, imports = null, permissions = null, version = null, limits: caps = null }: LoadOpts): Promise<{ integrityActive: boolean, loadMs: number }> {
     if (!wasmUrl) throw new Error('load: wasmUrl is required');
     const t0 = performance.now();
     importsMap = imports;
@@ -97,12 +89,6 @@ export async function load({ wasmUrl, integrity = true, loaders: loaderUrls = []
             await cache.setVersion(version);
         }
     }
-
-    loaders = await Promise.all(
-        loaderUrls.map(async (url) => (await import(url)).default as NativeLoader)
-    );
-
-    mainThreadManifests = manifests;
 
     // Plain fetch, no SRI. The browser decodes any Content-Encoding (br/gzip) before compileStreaming.
     const response = await fetch(wasmUrl);
@@ -148,30 +134,17 @@ async function execute({ src, payload, start, entryDir = '', baseUrl = null, onL
         exports = await makeInstance(wasmModule, onLine, lockfile, rt);
     }
 
-    const registerSystem = makeRegisterSystem(exports);
-
-    // Inline page modules register now and graft their bare names, incremental runs keep the native table.
-    const { mainThreadSpecs, augmentedImports } = systemImportMap(registerSystem, incremental);
-
     const packages = await bfsPrefetch(src, exports, lockfile, {
         cache,
         baseUrl,
         entryDir,
         knownMissing,
-        importsMap: augmentedImports,
+        importsMap,
         permissions: permissionsMap,
-        mainThreadSpecs,
         integrityActive,
         fetchedSources,
         compilerExports: exports,
         rt,
-        loaders,
-        // The page imports a JavaScript module and returns its export names, prefetch registers the stubs.
-        loadSystem: (url: string, label: string) => {
-            if (!loadSystemDelegate) throw new Error(`'${label}' is JavaScript but no main-thread loader is wired`);
-            return loadSystemDelegate(url, label);
-        },
-        registerSystem,
     });
     serveSystem(exports, packages);
 
@@ -254,39 +227,6 @@ function closeSystem(): void {
     opened = [];
 }
 
-/* Registers a page module under `spec`, each export stub defers its call to the page by `key`. */
-const makeRegisterSystem = (exports: CompilerExports) => (spec: string, exportNames: string[], key = spec): void => {
-    const baseId = nativeTable.length;
-    for (const fnName of exportNames) {
-        nativeTable.push(Object.assign(() => {}, {
-            __edge_kind: 'capability' as const,
-            __edge_main_thread: true,
-            __edge_name: fnName,
-            __edge_module: key,
-        }));
-    }
-    const specBytes = TE.encode(spec);
-    const namesBytes = TE.encode(exportNames.join('\n'));
-    exports.register_native_module(
-        writeBytes(exports, specBytes), specBytes.length,
-        writeBytes(exports, namesBytes), namesBytes.length,
-        baseId,
-    );
-};
-
-/* Inline page modules and the bare names grafted onto them, shared by run() and restoreState(). */
-function systemImportMap(registerSystem: (spec: string, exportNames: string[]) => void, skipRegistration: boolean): { mainThreadSpecs: Set<string>, augmentedImports: Record<string, string> } {
-    const mainThreadSpecs = new Set<string>();
-    const augmentedImports: Record<string, string> = { ...(importsMap || {}) }; // programmatic imports from the embedder (index.ts)
-    for (const m of mainThreadManifests) {
-        const spec = `mt:${m.name}`;
-        if (!skipRegistration) registerSystem(spec, m.exports);
-        mainThreadSpecs.add(spec);
-        augmentedImports[m.name] = spec;
-    }
-    return { mainThreadSpecs, augmentedImports };
-}
-
 /* Fresh instance, resets module registry and native table. */
 async function makeInstance(module: WebAssembly.Module, onLine: ((text: string) => void) | undefined, lockfile: Map<string, string>, rt: Rt): Promise<CompilerExports> {
     const env = makeCompilerEnv({
@@ -341,17 +281,13 @@ async function drive(exports: CompilerExports, rt: Rt, status: number, t0: numbe
             }
         } else if (kind === STATUS_PENDING_HOST_CALL) {
             if (pendingHostCalls.size === 0) throw new Error('PENDING_HOST_CALL without captured args (compiler/host drift)');
-            const delegate = hostCallDelegate;
             const batch = [...pendingHostCalls];
             pendingHostCalls.clear();
             // a failed call raises only in its own coro, so one bad fetch can't sink the batch
             const outcomes = await Promise.allSettled(batch.map(async ([id, call]) => {
                 let rv: number;
                 try {
-                    // A system call is already running, a page module is asked through the delegate.
-                    const asked = call.pending ?? delegate?.(call.module, call.name, call.args);
-                    if (!asked) throw new Error('native deferred but setHostCallDelegate() never set');
-                    const value = await asked;
+                    const value = await call.pending;
                     const plugin = waiting.get(id);
                     rv = plugin ? resumePlugin(exports, rt, id, plugin, { value }) : exports.set_host_result_by_id(id, rt.encodeAny(value as EdgeValue));
                 } catch (e) {
@@ -490,16 +426,6 @@ export function pushEvent(message: unknown): boolean {
     return true;
 }
 
-/* Register the host-call delegate. worker.ts wires a postMessage round-trip, no other consumer is supported. */
-export function setHostCallDelegate(fn: (module: string, name: string, args: EdgeValue[]) => Promise<EdgeValue>): void {
-    hostCallDelegate = fn;
-}
-
-/* Registers the page module loader, (url, label) => Promise<exportNames>, worker.ts wires the round trip. */
-export function setLoadSystemDelegate(fn: (url: string, label: string) => Promise<string[]>): void {
-    loadSystemDelegate = fn;
-}
-
 export function reset(): void {
     if (compilerExports) compilerExports.reset_modules();
     resetNativeTable();
@@ -518,7 +444,6 @@ export function dispose(): void {
     wasmModule = null;
     compilerExports = null;
     cache = null;
-    loaders = [];
     importsMap = null;
     permissionsMap = null;
     fetchedSources.clear();
@@ -527,9 +452,6 @@ export function dispose(): void {
     pendingHostCalls.clear();
     closeSystem();
     servedDirs.clear();
-    hostCallDelegate = null;
-    loadSystemDelegate = null;
-    mainThreadManifests = [];
 }
 
 async function openCache(integrity: boolean): Promise<CacheBackend> {

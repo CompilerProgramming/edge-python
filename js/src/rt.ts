@@ -1,7 +1,7 @@
 /* Recursive value the wire's TLV encoding can carry, mirrors `abi/src/lib.rs` `tag`. ArrayBuffer is accepted on encode, decode never produces one. */
 export type EdgeValue = null | boolean | number | bigint | string | Uint8Array | ArrayBuffer | EdgeValue[] | { [key: string]: EdgeValue };
 
-/* Handle-codec surface returned by `makeRt`, passed to capability loaders so handlers skip NaN-boxing. */
+/* Handle-codec surface returned by `makeRt`, the values a system call takes and answers with. */
 export interface Rt {
     decodeStr(h: number): string
     decodeInt(h: number): number | bigint
@@ -50,7 +50,7 @@ function writeI128(v: DataView, off: number, n: number | bigint): void {
     v.setBigInt64(off + 8, big >> 64n, true);
 }
 
-/* Handle-codec helpers wrapping `host_edge_decode` / `host_edge_encode`, passed to capability loaders so handlers skip NaN-boxing. */
+/* Handle-codec helpers wrapping `host_edge_decode` / `host_edge_encode`, so system calls skip NaN-boxing. */
 export function makeRt(getExports: () => CompilerExports): Rt {
     return {
         decodeStr: (h) => decodeStr(getExports(), h),
@@ -62,7 +62,7 @@ export function makeRt(getExports: () => CompilerExports): Rt {
         encodeBool: (b) => encodeBool(getExports(), b),
         encodeFloat: (f) => encodeFloat(getExports(), f),
         encodeNone: () => getExports().host_edge_encode(TAG_NONE, 0, 0),
-        /* Tag-agnostic, decode any handle to a plain JS value. Used by deferred host-call shuttling. */
+        /* Tag-agnostic, decode any handle to a plain JS value, the arguments of a system call. */
         decodeAny: (h) => decodeAny(getExports(), h),
         /* Tag-agnostic, encode a plain JS value back into a handle. Integer numbers become INT, non-integer become FLOAT. */
         encodeAny: (v) => encodeAny(getExports(), v),

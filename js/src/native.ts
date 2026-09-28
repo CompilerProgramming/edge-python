@@ -1,10 +1,10 @@
 import type { CompilerExports } from './wasm.ts';
 import type { EdgeValue } from './rt.ts';
 
-/* A registered native fn, tagged with dispatch metadata by the loader that produced it. */
+/* A registered native fn, tagged with how `host_call_native` dispatches it. */
 interface NativeFnBase {
     (...args: unknown[]): unknown
-    __edge_kind?: 'wasmpdk' | 'capability' | 'system'
+    __edge_kind?: 'wasmpdk' | 'system'
     __edge_name?: string
 }
 
@@ -17,13 +17,6 @@ export interface WasmPdkFn extends NativeFnBase {
     __edge_resume?: (call: number, answer: number, out: number) => number
 }
 
-export interface CapabilityFn extends NativeFnBase {
-    __edge_kind: 'capability'
-    __edge_name: string
-    __edge_module: string
-    __edge_main_thread?: boolean
-}
-
 /* A system call of one package, answering with a value or a promise the host settles later. */
 export interface SystemFn extends NativeFnBase {
     __edge_kind: 'system'
@@ -32,25 +25,14 @@ export interface SystemFn extends NativeFnBase {
     call: (...args: EdgeValue[]) => unknown
 }
 
-export type NativeFn = WasmPdkFn | CapabilityFn | SystemFn;
+export type NativeFn = WasmPdkFn | SystemFn;
 
 export interface NativeModuleResult {
-    kind: 'wasmpdk' | 'capability'
     names: string[]
     fns: NativeFn[]
 }
 
-export interface NativeLoader {
-    match(module: WebAssembly.Module): boolean
-    load(module: WebAssembly.Module, ctx: NativeLoadCtx): Promise<NativeModuleResult>
-}
-
-export interface NativeLoadCtx {
-    loaders: NativeLoader[]
-    compilerExports: CompilerExports
-}
-
-/* `nativeTable` is indexed by `baseId` from `register_native_module`, entries are wasmpdk fns or JS handlers, dispatched by `host_call_native`. */
+/* `nativeTable` is indexed by `baseId` from `register_native_module`, entries are plugin exports or system calls, dispatched by `host_call_native`. */
 const ABI_VERSION = 1;
 
 export const nativeTable: NativeFn[] = [];
@@ -146,9 +128,9 @@ export function makeGuestEnv(compilerExports: CompilerExports) {
     };
 }
 
-/* Built-in Path A fallback, instantiate guest, walk exports, annotate each fn with its guest's `__edge_alloc` + `__edge_memory`. */
-async function builtinWasmPdkLoader(module: WebAssembly.Module, ctx: NativeLoadCtx): Promise<NativeModuleResult> {
-    const envFactory = makeGuestEnv(ctx.compilerExports);
+/* Instantiates a plugin, walks its exports and annotates each fn with its guest's `__edge_alloc` and `__edge_memory`. */
+async function instantiatePlugin(module: WebAssembly.Module, compilerExports: CompilerExports): Promise<NativeModuleResult> {
+    const envFactory = makeGuestEnv(compilerExports);
     // Forward reference, the getter captures `instance` lazily. It's only read when env functions fire during VM execution, by which point `instance` is bound.
     const env = envFactory({ get memory() { return instance.exports.memory as WebAssembly.Memory; } });
     // WebAssembly.instantiate(Module, ...) returns the Instance directly, not {module, instance}.
@@ -181,29 +163,18 @@ async function builtinWasmPdkLoader(module: WebAssembly.Module, ctx: NativeLoadC
         v.__edge_kind = 'wasmpdk';
         fns.push(v);
     }
-    return { kind: 'wasmpdk', names, fns };
+    return { names, fns };
 }
 
-/* Try custom loaders first, built-in Path A is the implicit fallback. */
-export async function loadNativeModule(_spec: string, bytes: Uint8Array, ctx: NativeLoadCtx): Promise<NativeModuleResult> {
+/* Compiles and instantiates a plugin's bytes, beside the compiler instance its imports bridge to. */
+export async function loadNativeModule(bytes: Uint8Array, compilerExports: CompilerExports): Promise<NativeModuleResult> {
     const module = await WebAssembly.compile(bytes as BufferSource);
-
-    for (const loader of ctx.loaders) {
-        if (loader.match(module)) {
-            const result = await loader.load(module, ctx);
-            // Tag each fn with its dispatch kind so host_call_native picks the right path. A union member write needs the base shape.
-            for (const fn of result.fns) (fn as NativeFnBase).__edge_kind = result.kind;
-            annotateNames(result);
-            return result;
-        }
-    }
-
-    const result = await builtinWasmPdkLoader(module, ctx);
+    const result = await instantiatePlugin(module, compilerExports);
     annotateNames(result);
     return result;
 }
 
-/* Pair each fn with its declared name so deferred dispatch can route by name on the main thread. */
+/* Pairs each fn with its declared name, which the errors about it show. */
 function annotateNames({ names, fns }: NativeModuleResult): void {
     for (let i = 0; i < fns.length; i++) {
         const fn = fns[i], name = names[i];

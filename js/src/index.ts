@@ -1,21 +1,11 @@
-import type { EdgeValue } from './rt.ts';
-import { errMsg, hostCallError } from './util.ts';
-import type { Limits, MainThreadManifest, RunOpts, ExecResult, WorkerRequest, WorkerMessage } from './protocol.ts';
+import type { Limits, RunOpts, ExecResult, WorkerRequest, WorkerMessage } from './protocol.ts';
 import type { Permissions } from './system/grants.ts';
-
-/* A page-side module handed to `mainThreadModules`, either a flat handler map or a factory that receives `{ pushEvent }`. User-supplied handlers have arbitrary signatures, hence `any[]` here. */
-// deno-lint-ignore no-explicit-any
-export type MainThreadHandlers = Record<string, (...args: any[]) => unknown>;
-export type MainThreadModuleFactory = (ctx: { pushEvent: (message: unknown) => void }) => MainThreadHandlers;
-export type MainThreadModuleSource = MainThreadHandlers | MainThreadModuleFactory;
 
 export interface CreateWorkerOpts {
     wasmUrl?: string
-    mainThreadModules?: Record<string, MainThreadModuleSource>
     imports?: Record<string, string>
     permissions?: Permissions
     integrity?: boolean
-    loaders?: string[]
     version?: string | null
     limits?: Limits | null
 }
@@ -68,66 +58,14 @@ export async function createWorker(opts?: CreateWorkerOpts): Promise<WorkerHandl
         tell({ ...payload, reqId });
     });
 
-    /* Fire a string into the running script's `receive()` queue. Defined early so main-thread module factories can capture it. */
+    /* Fire a string into the running script's `receive()` queue. */
     const pushEvent = (message: unknown) => tell({ type: 'push-event', message: String(message) });
 
-    /* Every page module's handlers keyed by its spec and export name, inline ones use their mt spec. */
-    // deno-lint-ignore no-explicit-any
-    const mainThreadHandlers: Record<string, (...args: any[]) => unknown> = {};
-    const labels = new Map<string, string>(); // spec to the name host-call errors show
-    const addHandlers = (spec: string, label: string, handlers: MainThreadHandlers): string[] => {
-        labels.set(spec, label);
-        for (const [fnName, handler] of Object.entries(handlers)) mainThreadHandlers[`${spec}:${fnName}`] = handler;
-        return Object.keys(handlers);
-    };
-    const manifests: MainThreadManifest[] = [];
-    for (const [modName, source] of Object.entries(opts?.mainThreadModules || {})) {
-        const handlers = typeof source === 'function' ? source({ pushEvent }) : source;
-        manifests.push({ name: modName, exports: addHandlers(`mt:${modName}`, modName, handlers) });
-    }
-
-    /* A JavaScript import loads here the first time a run reaches its url, labelled by the importer. */
-    const loaded = new Map<string, string[]>(); // url to export names, memoized across runs
-    const loadModule = async (url: string, label: string): Promise<string[]> => {
-        const memo = loaded.get(url);
-        if (memo) return memo;
-        const mod = await import(url);
-        const factory: MainThreadModuleSource | undefined = mod.default ?? mod[label];
-        if (!factory) throw new Error(`no default export and no '${label}' export`);
-        const exportNames = addHandlers(url, label, typeof factory === 'function' ? factory({ pushEvent }) : factory);
-        loaded.set(url, exportNames);
-        return exportNames;
-    };
-
-    worker.onmessage = async ({ data }: MessageEvent<WorkerMessage>) => {
+    worker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
         switch (data.type) {
             case 'line':
                 if (outputHandler) outputHandler(data.text);
                 return;
-            case 'host-call': {
-                const label = labels.get(data.module) ?? data.module;
-                const handler = mainThreadHandlers[`${data.module}:${data.name}`];
-                if (!handler) {
-                    tell({ type: 'host-call-response', reqId: data.reqId, error: `no main-thread handler for '${label}.${data.name}'` });
-                    return;
-                }
-                try {
-                    const value = await handler(...data.args);
-                    tell({ type: 'host-call-response', reqId: data.reqId, value: value as EdgeValue });
-                } catch (e) {
-                    tell({ type: 'host-call-response', reqId: data.reqId, error: hostCallError(label, e) });
-                }
-                return;
-            }
-            case 'load-system': {
-                try {
-                    const exports = await loadModule(data.url, data.label);
-                    tell({ type: 'load-system-response', reqId: data.reqId, exports });
-                } catch (e) {
-                    tell({ type: 'load-system-response', reqId: data.reqId, error: errMsg(e) });
-                }
-                return;
-            }
             case 'response':
             case 'error': {
                 if (data.reqId == null) {
@@ -154,21 +92,9 @@ export async function createWorker(opts?: CreateWorkerOpts): Promise<WorkerHandl
         pending.clear();
     };
 
-    // Handlers stay on the page, the worker gets only their names, which are structured-cloneable.
-    const { mainThreadModules: _drop, ...workerOpts } = opts || {};
     // Only what the embedder declares reaches the worker, no name resolves on its own.
     const imports: Record<string, string> = { ...(opts?.imports || {}) };
-    const ready = await send<{ integrityActive: boolean, loadMs: number }>({
-        type: 'load',
-        opts: { ...workerOpts, imports },
-        mainThreadManifests: manifests,
-    });
-
-    /* Browser bridges fire `CustomEvent("edge-python-event")` on the global, route the detail to the Worker. Gated on `document` to skip Workers / Deno where this listener has no meaning. */
-    const onBridgeEvent = (e: Event) => {
-        if (typeof (e as CustomEvent).detail === 'string') pushEvent((e as CustomEvent).detail);
-    };
-    if (typeof document !== 'undefined') addEventListener('edge-python-event', onBridgeEvent);
+    const ready = await send<{ integrityActive: boolean, loadMs: number }>({ type: 'load', opts: { ...opts, imports } });
 
     return {
         integrityActive: ready.integrityActive,
@@ -194,7 +120,6 @@ export async function createWorker(opts?: CreateWorkerOpts): Promise<WorkerHandl
         onOutput(handler: (text: string) => void) { outputHandler = handler; },
 
         dispose() {
-            if (typeof document !== 'undefined') removeEventListener('edge-python-event', onBridgeEvent);
             tell({ type: 'dispose' });
             worker.terminate();
             for (const cb of pending.values()) cb.reject(new Error('worker disposed'));

@@ -1,6 +1,2 @@
-export const ui = () => ({
-    render: (text) => { document.querySelector("#app").textContent = text; },
-    upper: (s) => s.toUpperCase(),
-    echo: (v) => v,
-    jstype: (v) => typeof v,
-});
+// A JavaScript module the suite declares, which the host must refuse without fetching it.
+export const upper = (s) => s.toUpperCase();

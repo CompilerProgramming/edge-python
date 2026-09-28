@@ -7,12 +7,11 @@ import { errMsg, fault, writeBytes, ERR_RUNTIME, ERR_TYPE } from './util.ts';
 const TD = new TextDecoder();
 const TE = new TextEncoder();
 
+/* A system call still waiting, the driver awaits it and delivers what it settles with. */
 export interface DeferredHostCall {
     module: string
     name: string
-    args: EdgeValue[]
-    // A system call already running, the driver awaits it rather than asking the page.
-    pending?: Promise<unknown>
+    pending: Promise<unknown>
 }
 
 export interface CompilerEnv {
@@ -41,7 +40,7 @@ export function makeCompilerEnv({ getExports, onLine, fetchedSources, lockfile, 
     return {
         host_print: (ptr, len) => onLine(readStr(ptr, len)),
 
-        /* wasmpdk stages argv in guest memory, capability calls a JS handler directly. */
+        /* A system call gets decoded values, a plugin gets its argv staged in guest memory. */
         host_call_native: (id, call_id, argv_ptr, argc, out_ptr) => {
             const fn = nativeTable[id];
             if (!fn) {
@@ -62,7 +61,7 @@ export function makeCompilerEnv({ getExports, onLine, fetchedSources, lockfile, 
                     const result = fn.call(...handles.map((h) => rt.decodeAny(h)));
                     if (result instanceof Promise) {
                         if (!captureHostCall) throw new Error(`${fn.__edge_module}.${fn.__edge_name} waits, and no driver awaits it`);
-                        captureHostCall(call_id, { module: fn.__edge_module, name: fn.__edge_name, args: [], pending: result });
+                        captureHostCall(call_id, { module: fn.__edge_module, name: fn.__edge_name, pending: result });
                         return 2;
                     }
                     setU32(out_ptr, rt.encodeAny(result as EdgeValue));
@@ -70,34 +69,6 @@ export function makeCompilerEnv({ getExports, onLine, fetchedSources, lockfile, 
                 } catch (e) {
                     const [kind, message] = fault(e);
                     stashError(exports, message, kind);
-                    return 1;
-                }
-            }
-
-            if (fn.__edge_kind === 'capability') {
-                /* Host appends a trailing kwargs handle (0 = no kwargs), JS capabilities don't model kwargs so drop it. */
-                const handles = Array.from(new Uint32Array(exports.memory.buffer, argv_ptr, Math.max(0, argc - 1)));
-                /* Marked main-thread, decode args to JS, defer via captureHostCall. Driver wakes us with set_host_result_by_id. */
-                if (fn.__edge_main_thread) {
-                    if (!captureHostCall || !rt) {
-                        stashError(exports, `native '${fn.__edge_module}.${fn.__edge_name}' marked main-thread but no host-call delegate wired`);
-                        return 1;
-                    }
-                    try {
-                        const args = handles.map((h) => rt.decodeAny(h));
-                        captureHostCall(call_id, { module: fn.__edge_module, name: fn.__edge_name, args });
-                        return 2;
-                    } catch (e) {
-                        stashError(exports, errMsg(e));
-                        return 1;
-                    }
-                }
-                try {
-                    const resultHandle = fn(handles) as number;
-                    new DataView(exports.memory.buffer).setUint32(out_ptr, resultHandle, true);
-                    return 0;
-                } catch (e) {
-                    stashError(exports, errMsg(e));
                     return 1;
                 }
             }

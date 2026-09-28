@@ -50,7 +50,7 @@ export const parentDir = (dir: string): string | null => {
 };
 
 export const joinRel = (base: string, target: string): string => {
-    if (target.includes('://') || target.startsWith('/') || target.startsWith('mt:')) return target;
+    if (target.includes('://') || target.startsWith('/')) return target;
     if (base.includes('://')) return new URL(target, base).toString();
     let b = base, t = target;
     while (t.startsWith('../')) {

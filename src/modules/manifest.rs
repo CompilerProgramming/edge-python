@@ -74,7 +74,7 @@ pub fn system_spec(name: &str, dir: &str) -> String {
 
 /* Resolve `target` against `dir`. Absolute forms pass through, `../` pops parents, `./` strips only when base is non-empty. */
 pub fn join_relative(dir: &str, target: &str) -> String {
-    if target.contains("://") || target.starts_with('/') || target.starts_with("mt:") {
+    if target.contains("://") || target.starts_with('/') {
         return target.to_string();
     }
     let mut base = dir.to_string();

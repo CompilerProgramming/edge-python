@@ -12,8 +12,8 @@ if (!BASE) throw new Error("set EDGE_CDN_BASE (npm run cdn:local in infra)");
 const REPO = new URL("../../", import.meta.url).pathname; // edge-python/ repo root
 const cases = JSON.parse(readFileSync(new URL("./js.json", import.meta.url)));
 const PKG = JSON.parse(readFileSync(new URL("./app/edge.json", import.meta.url)));
-// Negative fixtures, only their own cases import them, abi2 fails to load by design.
-const FIXTURES = new Set(["trap", "abi2"]);
+// Negative fixtures, only their own cases import them, abi2 and ui fail to load by design.
+const FIXTURES = new Set(["trap", "abi2", "ui"]);
 // star-import every project module, official names sit at CDN urls and the cases import them explicitly
 const star = (imports) => Object.entries(imports).flatMap(([k, v]) => (FIXTURES.has(k) || String(v).includes("://") ? [] : `from ${k} import *`));
 const PRELUDE = star(PKG.imports).join("\n") + "\n";
@@ -93,21 +93,19 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
         });
 
         const reqd = (frag) => requested.some((u) => u.includes(frag));
-        // A JavaScript module must not load at boot, only when a run first imports it.
-        if (reqd("/app/ui.js")) throw new Error("ui.js loaded at boot; JavaScript modules must be lazy");
 
         // 010100101010 A PENDING CASE WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES, SKIPPED UNTIL THEN.
         for (const c of cases.filter((c) => !c.pending)) {
             errors.length = 0;
             const got = await page.evaluate(async (src) => {
-                const app = document.querySelector("#app");
-                app.textContent = "";
+                const lines = [];
+                globalThis.el.worker.onOutput((t) => lines.push(t));
                 // A module that fails to load rejects run(), surface it as out for error cases.
                 try {
                     const { out } = await globalThis.el.worker.run(src);
-                    return { app: app.textContent, out };
+                    return { printed: lines.join("").trim(), out };
                 } catch (e) {
-                    return { app: app.textContent, out: String((e && e.message) || e) };
+                    return { printed: lines.join("").trim(), out: String((e && e.message) || e) };
                 }
             }, PRELUDE + c.script);
 
@@ -115,8 +113,8 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
                 if (!got.out.includes(c.error)) {
                     throw new Error(`script:\n${c.script}\n  want error containing: ${JSON.stringify(c.error)}\n  got out: ${JSON.stringify(got.out)}\n  errors: ${errors.join(" | ") || "(none)"}`);
                 }
-            } else if (got.app !== c.expect) {
-                throw new Error(`script:\n${c.script}\n  got:  ${JSON.stringify(got.app)}\n  want: ${JSON.stringify(c.expect)}\n  out: ${JSON.stringify(got.out)}\n  errors: ${errors.join(" | ") || "(none)"}`);
+            } else if (got.printed !== c.expect) {
+                throw new Error(`script:\n${c.script}\n  got:  ${JSON.stringify(got.printed)}\n  want: ${JSON.stringify(c.expect)}\n  out: ${JSON.stringify(got.out)}\n  errors: ${errors.join(" | ") || "(none)"}`);
             }
         }
 
@@ -258,8 +256,8 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
         }, `https://${CDN_HOST}/js/src/index.js`);
         if (!capped.includes("budget exceeded")) throw new Error(`declared op cap: expected a budget error, got ${JSON.stringify(capped)}`);
 
-        // Laziness, only what the corpus imports gets fetched. Declared-but-unused stays untouched.
-        if (!reqd("/app/ui.js")) throw new Error("ui was used but ui.js never loaded");
+        // Laziness, only what the corpus imports gets fetched, and a JavaScript import is refused before any fetch.
+        if (reqd("/app/ui.js")) throw new Error("ui is JavaScript, yet ui.js was fetched");
         // 010100101010 THE CASES THAT IMPORT JSON, TIME AND NETWORK ARE PENDING, RESTORE THESE CHECKS WITH THEM.
         // if (!reqd("json.wasm")) throw new Error("json imported but json.wasm never fetched");
         // if (!reqd("/js/builtins/time")) throw new Error("time imported but its JavaScript module never loaded");

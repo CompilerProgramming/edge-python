@@ -1,35 +1,11 @@
-import { hostCallError } from "../src/util.ts";
-
 /* The engine under Deno with no browser, undeclared names fail and missing Web APIs name themselves. */
 const BASE = Deno.env.get("EDGE_CDN_BASE")?.replace(/\/$/, "");
 if (!BASE) throw new Error("set EDGE_CDN_BASE (npm run cdn:local in infra)");
 const WASM = `${BASE}/compiler.wasm`;
 
 // A fresh engine per test, the query string keeps the module state apart.
-async function boot(name, builtins, extra = {}) {
+async function boot(name, imports = {}) {
     const engine = await import(new URL(`../src/worker/engine.ts?deno=${name}`, import.meta.url).href);
-    const handlers = {};
-    const labels = {};
-    const pushEvent = (m) => engine.pushEvent(m);
-    engine.setLoadSystemDelegate(async (url, label) => {
-        const source = await import(url);
-        const factory = source.default ?? source[label];
-        const h = typeof factory === "function" ? factory({ pushEvent }) : factory;
-        labels[url] = label;
-        for (const [k, v] of Object.entries(h)) handlers[`${url}:${k}`] = v;
-        return Object.keys(h);
-    });
-    engine.setHostCallDelegate(async (url, fn, args) => {
-        const h = handlers[`${url}:${fn}`];
-        if (!h) throw new Error(`no main-thread handler for '${labels[url]}.${fn}'`);
-        try {
-            return await h(...args);
-        } catch (e) {
-            throw new Error(hostCallError(labels[url], e));
-        }
-    });
-    // Each builtin is declared the way edge.json would, by the url of its JavaScript module.
-    const imports = { ...Object.fromEntries(builtins.map((b) => [b, new URL(`../builtins/${b}/src/index.js`, import.meta.url).href])), ...extra };
     await engine.load({ wasmUrl: WASM, integrity: false, imports });
     return engine;
 }
@@ -46,7 +22,7 @@ Deno.test("deno: a packed package imports from inside itself", async () => {
     for (const [path, text] of Object.entries(files)) packed.push(...framed(enc.encode(path)), ...framed(enc.encode(text)));
     const dir = await Deno.makeTempDir();
     await Deno.writeFile(`${dir}/greet.edge`, new Uint8Array(packed));
-    const engine = await boot("package", [], { greet: new URL(`file://${dir}/greet.edge`).href });
+    const engine = await boot("package", { greet: new URL(`file://${dir}/greet.edge`).href });
     const lines = [];
     const { out } = await engine.run({ src: "from greet import hello\nprint(hello('edge'))", baseUrl }, (t) => lines.push(t));
     if (out !== "" || lines.join("").trim() !== "hello edge") throw new Error(`unexpected ${JSON.stringify([out, lines])}`);
@@ -74,7 +50,7 @@ Deno.test("deno: a packed package resolves its own version through the lock it c
     });
     await Deno.writeFile(`${dir}/app.edge`, app);
 
-    const engine = await boot("lock", [], { app: new URL(`file://${dir}/app.edge`).href });
+    const engine = await boot("lock", { app: new URL(`file://${dir}/app.edge`).href });
     const lines = [];
     const { out } = await engine.run({ src: "from app import greet\nprint(greet('edge'))", baseUrl }, (t) => lines.push(t));
     if (out !== "" || lines.join("").trim() !== "HI EDGE") throw new Error(`unexpected ${JSON.stringify([out, lines])}`);
@@ -90,7 +66,7 @@ Deno.test("deno: a version no lock holds names edge lock", async () => {
     const dir = await Deno.makeTempDir();
     await Deno.writeFile(`${dir}/app.edge`, new Uint8Array(out));
 
-    const engine = await boot("unlocked", [], { app: new URL(`file://${dir}/app.edge`).href });
+    const engine = await boot("unlocked", { app: new URL(`file://${dir}/app.edge`).href });
     let failed = "";
     try {
         await engine.run({ src: "import app", baseUrl });
@@ -101,28 +77,14 @@ Deno.test("deno: a version no lock holds names edge lock", async () => {
 });
 
 Deno.test("deno: an undeclared name fails at compile time", async () => {
-    const engine = await boot("undeclared", []);
+    const engine = await boot("undeclared");
     const { out } = await engine.run({ src: "import json\nprint(1)", baseUrl });
     if (!out.includes("module 'json' is not provided by this host and no edge.json declares it")) throw new Error(`unexpected output ${JSON.stringify(out)}`);
 });
 
 // 010100101010 THIS AND THE NEXT TEST LOAD TIME AND DOM, RESTORE THEM ONCE EDGE-PYTHON-STD PUBLISHES THEM TO THE REGISTRY.
-Deno.test.ignore("deno: a declared JavaScript module answers", async () => {
-    const engine = await boot("time", ["time"]);
-    const lines = [];
-    const { out } = await engine.run({ src: "from time import tzname\nprint(tzname())", baseUrl }, (t) => lines.push(t));
-    if (out !== "") throw new Error(`run failed ${JSON.stringify(out)}`);
-    if (lines.join("").trim() === "") throw new Error("tzname printed nothing");
-});
-
-Deno.test.ignore("deno: a browser module loads and names the Web API it lacks", async () => {
-    const engine = await boot("dom", ["dom"]);
-    const { out } = await engine.run({ src: "import dom\ndom.body()", baseUrl });
-    if (!out.includes("module 'dom' needs 'document', missing in this runtime")) throw new Error(`unexpected output ${JSON.stringify(out)}`);
-});
-
 Deno.test("deno: send() names the actor scheduler it lacks", async () => {
-    const engine = await boot("send", []);
+    const engine = await boot("send");
     const lines = [];
     const missing = "send() needs an actor scheduler, missing in this runtime";
     const caught = await engine.run({ src: "try:\n    send('g', 'x')\nexcept RuntimeError as e:\n    print(e)", baseUrl }, (t) => lines.push(t));
@@ -134,7 +96,7 @@ Deno.test("deno: send() names the actor scheduler it lacks", async () => {
 Deno.test("deno: a leftover system section is refused", async () => {
     const dir = await Deno.makeTempDir();
     await Deno.writeTextFile(`${dir}/edge.json`, JSON.stringify({ system: { time: "./time.js" } }));
-    const engine = await boot("legacy", []);
+    const engine = await boot("legacy");
     const { out } = await engine.run({ src: "import time", baseUrl: `file://${dir}/` });
     await Deno.remove(dir, { recursive: true });
     if (!out.includes("edge.json at 'edge.json': move the system entries into imports")) throw new Error(`unexpected output ${JSON.stringify(out)}`);
@@ -147,7 +109,7 @@ Deno.test("deno: a manifest beside a module joins its relative targets once", as
     await Deno.writeTextFile(`${dir}/pkg/edge.json`, JSON.stringify({ imports: { _impl: "./impl.py" } }));
     await Deno.writeTextFile(`${dir}/pkg/entry.py`, "from _impl import value\n");
     await Deno.writeTextFile(`${dir}/pkg/impl.py`, "value = 42\n");
-    const engine = await boot("facade", []);
+    const engine = await boot("facade");
     const lines = [];
     const { out } = await engine.run({ src: "from pkg import value\nprint(value)", baseUrl: `file://${dir}/` }, (t) => lines.push(t));
     await Deno.remove(dir, { recursive: true });
@@ -167,7 +129,7 @@ async function project(files) {
 
 // What a run printed and what it failed with, from a fresh engine.
 async function output(name, src, base) {
-    const engine = await boot(name, []);
+    const engine = await boot(name);
     const lines = [];
     const { out } = await engine.run({ src, baseUrl: base }, (t) => lines.push(t));
     return { out, text: lines.join("").trim() };
@@ -202,6 +164,13 @@ Deno.test("deno: a package named main never takes the grant of main", async () =
         "edge.json": JSON.stringify({ imports: { clock: "./clock/main.py" }, permissions: { main: ["time:wall"] } }),
     }));
     if (!got.out.includes("'clock/' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(got)}`);
+});
+
+// No JavaScript loads besides the host's own, so an import of one fails where it is written.
+Deno.test("deno: a JavaScript import is refused at compile time", async () => {
+    const base = await project({ "edge.json": JSON.stringify({ imports: { charts: "./charts.js" } }), "charts.js": "export const draw = () => 1;\n" });
+    const got = await output("javascript", "from charts import draw", base);
+    if (!got.out.includes("module 'charts' is JavaScript, ship a .py or a .wasm")) throw new Error(`unexpected ${JSON.stringify(got)}`);
 });
 
 // A module the root imports by a ./ path sits in the root's own dir, so it is the program's code.
@@ -286,7 +255,7 @@ Deno.test("deno: the clock stays virtual until a package holds time", async () =
 
 Deno.test("deno: a malformed permissions section stops the run", async () => {
     const base = await project({ "edge.json": JSON.stringify({ permissions: { main: "time:wall" } }) });
-    const engine = await boot("malformed", []);
+    const engine = await boot("malformed");
     let message = "";
     try {
         await engine.run({ src: "print(1)", baseUrl: base });
