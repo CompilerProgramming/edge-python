@@ -40,9 +40,6 @@ impl Manifest {
         }
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let manifest: Self = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        if manifest.rest.contains_key("system") {
-            bail!("edge.json at '{}': move the system entries into imports", path.display());
-        }
         manifest.check(path)?;
         Ok(manifest)
     }

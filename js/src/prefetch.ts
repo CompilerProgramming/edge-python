@@ -222,15 +222,13 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
         }
 
         if (spec.endsWith('edge.json')) {
-            let parsed: { name?: unknown, imports?: Record<string, string>, system?: unknown, extends?: string };
+            let parsed: { name?: unknown, imports?: Record<string, string>, extends?: string };
             try { parsed = JSON.parse(TD.decode(bytes)); }
             catch { retryRoot(); continue; }
             const dir = dirOf(spec);
             manifestDirs.add(dir);
             // A package named all or main answers to its dir, so it never takes their grants.
             if (typeof parsed.name === 'string' && !RESERVED.includes(parsed.name)) names.set(norm(dir), parsed.name);
-            // A leftover `system` section merges nothing, the compiler rejects the manifest when a bare import reaches it.
-            if (parsed.system !== undefined) { retryRoot(); continue; }
             // Every version it declares becomes the url the lock beside it holds, before a name or the compiler sees one.
             let resolved: Record<string, string>;
             try { resolved = await lockImports(parsed.imports || {}, dir); }

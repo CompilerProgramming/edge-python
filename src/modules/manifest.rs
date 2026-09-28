@@ -30,8 +30,6 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, String> {
         p.skip_ws();
         match key.as_str() {
             "imports" => p.read_imports_into(&mut m.imports)?,
-            // One map holds every module, the artifact behind each spec decides how it loads.
-            "system" => return Err(s!("move the system entries into imports")),
             "extends" => m.extends = Some(p.read_string()?),
             _ => p.skip_value()?,
         }
@@ -229,14 +227,6 @@ mod tests {
         assert_eq!(join_relative("lib/", "../../escape.py"), "escape.py"); // clamped at root
         assert_eq!(join_relative("lib/test/", "/std/x.py"), "/std/x.py");
         assert_eq!(join_relative("", "https://x/y.py"), "https://x/y.py");
-    }
-
-    #[test]
-    fn a_system_section_is_refused() {
-        let m = parse_manifest(br#"{ "imports": { "ui": "./ui.js" } }"#).unwrap();
-        assert_eq!(m.imports, alloc::vec![(String::from("ui"), String::from("./ui.js"))]);
-        let err = parse_manifest(br#"{ "imports": {}, "system": { "time": "./time.js" } }"#).err();
-        assert_eq!(err.as_deref(), Some("move the system entries into imports"));
     }
 
     #[test]

@@ -83,8 +83,7 @@ Bare names resolve through `edge.json`, the only manifest name. Every field is o
 - `name`, `version`, `description`, `repository`, `docs`: what a package carries into a registry. The compiler ignores all five, the CLI checks their shape. A name is lowercase letters, digits and single hyphens starting with a letter, never `all` or `main`, which [permissions](/docs/reference/system#permissions) reserve, a version is `major.minor.patch` with digits only, a description is one line of 60 characters at most, a repository is an `https` url a listing can link, and `docs` is a relative directory inside the project.
 
 Only what nothing else can supply belongs here. An author and a date come from the account that publishes, and the license is read from the `LICENSE` file the artifact already carries, so none of the three is a field.
-- A `system` section is rejected with `edge.json at '<path>': move the system entries into imports`, in the compiler and the CLI alike.
-- Other unknown keys are ignored. Values must be strings, lists of strings, or objects of them. Numbers and booleans are rejected. Supported string escapes are `\"`, `\\`, `\/`, `\n`, `\t`, `\r`. `\uXXXX` is not supported, so paste UTF-8 literally.
+- Unknown keys are ignored. Values must be strings, lists of strings, or objects of them. Numbers and booleans are rejected. Supported string escapes are `\"`, `\\`, `\/`, `\n`, `\t`, `\r`. `\uXXXX` is not supported, so paste UTF-8 literally.
 
 Resolution follows four rules.
 

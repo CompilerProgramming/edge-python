@@ -57,13 +57,6 @@
   },
   {
     "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": { "edge.json": "{ \"system\": { \"time\": \"https://example.com/time.py\" } }\n" },
-    "run": ["add", "math"],
-    "fails": ["edge.json at 'edge.json': move the system entries into imports"],
-    "contains": { "edge.json": "\"system\"" }
-  },
-  {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "given": { "edge.json": "{ \"extends\": \"..\", \"imports\": {} }\n" },
     "run": ["add", "math"],
     "contains": { "edge.json": "\"extends\": \"..\"" }
@@ -319,15 +312,6 @@
     },
     "run": ["run", "main.py"],
     "stdout": ["42"]
-  },
-  {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": {
-      "edge.json": "{ \"system\": { \"time\": \"https://example.com/time.py\" } }\n",
-      "main.py": "print(1)\n"
-    },
-    "run": ["run", "main.py"],
-    "fails": ["error: edge.json at 'edge.json': move the system entries into imports"]
   },
   {
     "given": {

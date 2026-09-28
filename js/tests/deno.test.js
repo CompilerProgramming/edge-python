@@ -93,14 +93,6 @@ Deno.test("deno: send() names the actor scheduler it lacks", async () => {
     if (!out.includes(missing) || !out.includes("<input>:1:1")) throw new Error(`unexpected output ${JSON.stringify(out)}`);
 });
 
-Deno.test("deno: a leftover system section is refused", async () => {
-    const dir = await Deno.makeTempDir();
-    await Deno.writeTextFile(`${dir}/edge.json`, JSON.stringify({ system: { time: "./time.js" } }));
-    const engine = await boot("legacy");
-    const { out } = await engine.run({ src: "import time", baseUrl: `file://${dir}/` });
-    await Deno.remove(dir, { recursive: true });
-    if (!out.includes("edge.json at 'edge.json': move the system entries into imports")) throw new Error(`unexpected output ${JSON.stringify(out)}`);
-});
 
 Deno.test("deno: a manifest beside a module joins its relative targets once", async () => {
     const dir = await Deno.makeTempDir();
