@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "edge"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "edge-python"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "dlmalloc",
  "hashbrown 0.17.1",
@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "wasm-abi"
-version = "0.7.1"
+version = "0.7.2"
 
 [[package]]
 name = "wasm-bindgen"
