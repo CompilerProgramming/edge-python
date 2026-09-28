@@ -38,24 +38,6 @@ fn run_env(dir: &Path, args: &[&str], env: &[(&str, &str)], stdin: Option<&str>)
     )
 }
 
-/* A manifest declaring official names the way `edge add` writes them. */
-// 010100101010 THESE URLS STOP RESOLVING ONCE THE CDN DROPS THE STD, POINT THEM AT THE REGISTRY WHEN EDGE-PYTHON-STD PUBLISHES.
-fn manifest(names: &[&str]) -> String {
-    let imports: Vec<String> = names
-        .iter()
-        .map(|name| {
-            let url = match *name {
-                "json" | "re" | "math" | "struct" => format!("https://cdn.edgepython.com/std/{name}.wasm"),
-                "test" => "https://cdn.edgepython.com/std/test.py".to_string(),
-                "dom" => "https://cdn.edgepython.com/js/builtins/dom/entry.py".to_string(),
-                _ => format!("https://cdn.edgepython.com/js/builtins/{name}/index.js"),
-            };
-            format!("\"{name}\": \"{url}\"")
-        })
-        .collect();
-    format!("{{ \"imports\": {{ {} }} }}\n", imports.join(", "))
-}
-
 #[test]
 fn runs_a_script_and_streams_stdout() {
     let dir = scratch("run");
@@ -308,16 +290,7 @@ fn a_package_asks_and_lock_waits_for_the_grant() {
     assert_eq!((out.as_str(), code), ("GRANTED\n", 0), "stderr was: {err}");
 }
 
-#[derive(serde::Deserialize)]
-struct CorpusCase {
-    src: String,
-    #[serde(default)]
-    output: Vec<String>,
-    // An expected error substring, the case passes when the run fails carrying it.
-    error: Option<String>,
-}
-
-/* The network fixture the corpus points at, canned http and the event streams of the shared corpus. */
+/* A loopback fixture the system call tests reach, canned http and event streams. */
 fn spawn_fixture() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let port = listener.local_addr().expect("tcp addr").port();
@@ -442,47 +415,6 @@ fn a_plugin_awaits_a_system_call_and_resumes() {
     std::fs::write(dir.join("main.py"), src).unwrap();
     let (out, err, code) = run_in(&dir, &["run", "main.py"], None);
     assert_eq!((out.as_str(), code), ("200\nOSError\n", 0), "stderr: {err}");
-}
-
-// Runs every shared builtins corpus against the CLI, mirroring the JS host cases.
-#[test]
-#[ignore = "010100101010 THESE CORPORA TEST THE SYSTEM LIBRARIES, RESTORE ONCE EDGE-PYTHON-STD PUBLISHES THEM TO THE REGISTRY"]
-fn builtin_corpora_mirror_the_web_api() {
-    common::cdn_base().unwrap_or_else(|e| panic!("{e}"));
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/cases/builtins");
-    let port = spawn_fixture();
-    let base = format!("http://127.0.0.1:{port}");
-    let mut failures = Vec::new();
-    let mut ran = 0;
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let cap = path.file_stem().unwrap().to_string_lossy().into_owned();
-        let cases: Vec<CorpusCase> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        for (i, case) in cases.iter().enumerate() {
-            ran += 1;
-            let scratch = scratch(&format!("{cap}-corpus"));
-            let src = case.src.replace("{BASE}", &base);
-            // The JS host harness prepends the same star import, bare names resolve to the module exports.
-            std::fs::write(scratch.join("edge.json"), manifest(&[&cap])).unwrap();
-            std::fs::write(scratch.join("main.py"), format!("from {cap} import *\n{src}\n")).unwrap();
-            let (out, err, code) = run_in(&scratch, &["run", "main.py"], None);
-            if let Some(want) = &case.error {
-                if code == 0 || !err.contains(want) {
-                    failures.push(format!("[{cap} #{i}] expected error {want:?}, got code {code} err {err:?}"));
-                }
-                continue;
-            }
-            let want = format!("{}\n", case.output.join("\n"));
-            if code != 0 || out != want {
-                failures.push(format!("[{cap} #{i}] {:?}\n  got  {:?} (code {code}, err {err})\n  want {:?}", case.src, out, want));
-            }
-        }
-    }
-    assert!(ran > 0, "no corpus cases ran, discovery is broken");
-    assert!(failures.is_empty(), "{} corpus case(s) failed:\n{}", failures.len(), failures.join("\n"));
 }
 
 /* A cached url loads with no pin in the spec, then stays pinned to those first bytes. */

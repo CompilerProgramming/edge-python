@@ -82,7 +82,6 @@ Deno.test("deno: an undeclared name fails at compile time", async () => {
     if (!out.includes("module 'json' is not provided by this host and no edge.json declares it")) throw new Error(`unexpected output ${JSON.stringify(out)}`);
 });
 
-// 010100101010 THIS AND THE NEXT TEST LOAD TIME AND DOM, RESTORE THEM ONCE EDGE-PYTHON-STD PUBLISHES THEM TO THE REGISTRY.
 Deno.test("deno: send() names the actor scheduler it lacks", async () => {
     const engine = await boot("send");
     const lines = [];
@@ -92,7 +91,6 @@ Deno.test("deno: send() names the actor scheduler it lacks", async () => {
     const { out } = await engine.run({ src: "send('g', 'x')" });
     if (!out.includes(missing) || !out.includes("<input>:1:1")) throw new Error(`unexpected output ${JSON.stringify(out)}`);
 });
-
 
 Deno.test("deno: a manifest beside a module joins its relative targets once", async () => {
     const dir = await Deno.makeTempDir();

@@ -69,7 +69,7 @@ cargo build --release --target wasm32-unknown-unknown -p slugify-mod
 cargo test -p skill # every executable cell of skill/SKILL.md
 ```
 
-The CLI's builtin corpora sit in `tests/cases/builtins/`, and cases may add `html`, `http_mocks`, and `ws_mocks` fixtures. Its lock cases serve their own registry on loopback through `EDGE_SITE_BASE`, and only `edge add` of an unknown name and `edge publish` with a bad token still reach the production one.
+The CLI's lock cases serve their own registry on loopback through `EDGE_SITE_BASE`, and only `edge add` of an unknown name and `edge publish` with a bad token still reach the production one.
 
 `fuzz/` runs coverage-guided fuzzing of the lexer, parser, and VM on [cargo-afl](https://github.com/rust-fuzz/afl.rs). Campaigns and crash triage are in [Fuzzing](https://edgepython.com/docs/implementation/fuzzing).
 

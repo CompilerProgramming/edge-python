@@ -200,30 +200,6 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
         if (evPause.held !== "") throw new Error(`pause: event-parked run kept running after pause(), saw ${JSON.stringify(evPause.held)}`);
         if (evPause.out !== "a b\n") throw new Error(`pause: after resume expected 'a b\\n', got ${JSON.stringify(evPause.out)}`);
 
-        // 010100101010 THIS BLOCK SLEEPS THROUGH THE TIME PACKAGE, RESTORE IT ONCE EDGE-PYTHON-STD PUBLISHES TIME TO THE REGISTRY.
-        // A pause requested during a sleep parks the run once the timer fires.
-        // const tmPause = await page.evaluate(async () => {
-        //     const worker = globalThis.worker;
-        //     const chunks = [];
-        //     worker.onOutput((c) => chunks.push(c));
-        //     const running = worker.run("import time\nprint('start')\ntime.sleep(0.5)\nprint('end')");
-        //     let sawSleep = false;
-        //     for (let i = 0; i < 100; i++) {
-        //         if (chunks.join("").includes("start")) { sawSleep = true; break; }
-        //         await new Promise((r) => setTimeout(r, 20));
-        //     }
-        //     if (!sawSleep) throw new Error("run never reached sleep()");
-        //     const parked = await worker.pause();
-        //     await new Promise((r) => setTimeout(r, 300));
-        //     const held = chunks.join("");
-        //     worker.resume();
-        //     await running;
-        //     return { parked, held, out: chunks.join("") };
-        // });
-        // if (tmPause.parked !== true) throw new Error("pause: sleep-parked run did not report parked");
-        // if (tmPause.held !== "start\n") throw new Error(`pause: timer-parked run kept running after pause(), saw ${JSON.stringify(tmPause.held)}`);
-        // if (tmPause.out !== "start\nend\n") throw new Error(`pause: after resume expected 'start\\nend\\n', got ${JSON.stringify(tmPause.out)}`);
-
         // A cap the embedder declares reaches the engine, the sandbox default finishes this loop.
         const capped = await page.evaluate(async (host) => {
             const { createWorker } = await import(host);
@@ -236,11 +212,9 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
 
         // Laziness, only what the corpus imports gets fetched, and a JavaScript import is refused before any fetch.
         if (reqd("/app/ui.js")) throw new Error("ui is JavaScript, yet ui.js was fetched");
-        // 010100101010 THE CASES THAT IMPORT JSON, TIME AND NETWORK ARE PENDING, RESTORE THESE CHECKS WITH THEM.
+        // 010100101010 THE CASE THAT IMPORTS JSON IS PENDING, RESTORE THIS CHECK WITH IT.
         // if (!reqd("json.wasm")) throw new Error("json imported but json.wasm never fetched");
-        // if (!reqd("/js/builtins/time")) throw new Error("time imported but its JavaScript module never loaded");
         if (reqd("re.wasm")) throw new Error("re declared but never imported, yet re.wasm was fetched (not lazy)");
-        // if (!reqd("/js/builtins/network")) throw new Error("network imported by the ws cases but never loaded");
 
         if (strays.size) throw new Error([...strays].join("\n"));
     } catch (e) {
