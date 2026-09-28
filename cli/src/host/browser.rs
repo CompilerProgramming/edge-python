@@ -59,8 +59,10 @@ impl Host {
             _ => b"{}".to_vec(),
         };
 
+        // Local imports answer from the directory the manifest sits in, and from nothing outside it.
+        let root = manifest.and_then(Path::parent).filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new(".")).canonicalize()?;
         let pages = Arc::new(Mutex::new(HashMap::new()));
-        let port = serve(pages.clone(), imports)?;
+        let port = serve(pages.clone(), imports, root)?;
         let browser = launch().context("launching headless Chromium")?;
         let tab = browser.new_tab().map_err(|e| anyhow!("opening a tab: {e}"))?;
 
@@ -198,8 +200,8 @@ fn drain(tab: &headless_chrome::Tab) -> Result<i32> {
     }
 }
 
-/* Serves the staged pages, the project's manifest and the embedded host on a loopback port, so nothing but the declared modules leaves the machine. */
-fn serve(pages: Arc<Mutex<HashMap<String, String>>>, imports: Vec<u8>) -> Result<u16> {
+/* Serves the staged pages, the project's manifest, its files and the embedded host on a loopback port, so nothing but the declared modules leaves the machine. */
+fn serve(pages: Arc<Mutex<HashMap<String, String>>>, imports: Vec<u8>, root: PathBuf) -> Result<u16> {
     let server = Server::http("127.0.0.1:0").map_err(|e| anyhow!("starting the local server: {e}"))?;
     let port = server
         .server_addr()
@@ -215,7 +217,7 @@ fn serve(pages: Arc<Mutex<HashMap<String, String>>>, imports: Vec<u8>) -> Result
                 "compiler.wasm" => Some((COMPILER_WASM.to_vec(), content_type(Path::new("compiler.wasm")))),
                 _ => match host_file(&path) {
                     Some(found) => Some(found),
-                    None => staged(&pages, &path),
+                    None => staged(&pages, &path).or_else(|| project_file(&root, &path)),
                 }
             };
             let _ = match served {
@@ -232,6 +234,12 @@ fn serve(pages: Arc<Mutex<HashMap<String, String>>>, imports: Vec<u8>) -> Result
 fn staged(pages: &Arc<Mutex<HashMap<String, String>>>, key: &str) -> Option<(Vec<u8>, &'static str)> {
     let page = pages.lock().ok()?.get(key)?.clone();
     Some((page.into_bytes(), "text/html"))
+}
+
+/* A file of the project itself, so a local import answers, and never one that resolves outside the project. */
+fn project_file(root: &Path, path: &str) -> Option<(Vec<u8>, &'static str)> {
+    let file = root.join(path).canonicalize().ok().filter(|file| file.starts_with(root))?;
+    Some((std::fs::read(&file).ok()?, content_type(&file)))
 }
 
 /* The embedded host answers under the same `js/` prefix a dist and the CDN use, so the harness imports read the same everywhere. */
@@ -285,5 +293,19 @@ mod tests {
 
         assert!(staged(&pages, "0").is_some());
         assert!(staged(&pages, "1").is_none());
+    }
+
+    // A local import answers from inside the project, and a path climbing out of it answers nothing.
+    #[test]
+    fn a_project_file_answers_only_from_inside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("app")).unwrap();
+        std::fs::write(dir.path().join("app/helper.py"), "x = 1").unwrap();
+        std::fs::write(dir.path().join("secret.py"), "key = 2").unwrap();
+        let root = dir.path().join("app").canonicalize().unwrap();
+
+        assert_eq!(project_file(&root, "helper.py").map(|(bytes, _)| bytes), Some(b"x = 1".to_vec()));
+        assert!(project_file(&root, "../secret.py").is_none());
+        assert!(project_file(&root, "missing.py").is_none());
     }
 }

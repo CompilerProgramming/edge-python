@@ -60,7 +60,7 @@ Next, save the program above as `app.py`. Finally, run it.
 
 ```text
 $ edge run app.py
-{"hello":"edge"}
+{"hello": "edge"}
 ```
 
 `edge build` packs the project into a standalone binary, `edge actor` runs it as a pool of cooperative actors, and `createWorker` runs it in a web page. Find out more in the [Quick start](https://edgepython.com/docs/getting-started/quickstart).

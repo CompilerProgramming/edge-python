@@ -619,8 +619,8 @@ print(json.dumps({"bad": object()}, default=str))
 ```
 
 ```txt Output
-{"n":21,"xs":[1,2]}
-{"bad":"<object instance>"}
+{"n": 21, "xs": [1, 2]}
+{"bad": "<object instance>"}
 ```
 
 ### math
