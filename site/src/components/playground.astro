@@ -12,7 +12,7 @@ interface Props {
   minLines?: number
   maxLines?: number
   outputMaxLines?: number
-  // Packages the examples import beyond the official ones, by name to pinned url.
+  // A package page's own package, by name to its pinned url, beside what the example imports.
   imports?: Record<string, string>
 }
 
@@ -45,7 +45,7 @@ const field = 'col-start-1 row-start-1 w-full resize-none overflow-hidden whites
 const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
 ---
 
-<div data-playground data-cdn={env.CDN} data-min={minLines} data-expected={output} data-imports={imports && JSON.stringify(imports)}>
+<div data-playground data-cdn={env.CDN} data-min={minLines} data-expected={output}>
   <div class={panel}>
     <div class:list={[card, 'text-xs']}>
       <div class={pane} style={tall}>
@@ -98,7 +98,7 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
   import { createEditor } from '../lib/playground/editor'
   import { createHighlight } from '../lib/playground/highlight'
   import { applyControls } from '../lib/playground/terminal'
-  import { run, type Phase } from '../lib/playground/runtime'
+  import { run, type Manifest, type Phase } from '../lib/playground/runtime'
 
   const PHASES: Record<Phase, string> = {
     runtime: 'loading runtime…',
@@ -117,12 +117,15 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
 
     if (!input || !view || !output || !status) return
 
+    const manifest = root.querySelector<HTMLElement>('[data-manifest]')!
+    const declared = manifest.querySelector('textarea')!
     const expected = root.dataset.expected ?? ''
     let running = false
     let queued = false
     let timer = 0
-    // The source the output shows, so a pause that changed nothing runs nothing.
-    let ran = input.value
+    // The source and the edge.json the output shows, so a pause that changed neither runs nothing.
+    const snapshot = () => `${input.value}\0${declared.value}`
+    let ran = snapshot()
 
     const highlight = createHighlight(() => {
       editor.refresh()
@@ -133,16 +136,13 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
       input,
       view,
       highlight,
-      onRun: () => start(),
       minLines: Number(root.dataset.min) || 1
     })
 
-    const manifest = root.querySelector<HTMLElement>('[data-manifest]')!
     const json = createEditor({
-      input: manifest.querySelector('textarea')!,
+      input: declared,
       view: manifest.querySelector('code')!,
       highlight,
-      onRun: () => start(),
       minLines: input.rows,
       lang: 'json'
     })
@@ -150,20 +150,28 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
     async function start() {
       if (running) return void (queued = true)
       running = true
-      ran = editor.getCode()
+      ran = snapshot()
 
       let buffer = ''
 
       try {
+        // The example runs under the edge.json its tab holds, edits included.
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(json.getCode())
+        } catch {
+          throw new Error('edge.json is not valid JSON')
+        }
+
         const result = await run(
-          ran,
+          editor.getCode(),
           root.dataset.cdn!,
+          parsed as Manifest,
           (chunk) => {
             buffer += chunk
             output!.textContent = applyControls(buffer).replace(/\n$/, '')
           },
-          (phase) => { status!.textContent = `Output, ${PHASES[phase]}` },
-          JSON.parse(root.dataset.imports ?? '{}')
+          (phase) => { status!.textContent = `Output, ${PHASES[phase]}` }
         )
 
         const text = applyControls(buffer).replace(/\n$/, '')
@@ -186,15 +194,17 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
       }
     }
 
-    // An edit runs once typing pauses, and one landing mid run waits for that run to end.
+    // An edit to either file runs once typing pauses, and one landing mid run waits for that run to end.
     const settle = () => {
-      if (editor.getCode() !== ran) start()
+      if (snapshot() !== ran) start()
     }
 
-    input.addEventListener('input', () => {
-      clearTimeout(timer)
-      timer = window.setTimeout(settle, SETTLE)
-    })
+    for (const field of [input, declared]) {
+      field.addEventListener('input', () => {
+        clearTimeout(timer)
+        timer = window.setTimeout(settle, SETTLE)
+      })
+    }
 
     // Picking a file swaps what the one box shows, and the menu marks the one now open.
     const source = input.parentElement!

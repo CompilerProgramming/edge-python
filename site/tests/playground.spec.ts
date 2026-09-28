@@ -84,17 +84,18 @@ test('scrolls the highlight with the source', async ({ page }) => {
   expect(view.drift).toBe(0)
 })
 
-test('runs the documented example from the keyboard and reports the elapsed time', async ({ page }) => {
+test('runs an edit that keeps the documented output and reports the elapsed time', async ({ page }) => {
   const input = editor(page)
-  const source = await input.inputValue()
   const expected = await page.locator('[data-playground]').getAttribute('data-expected')
 
-  await input.press('ControlOrMeta+Enter')
+  // A trailing comment changes the source and nothing it prints.
+  await input.focus()
+  await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(el.value.length, el.value.length))
+  await input.pressSequentially('  # edited')
 
   // The output is server rendered, so only the elapsed time tells us the run actually finished.
   await expect(status(page)).toHaveText(/^Output, \d+(\.\d+)?(ms|s)$/, { timeout: 30000 })
   await expect(page.locator('[data-output]')).toHaveText(expected!.trim())
-  await expect(input).toHaveValue(source)
 })
 
 test('runs an edit once typing pauses and reports a mismatch against the documented output', async ({ page }) => {

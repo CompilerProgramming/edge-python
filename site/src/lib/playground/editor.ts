@@ -259,13 +259,12 @@ export type EditorOptions = {
   input: HTMLTextAreaElement
   view: HTMLElement
   highlight: (code: string, lang: Lang) => string
-  onRun: (source: string) => void
   minLines?: number
   lang?: Lang
 }
 
 export function createEditor(options: EditorOptions) {
-  const { input, view, highlight, onRun, minLines = 1, lang = 'python' } = options
+  const { input, view, highlight, minLines = 1, lang = 'python' } = options
   const language: Language = LANGUAGES[lang]
   const closers = new Set(Object.values(language.pairs))
   const listeners = new AbortController()
@@ -384,12 +383,6 @@ export function createEditor(options: EditorOptions) {
 
   input.addEventListener('keydown', (event) => {
     if (composing || event.isComposing) return
-
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-      event.preventDefault()
-      onRun(input.value)
-      return
-    }
 
     if (event.ctrlKey || event.metaKey || event.altKey) return
 
