@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::ptr::{self, NonNull};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Mutex;
+use std::thread::JoinHandle;
 
 const WEB: &str = include_str!("web.js");
 // The only JavaScript that can ever load, the system calls `js/dist` carries.
@@ -32,17 +34,38 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
 }
 
+// The thread the exit hook waits on, since the static holding its sender never drops.
+static HANDLE: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+unsafe extern "C" {
+    fn atexit(hook: extern "C" fn()) -> i32;
+}
+
 /* Starts the one thread SpiderMonkey runs on, every system call reaches it through the sender. */
 pub(super) fn spawn() -> Sender<Msg> {
     let (tx, rx) = channel();
     let io = tx.clone();
-    std::thread::Builder::new().name("edge-system".into()).spawn(move || serve(rx, io)).expect("spawning the system call thread");
+    let thread = std::thread::Builder::new().name("edge-system".into()).spawn(move || serve(rx, io)).expect("spawning the system call thread");
+    if let Ok(mut handle) = HANDLE.lock() {
+        *handle = Some(thread);
+    }
     tx
+}
+
+/* Exit destroys SpiderMonkey's statics, which it cannot survive running, so the thread shuts it down first. */
+extern "C" fn stop() {
+    let Some(thread) = HANDLE.lock().ok().and_then(|mut handle| handle.take()) else { return };
+    if let Some(tx) = super::THREAD.get() {
+        let _ = tx.send(Msg::Stop);
+    }
+    let _ = thread.join();
 }
 
 fn serve(inbox: Receiver<Msg>, io: Sender<Msg>) {
     STATE.set(Some(State { io, settles: HashMap::new(), pipe: Pipe::default() }));
     let engine = JSEngine::init().expect("starting SpiderMonkey");
+    // Registered after init, so the hook runs before exit destroys what init created.
+    unsafe { atexit(stop) };
     let mut rt = Runtime::new(engine.handle());
     let runtime = rt.rt();
     let cx = rt.cx();
@@ -67,6 +90,8 @@ fn serve(inbox: Receiver<Msg>, io: Sender<Msg>) {
                 (function, json, Some(reply))
             }
             Msg::Io(json) => (c"__edge_io", json, None),
+            // Leaving drops the runtime and then the engine, which shuts SpiderMonkey down.
+            Msg::Stop => break,
         };
         let answer = unsafe { call(cx, global.handle(), function, &json) };
         unsafe { drain(cx.raw_cx()) };

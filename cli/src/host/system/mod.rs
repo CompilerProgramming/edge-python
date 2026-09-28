@@ -21,6 +21,8 @@ enum Msg {
     Bridge { function: &'static CStr, json: String, reply: Sender<String>, settle: Option<(u64, u32, Sender<Completion>)> },
     // A pipe operation finished, its answer settles the promise waiting on its token.
     Io(String),
+    // The process is exiting, so the thread ends and shuts SpiderMonkey down first.
+    Stop,
 }
 
 static THREAD: OnceLock<Sender<Msg>> = OnceLock::new();
