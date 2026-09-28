@@ -51,8 +51,8 @@ function pdkModule(abi) {
     return Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, ...types, ...funcs, ...memory, ...exports, ...code]);
 }
 
-/* Drives <edge-python> through index.html, boots one tag, then feeds every js.json case to its worker via run(), comparing #app for output cases and the run trace for error cases. Run with deno test --allow-all runtime/tests/runtime.test.js. */
-Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
+/* Boots one worker through createWorker on index.html, then feeds every js.json case to it, comparing what it printed for output cases and the run trace for error cases. */
+Deno.test("js: createWorker runs the corpus in a page", async () => {
     const browser = await chromium.launch();
     const page = await browser.newPage();
     const errors = [];
@@ -83,14 +83,12 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
 
     try {
         // Boot one tag without an entry, then reuse its worker for every case via run().
-        await page.evaluate(async () => {
-            const el = document.createElement("edge-python");
-            el.setAttribute("manifest", "./app/edge.json");
-            const ready = new Promise((res) => el.addEventListener("ready", res, { once: true }));
-            document.body.appendChild(el);
-            await ready;
-            globalThis.el = el;
-        });
+        // The worker reads app/edge.json itself, through the base every run passes.
+        await page.evaluate(async (host) => {
+            const { createWorker } = await import(host);
+            globalThis.worker = await createWorker();
+            globalThis.base = new URL("./app/", location.href).href;
+        }, `https://${CDN_HOST}/js/src/index.js`);
 
         const reqd = (frag) => requested.some((u) => u.includes(frag));
 
@@ -99,10 +97,10 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
             errors.length = 0;
             const got = await page.evaluate(async (src) => {
                 const lines = [];
-                globalThis.el.worker.onOutput((t) => lines.push(t));
+                globalThis.worker.onOutput((t) => lines.push(t));
                 // A module that fails to load rejects run(), surface it as out for error cases.
                 try {
-                    const { out } = await globalThis.el.worker.run(src);
+                    const { out } = await globalThis.worker.run(src, { baseUrl: globalThis.base });
                     return { printed: lines.join("").trim(), out };
                 } catch (e) {
                     return { printed: lines.join("").trim(), out: String((e && e.message) || e) };
@@ -120,32 +118,32 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
 
         // Park on receive(), save, finish, restore, steer differently.
         const snap = await page.evaluate(async () => {
-            const el = globalThis.el;
+            const worker = globalThis.worker;
             const chunks = [];
-            el.worker.onOutput((c) => chunks.push(c));
+            worker.onOutput((c) => chunks.push(c));
             const src = "history = []\nwhile True:\n    m = receive()\n    if m == 'stop':\n        break\n    history.append(m)\nprint('|'.join(history))";
-            const running = el.worker.run(src);
+            const running = worker.run(src);
             const parked = async () => {
                 for (let i = 0; i < 100; i++) {
-                    if (JSON.stringify(await el.worker.stateStack()).includes("waiting_event")) return;
+                    if (JSON.stringify(await worker.stateStack()).includes("waiting_event")) return;
                     await new Promise((r) => setTimeout(r, 20));
                 }
                 throw new Error("run never parked on receive()");
             };
             await parked();
-            el.worker.pushEvent("a");
+            worker.pushEvent("a");
             await parked();
-            const blob = await el.worker.saveState();
-            const globalsAtSave = await el.worker.stateGlobals();
-            el.worker.pushEvent("b");
-            el.worker.pushEvent("stop");
+            const blob = await worker.saveState();
+            const globalsAtSave = await worker.stateGlobals();
+            worker.pushEvent("b");
+            worker.pushEvent("stop");
             await running;
             const first = chunks.join("");
             chunks.length = 0;
-            const resumed = el.worker.restoreState(blob);
-            el.worker.pushEvent("c");
-            el.worker.pushEvent("d");
-            el.worker.pushEvent("stop");
+            const resumed = worker.restoreState(blob);
+            worker.pushEvent("c");
+            worker.pushEvent("d");
+            worker.pushEvent("stop");
             await resumed;
             return { first, second: chunks.join(""), globalsAtSave, blobLen: blob.length };
         });
@@ -156,21 +154,21 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
 
         // A suspension-free program still pauses and snapshots.
         const pre = await page.evaluate(async () => {
-            const el = globalThis.el;
+            const worker = globalThis.worker;
             const chunks = [];
-            el.worker.onOutput((c) => chunks.push(c));
-            await el.worker.setPreemptInterval(50000);
+            worker.onOutput((c) => chunks.push(c));
+            await worker.setPreemptInterval(50000);
             const src = "n = 0\nwhile n < 1000000:\n    n = n + 1\nprint('done', n)";
-            const running = el.worker.run(src);
-            await el.worker.pause();
-            const globalsAtPause = await el.worker.stateGlobals();
-            const blob = await el.worker.saveState();
-            el.worker.resume();
+            const running = worker.run(src);
+            await worker.pause();
+            const globalsAtPause = await worker.stateGlobals();
+            const blob = await worker.saveState();
+            worker.resume();
             await running;
             const first = chunks.join("");
             chunks.length = 0;
-            await el.worker.restoreState(blob);
-            await el.worker.setPreemptInterval(0);
+            await worker.restoreState(blob);
+            await worker.setPreemptInterval(0);
             return { first, second: chunks.join(""), globalsAtPause, blobLen: blob.length };
         });
         if (pre.first !== "done 1000000\n") throw new Error(`preempt: original run produced ${JSON.stringify(pre.first)}`);
@@ -181,23 +179,23 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
 
         // A pause on an event yield holds the program until resume().
         const evPause = await page.evaluate(async () => {
-            const el = globalThis.el;
+            const worker = globalThis.worker;
             const chunks = [];
-            el.worker.onOutput((c) => chunks.push(c));
-            const running = el.worker.run("m = receive()\nn = receive()\nprint(m, n)");
+            worker.onOutput((c) => chunks.push(c));
+            const running = worker.run("m = receive()\nn = receive()\nprint(m, n)");
             let sawPark = false;
             for (let i = 0; i < 100; i++) {
-                if (JSON.stringify(await el.worker.stateStack()).includes("waiting_event")) { sawPark = true; break; }
+                if (JSON.stringify(await worker.stateStack()).includes("waiting_event")) { sawPark = true; break; }
                 await new Promise((r) => setTimeout(r, 20));
             }
             if (!sawPark) throw new Error("run never parked on receive()");
-            const parked = el.worker.pause();
-            el.worker.pushEvent("a");
+            const parked = worker.pause();
+            worker.pushEvent("a");
             if (!await parked) throw new Error("pause() did not park an event-parked run");
-            el.worker.pushEvent("b");
+            worker.pushEvent("b");
             await new Promise((r) => setTimeout(r, 200));
             const held = chunks.join("");
-            el.worker.resume();
+            worker.resume();
             await running;
             return { held, out: chunks.join("") };
         });
@@ -207,44 +205,26 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
         // 010100101010 THIS BLOCK SLEEPS THROUGH THE TIME PACKAGE, RESTORE IT ONCE EDGE-PYTHON-STD PUBLISHES TIME TO THE REGISTRY.
         // A pause requested during a sleep parks the run once the timer fires.
         // const tmPause = await page.evaluate(async () => {
-        //     const el = globalThis.el;
+        //     const worker = globalThis.worker;
         //     const chunks = [];
-        //     el.worker.onOutput((c) => chunks.push(c));
-        //     const running = el.worker.run("import time\nprint('start')\ntime.sleep(0.5)\nprint('end')");
+        //     worker.onOutput((c) => chunks.push(c));
+        //     const running = worker.run("import time\nprint('start')\ntime.sleep(0.5)\nprint('end')");
         //     let sawSleep = false;
         //     for (let i = 0; i < 100; i++) {
         //         if (chunks.join("").includes("start")) { sawSleep = true; break; }
         //         await new Promise((r) => setTimeout(r, 20));
         //     }
         //     if (!sawSleep) throw new Error("run never reached sleep()");
-        //     const parked = await el.worker.pause();
+        //     const parked = await worker.pause();
         //     await new Promise((r) => setTimeout(r, 300));
         //     const held = chunks.join("");
-        //     el.worker.resume();
+        //     worker.resume();
         //     await running;
         //     return { parked, held, out: chunks.join("") };
         // });
         // if (tmPause.parked !== true) throw new Error("pause: sleep-parked run did not report parked");
         // if (tmPause.held !== "start\n") throw new Error(`pause: timer-parked run kept running after pause(), saw ${JSON.stringify(tmPause.held)}`);
         // if (tmPause.out !== "start\nend\n") throw new Error(`pause: after resume expected 'start\\nend\\n', got ${JSON.stringify(tmPause.out)}`);
-
-        // Documented tag path, fresh element via proxy.
-        const tagged = await page.evaluate(async () => {
-            const el = document.createElement("edge-python");
-            const ready = new Promise((res) => el.addEventListener("ready", res, { once: true }));
-            document.body.appendChild(el);
-            await ready;
-            await el.worker.setPreemptInterval(50000);
-            const running = el.worker.run("n = 0\nwhile n < 1000000:\n    n = n + 1\nprint('done', n)");
-            await el.worker.pause();
-            const blobLen = (await el.worker.saveState()).length;
-            el.worker.resume();
-            const { out } = await running;
-            el.worker.dispose();
-            return { blobLen, out };
-        });
-        if (!(tagged.blobLen > 100)) throw new Error(`preempt via element: implausible blob length ${tagged.blobLen}`);
-        if (tagged.out !== "") throw new Error(`preempt via element: run reported ${JSON.stringify(tagged.out)}`);
 
         // A cap the embedder declares reaches the engine, the sandbox default finishes this loop.
         const capped = await page.evaluate(async (host) => {
@@ -266,7 +246,7 @@ Deno.test("js: <edge-python> runs the corpus through index.html", async () => {
 
         // The IndexedDB cache survives a versionless boot and is wiped only by a version mismatch.
         const idb = await page.evaluate(async (host) => {
-            if (!globalThis.el.worker.integrityActive) return null;
+            if (!globalThis.worker.integrityActive) return null;
             const readStore = () => new Promise((res, rej) => {
                 const req = indexedDB.open("edgepython", 1);
                 req.onsuccess = () => {

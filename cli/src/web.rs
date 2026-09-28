@@ -17,6 +17,6 @@ mod tests {
     fn the_embedded_host_is_keyed_by_its_cdn_path() {
         assert!(!JS_HOST.is_empty());
         assert!(JS_HOST.iter().all(|(key, _)| key.starts_with("src/") && key.ends_with(".js") && !key.contains('\\')));
-        assert!(JS_HOST.iter().any(|(key, _)| *key == "src/element.js"));
+        assert!(JS_HOST.iter().any(|(key, _)| *key == "src/index.js"));
     }
 }

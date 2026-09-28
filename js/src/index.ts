@@ -92,9 +92,9 @@ export async function createWorker(opts?: CreateWorkerOpts): Promise<WorkerHandl
         pending.clear();
     };
 
-    // Only what the embedder declares reaches the worker, no name resolves on its own.
-    const imports: Record<string, string> = { ...(opts?.imports || {}) };
-    const ready = await send<{ integrityActive: boolean, loadMs: number }>({ type: 'load', opts: { ...opts, imports } });
+    // The compiler sits beside the host wherever it ships, the CDN, a dist and the CLI's server.
+    const wasmUrl = opts?.wasmUrl ?? new URL('../../compiler.wasm', import.meta.url).href;
+    const ready = await send<{ integrityActive: boolean, loadMs: number }>({ type: 'load', opts: { ...opts, wasmUrl } });
 
     return {
         integrityActive: ready.integrityActive,

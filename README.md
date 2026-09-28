@@ -63,7 +63,7 @@ $ edge run app.py
 {"hello":"edge"}
 ```
 
-`edge build` packs the project into a standalone binary, `edge actor` runs it as a pool of cooperative actors, and the `<edge-python>` element runs it in a web page. Find out more in the [Quick start](https://edgepython.com/docs/getting-started/quickstart).
+`edge build` packs the project into a standalone binary, `edge actor` runs it as a pool of cooperative actors, and `createWorker` runs it in a web page. Find out more in the [Quick start](https://edgepython.com/docs/getting-started/quickstart).
 
 ## Repository
 

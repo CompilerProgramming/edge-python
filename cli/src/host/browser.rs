@@ -273,9 +273,9 @@ mod tests {
 
     #[test]
     fn the_host_answers_under_the_js_prefix() {
-        assert!(host_file("js/src/element.js").is_some());
+        assert!(host_file("js/src/index.js").is_some());
         assert!(host_file("js/src/nope.js").is_none());
-        assert!(host_file("src/element.js").is_none());
+        assert!(host_file("src/index.js").is_none());
     }
 
     // Two sources must never share a url, or the browser serves the first page to the second run.

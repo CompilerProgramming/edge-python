@@ -124,35 +124,30 @@ Pick `n` for how fast you need a pause to land. Each yield is one event-loop rou
 
 ## Save when the tab closes
 
-The `<edge-python>` element spins up the worker and exposes it on `el.worker`. Everything else is calls on that.
+`createWorker` spins up the worker, and everything else is calls on it.
 
 ```html
-<edge-python></edge-python>
-
 <script type="module">
-  import "https://cdn.edgepython.com/js/src/element.js";
+  import { createWorker } from "https://cdn.edgepython.com/js/src/index.js";
 
-  const el = document.querySelector("edge-python");
+  const worker = await createWorker();
   const store = await caches.open("edge-python");
   const KEY = "/session";
 
-  el.addEventListener("ready", async () => {
-    const worker = el.worker;
-    await worker.setPreemptInterval(50000);
-    const hit = await store.match(KEY);
-    hit
-      ? worker.restoreState(new Uint8Array(await hit.arrayBuffer()))
-      : worker.run(await fetch("./counter.py").then((r) => r.text()));
+  await worker.setPreemptInterval(50000);
+  const hit = await store.match(KEY);
+  hit
+    ? worker.restoreState(new Uint8Array(await hit.arrayBuffer()))
+    : worker.run(await fetch("./counter.py").then((r) => r.text()));
 
-    const checkpoint = async () => {
-      if (!await worker.pause()) return; // the run already finished
-      await store.put(KEY, new Response(await worker.saveState()));
-      worker.resume();
-    };
+  const checkpoint = async () => {
+    if (!await worker.pause()) return; // the run already finished
+    await store.put(KEY, new Response(await worker.saveState()));
+    worker.resume();
+  };
 
-    setInterval(checkpoint, 5000);
-    addEventListener("visibilitychange", () => document.hidden && checkpoint());
-  });
+  setInterval(checkpoint, 5000);
+  addEventListener("visibilitychange", () => document.hidden && checkpoint());
 </script>
 ```
 

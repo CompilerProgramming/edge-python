@@ -85,7 +85,7 @@ Bare names resolve through `edge.json`, the only manifest name. Every field is o
 - `name`, `version`, `description`, `repository`, `docs`: what a package carries into a registry. The compiler ignores all five, the CLI checks their shape. A name is lowercase letters, digits and single hyphens starting with a letter, never `all` or `main`, which [permissions](/docs/reference/system#permissions) reserve, a version is `major.minor.patch` with digits only, a description is one line of 60 characters at most, a repository is an `https` url a listing can link, and `docs` is a relative directory inside the project.
 
 Only what nothing else can supply belongs here. An author and a date come from the account that publishes, and the license is read from the `LICENSE` file the artifact already carries, so none of the three is a field.
-- A `system` section is rejected with `edge.json at '<path>': move the system entries into imports`, in the compiler, the CLI, and the `<edge-python>` element alike.
+- A `system` section is rejected with `edge.json at '<path>': move the system entries into imports`, in the compiler and the CLI alike.
 - Other unknown keys are ignored. Values must be strings, lists of strings, or objects of them. Numbers and booleans are rejected. Supported string escapes are `\"`, `\\`, `\/`, `\n`, `\t`, `\r`. `\uXXXX` is not supported, so paste UTF-8 literally.
 
 Resolution follows four rules.
@@ -158,24 +158,22 @@ error: module 'json' has no export 'badname'
 
 The first diagnostic is the same for a typo and for a package you forgot to declare. The CLI adds a `help:` line pointing at `edge add <name>` or at a relative import. It also covers modules Edge Python does not ship, like `os` or `sys`. They parse for syntactic compatibility and are then rejected here, before any code runs.
 
-## The `<edge-python>` element
+## In a page
 
-The declarative alternative to `createWorker`. Include the script, drop a tag, and a `.py` file runs.
+A page runs a program with `createWorker`, which boots the engine in a Web Worker. The page draws itself, the program answers through what it prints and what `run` resolves with, and `pushEvent` wakes a `receive()`.
 
 ```html
-<script type="module" src="https://cdn.edgepython.com/js/src/element.js"></script>
-<edge-python entry="./app/main.py" manifest="./app/edge.json"></edge-python>
+<script type="module">
+  import { createWorker } from "https://cdn.edgepython.com/js/src/index.js";
+
+  const worker = await createWorker();
+  worker.onOutput((text) => console.log(text));
+  const src = await fetch("./app/main.py").then((r) => r.text());
+  await worker.run(src, { baseUrl: new URL("./app/", location.href).href });
+</script>
 ```
 
-Importing `element.js` auto-registers the tag. On connect the element reads its attributes and the manifest, spawns the worker, runs `entry` if present, then fires a `ready` event. After `ready` it publishes the worker on `el.worker`, so the full programmatic API drives the same VM. Modules load lazily, only what a run actually imports is fetched. Without `manifest` the element runs with no modules at all, every import fails.
-
-| Attribute | Description |
-|---|---|
-| `entry` | Optional URL of a `.py` file to run on connect, resolved against the document. Omit it to drive the worker with `el.worker.run()`. |
-| `manifest` | The `edge.json` URL, required for any import. Its `imports` map drives the worker-side modules. |
-| `wasm` | Optional absolute `compiler.wasm` URL, for self-hosting or pinning a build. Defaults to the CDN. |
-
-The element needs a browser, and `createWorker` without Web Workers throws `createWorker needs Worker, missing in this runtime`. Where `customElements` is absent (Node, Deno, SSR), append `?setElement=false` to the script URL and register manually with the exported `defineElement(tag)`. When the JS host is served cross-origin, the worker spawns from a same-origin Blob URL that imports the cross-origin module, because Chromium rejects `new Worker()` on a cross-origin URL.
+`baseUrl` is where the program's files live. The worker reads the `edge.json` there, its imports and what it grants, and fetches only what a run imports. `createWorker` finds `compiler.wasm` beside the host, `wasmUrl` points it elsewhere, and `imports` with `permissions` stand in for an `edge.json` a page does not have. It needs Web Workers and throws `createWorker needs Worker, missing in this runtime` without them. When the JS host is served cross-origin, the worker spawns from a same-origin Blob URL that imports the cross-origin module, because Chromium rejects `new Worker()` on a cross-origin URL.
 
 ## Writing your own modules
 
