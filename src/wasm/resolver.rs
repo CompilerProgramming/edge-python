@@ -6,7 +6,7 @@ use crate::s;
 use super::{ModuleEntry, host_fetch_bytes, with_runtime};
 use super::exports::wasm_free;
 use crate::abi::ErrorKind;
-use crate::bridge::{error_from_kind, get_val, put_val, release_handles, take_error, with_vm};
+use crate::bridge::{error_from_kind, get_val, put_val, release_handles, take_error, with_bridge, with_vm};
 use crate::vm::types::{Val, VmErr};
 use alloc::sync::Arc;
 
@@ -164,7 +164,8 @@ impl WasmHostResolver {
                 canonical: spec.to_string(),
             }),
             ModuleEntry::Native(funcs) => {
-                let all: Vec<NativeBinding> = funcs.iter().map(|(n, id)| make_native_binding(n.clone(), *id)).collect();
+                let module: Arc<str> = Arc::from(spec);
+                let all: Vec<NativeBinding> = funcs.iter().map(|(n, id)| make_native_binding(n.clone(), *id, module.clone())).collect();
                 let (bindings, classes, consts) = partition_bindings(all);
                 Ok(Resolved::Native { bindings, classes, consts, canonical: spec.to_string() })
             }
@@ -182,41 +183,90 @@ fn undeclared(name: &str) -> String {
     refusal(name).unwrap_or_else(|| s!("module '", str name, "' is not provided by this host and no edge.json declares it"))
 }
 
+/* A plugin's system call `module.name`, served as a `.py` beside the plugin would import it. */
+pub(crate) fn system_call(call_id: u32, name: &str, args: &[Val]) -> Result<Val, VmErr> {
+    let (module, function) = name.split_once('.').ok_or_else(|| VmErr::Raised(s!("ValueError: a system call is named module.name, got '", str name, "'")))?;
+    let caller = with_bridge(|b| b.calls.iter().rev().find(|(id, _)| *id == call_id).map(|(_, m)| m.clone()))
+        .ok_or(VmErr::Runtime("a system call names the plugin call it belongs to, see edge_call_id"))?;
+    let (spec, id) = WasmHostResolver { dir: dir_of(&caller) }.system_fn(module, function)?;
+    call_host(id, call_id, &spec, args, None)
+}
+
+impl WasmHostResolver {
+    /* Where `module.function` is served to the package holding `self.dir`, never an import sharing its name. */
+    fn system_fn(&mut self, module: &str, function: &str) -> Result<(Arc<str>, u32), VmErr> {
+        let start = self.dir.clone();
+        let mut package = None;
+        for dir in walk_up_dirs(&start) {
+            if self.lookup_in_manifest(&s!(str &dir, "edge.json"), module).map_err(VmErr::Raised)?.is_some() {
+                package = Some(dir);
+                break;
+            }
+        }
+        let denied = |msg: String| VmErr::Raised(s!("PermissionError: ", str &msg));
+        let spec = system_spec(module, &package.ok_or_else(|| denied(undeclared(module)))?);
+        if let Some(msg) = refusal(&spec) {
+            return Err(denied(msg));
+        }
+        let funcs = with_runtime(|rt| rt.registry.iter().find(|(s, _)| *s == spec).and_then(|(_, e)| match e {
+            ModuleEntry::Native(funcs) => Some(funcs.clone()),
+            ModuleEntry::Code(_) => None,
+        }));
+        let funcs = funcs.ok_or_else(|| denied(undeclared(module)))?;
+        let id = funcs.iter().find(|(n, _)| n == function).map(|(_, id)| *id);
+        id.map(|id| (Arc::from(spec.as_str()), id)).ok_or_else(|| VmErr::Attribute(s!("module '", str module, "' has no call '", str function, "'")))
+    }
+}
+
 /* Builds a NativeBinding that marshals handles around `host_call_native`. Lives here so the bridge stays host-import-free. */
-fn make_native_binding(name: String, id: u32) -> NativeBinding {
+fn make_native_binding(name: String, id: u32, module: Arc<str>) -> NativeBinding {
     let closure = move |_: &mut crate::vm::types::HeapPool, args: &[Val], kwargs: Option<Val>| -> Result<Val, VmErr> {
-        /* 1. Register positional args as handles the guest will see, append the kwargs handle (0 means no kwargs). */
-        let mut argv: Vec<u32> = args.iter().map(|v| put_val(*v)).collect();
-        argv.push(kwargs.map_or(0, put_val));
-        let mut out_handle: u32 = 0;
-
-        // 2. call_id is what call_extern will park with on defer, lets the host route the result back.
+        // call_id is what call_extern will park with on defer, lets the host route the result back.
         let call_id = with_vm(|vm| vm.next_host_call_id as u32).unwrap_or(0);
-        let status = unsafe {
-            super::host_call_native(
-                id, call_id,
-                argv.as_ptr(), argv.len() as u32,
-                &mut out_handle as *mut u32,
-            )
-        };
-
-        /* 3. Read result BEFORE releasing argv, a returned input would point into slots we're about to free. */
-        // Status 2 = DEFERRED, handler has captured what it needs, release argv and park the VM.
-        if status == 2 {
-            release_handles(&argv);
-            return Err(VmErr::HostCallDeferred);
-        }
-        if status != 0 {
-            release_handles(&argv);
-            let (kind, msg) = take_error()
-                .unwrap_or((ErrorKind::Runtime as u32, String::from("native call failed")));
-            return Err(error_from_kind(kind, msg));
-        }
-        let result = get_val(out_handle).ok_or(VmErr::Runtime("native returned invalid handle"))?;
-        argv.push(out_handle);
-        release_handles(&argv);
-        Ok(result)
+        call_host(id, call_id, &module, args, kwargs)
     };
     NativeBinding { name, func: Arc::new(closure), pure: false }
+}
+
+/* One host_call_native, remembered by its call id until it answers, for the system calls inside. */
+fn call_host(id: u32, call_id: u32, module: &Arc<str>, args: &[Val], kwargs: Option<Val>) -> Result<Val, VmErr> {
+    /* 1. Register positional args as handles the guest will see, append the kwargs handle (0 means no kwargs). */
+    let mut argv: Vec<u32> = args.iter().map(|v| put_val(*v)).collect();
+    argv.push(kwargs.map_or(0, put_val));
+    let mut out_handle: u32 = 0;
+
+    // 2. A system module never makes system calls, so only the others are remembered.
+    let remembered = !module.starts_with("system:");
+    if remembered {
+        with_bridge(|b| b.calls.push((call_id, module.clone())));
+    }
+    let status = unsafe {
+        super::host_call_native(
+            id, call_id,
+            argv.as_ptr(), argv.len() as u32,
+            &mut out_handle as *mut u32,
+        )
+    };
+    // A waiting call stays remembered until answered, since its resumed plugin still calls from it.
+    if remembered && status != 2 {
+        with_bridge(|b| b.calls.pop());
+    }
+
+    /* 3. Read result BEFORE releasing argv, a returned input would point into slots we're about to free. */
+    // Status 2 = DEFERRED, handler has captured what it needs, release argv and park the VM.
+    if status == 2 {
+        release_handles(&argv);
+        return Err(VmErr::HostCallDeferred);
+    }
+    if status != 0 {
+        release_handles(&argv);
+        let (kind, msg) = take_error()
+            .unwrap_or((ErrorKind::Runtime as u32, String::from("native call failed")));
+        return Err(error_from_kind(kind, msg));
+    }
+    let result = get_val(out_handle).ok_or(VmErr::Runtime("native returned invalid handle"))?;
+    argv.push(out_handle);
+    release_handles(&argv);
+    Ok(result)
 }
 

@@ -15,11 +15,13 @@ pub(crate) struct BridgeState {
     pub error_stash: ErrorStash,
     /* Set and cleared by `VmGuard` or the paused-run stashes, deref only while its VM lives. */
     pub current_vm: Option<NonNull<VM<'static>>>,
+    /* Each native call in flight or waiting, by id, so a system call finds its package. */
+    pub calls: Vec<(u32, alloc::sync::Arc<str>)>,
 }
 
 impl BridgeState {
     pub(crate) const fn new() -> Self {
-        BridgeState { handles: HandleTable::new(), error_stash: ErrorStash::new(), current_vm: None }
+        BridgeState { handles: HandleTable::new(), error_stash: ErrorStash::new(), current_vm: None, calls: Vec::new() }
     }
 }
 
@@ -44,7 +46,13 @@ pub(crate) fn reset() {
         b.handles.clear();
         b.error_stash.clear();
         b.current_vm = None;
+        b.calls.clear();
     });
+}
+
+/* Forgets a waiting call once its answer is delivered. */
+pub(crate) fn answered(call_id: u32) {
+    with_bridge(|b| b.calls.retain(|(id, _)| *id != call_id));
 }
 
 pub(crate) fn set_current_vm(ptr: Option<NonNull<VM<'static>>>) {
@@ -113,7 +121,8 @@ pub(crate) fn err_to_kind(e: &VmErr) -> ErrorKind {
             if s.starts_with("ValueError") { ErrorKind::Value }
             else if s.starts_with("IndexError") { ErrorKind::Index }
             else if s.starts_with("KeyError") { ErrorKind::Key }
-            else { ErrorKind::Runtime }
+            // Any other class crosses as a custom kind, its name kept in the message.
+            else { ErrorKind::Custom }
         }
         _ => ErrorKind::Runtime,
     }
@@ -148,7 +157,7 @@ pub fn error_from_kind(kind: u32, msg: String) -> VmErr {
     }
 }
 
-// Universal dispatch. Returns 0 + handle in `*out_handle`, or 1 + stashed error.
+// Universal dispatch, 0 + handle in `*out_handle`, 1 + stashed error, 2 while a system call waits.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn host_edge_op(op: u32, recv: u32, name_ptr: *const u8, name_len: u32,argv_ptr: *const u32, argc: u32, out_handle: *mut u32) -> i32 {
     let name = unsafe { safe_str_owned(name_ptr, name_len) };
@@ -169,11 +178,15 @@ pub unsafe extern "C" fn host_edge_op(op: u32, recv: u32, name_ptr: *const u8, n
         Some(Op::NewTuple) => in_vm("edge_op new_tuple called outside run()", |vm| vm.tuple_from_items(args.to_vec())),
         Some(Op::NewSet) => in_vm("edge_op new_set called outside run()", |vm| vm.set_from_items(args.to_vec())),
         Some(Op::NewFrozenSet) => in_vm("edge_op new_frozenset called outside run()", |vm| vm.frozenset_from_items(args.to_vec())),
+        // A system call names its plugin call in `recv`, the id `edge_call_id` gave it.
+        Some(Op::Sys) => crate::wasm::system_call(recv, &name, &args),
         None => Err(VmErr::Raised(s!("edge_op: unsupported op ", int op as i64))),
     };
 
     match result {
         Ok(v) => { unsafe { *out_handle = put_val(v); } 0 }
+        // A system call still waits, the plugin returns 2 and the host resumes it later.
+        Err(VmErr::HostCallDeferred) => 2,
         Err(e) => { stash_error(e); 1 }
     }
 }

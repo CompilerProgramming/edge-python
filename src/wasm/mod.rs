@@ -8,6 +8,8 @@ use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
 mod exports;
 mod resolver;
 
+pub(crate) use resolver::system_call;
+
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
     pub(super) fn host_print(ptr: *const u8, len: usize);

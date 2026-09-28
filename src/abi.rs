@@ -33,6 +33,7 @@ abi_enum!(Op {
     NewTuple = wasm_abi::op::NEW_TUPLE,
     NewSet = wasm_abi::op::NEW_SET,
     NewFrozenSet = wasm_abi::op::NEW_FROZENSET,
+    Sys = wasm_abi::op::SYS,
 });
 
 /* Tags (sealed), values mirror `wasm_abi::tag::*`. */

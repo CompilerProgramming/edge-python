@@ -482,12 +482,14 @@ fn with_paused_vm(handle: u32, f: impl FnOnce(&mut VM<'static>, crate::vm::types
 /* Wakes coro `id` with `handle`, 0 ok, 1 stale handle, 2 no waiter, 3 no paused run. */
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn set_host_result_by_id(id: u32, handle: u32) -> i32 {
+    bridge::answered(id);
     with_paused_vm(handle, |vm, val| if vm.inject_host_result_by_id(id as u64, val) { 0 } else { 2 })
 }
 
 /* Raises an error into the `WaitingHostCall(id)` coro so its try/except can catch it, `msg_handle` is a str. */
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn set_host_error_by_id(id: u32, kind: u32, msg_handle: u32) -> i32 {
+    bridge::answered(id);
     with_paused_vm(msg_handle, |vm, val| {
         let msg = match vm.heap.get(val) {
             HeapObj::Str(s) => s.clone(),

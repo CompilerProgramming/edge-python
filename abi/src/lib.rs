@@ -38,6 +38,8 @@ pub mod op {
     pub const NEW_TUPLE: u32 = 11;
     pub const NEW_SET: u32 = 12;
     pub const NEW_FROZENSET: u32 = 13;
+    // A system call `module.name`, served as the plugin's own package would import it.
+    pub const SYS: u32 = 14;
 }
 
 /* Tags for `edge_encode` / `edge_decode` value transit. */
