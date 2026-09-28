@@ -204,7 +204,7 @@ $ edge publish app.edge
   https://cdn.edgepython.com/pkg/slugify/0.1.0/app.edge
 ```
 
-A name is first come and permanent, and a version is never overwritten, so publishing the same one twice is refused. The artifact is stored exactly as it was packed, so the registry never reads the bundle format.
+A name is first come and permanent, and a version is never overwritten, so publishing the same one twice is refused, with exit code 2 instead of 1 so a script can tell it from a failure. The artifact is stored exactly as it was packed, so the registry never reads the bundle format.
 
 One artifact is 10 MB at most, an account claims 10 names and publishes 60 versions a day, and its packages add up to a room the account can see in its settings. That room is 50 MB for an account that signs in by address alone and a gigabyte for one with GitHub or Google linked, since an address is cheap to come by and a provider account is not. Ask for more where the figure is shown.
 

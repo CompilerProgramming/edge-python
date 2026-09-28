@@ -23,11 +23,21 @@ pub fn run(artifact: &Path) -> Result<()> {
             crate::ui::note(&published.url);
             Ok(())
         }
+        // A version is never overwritten, and its own exit code lets a script tell that from a failure.
+        Err(e) if already_published(&e.to_string()) => {
+            sp.fail(&e.to_string());
+            std::process::exit(2)
+        }
         Err(e) => {
             sp.fail(&format!("failed to publish {name}"));
             Err(e)
         }
     }
+}
+
+// The registry's words for a version it already holds.
+fn already_published(error: &str) -> bool {
+    error.ends_with("is already published.")
 }
 
 /* A JavaScript file the bundle carries, which no host would load, so it is never published. */
@@ -79,5 +89,11 @@ mod tests {
         assert_eq!(javascript_in(&packed("https://x/y.mjs")).as_deref(), Some("https://x/y.mjs"));
         assert_eq!(javascript_in(&packed("util.py")), None);
         assert_eq!(javascript_in(b"not a bundle"), None);
+    }
+
+    #[test]
+    fn only_a_version_already_published_takes_exit_code_2() {
+        assert!(already_published("greet 0.1.0 is already published."));
+        assert!(!already_published("The name greet belongs to someone else."));
     }
 }
