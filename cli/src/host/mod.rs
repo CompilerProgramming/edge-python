@@ -41,8 +41,13 @@ pub fn site(path: &str) -> String {
 
 /* Tests and staging serve the official origin from EDGE_CDN_BASE, production never sets it. */
 pub fn cdn(url: &str) -> String {
-    match (url.strip_prefix(ORIGIN), std::env::var("EDGE_CDN_BASE")) {
-        (Some(path), Ok(base)) => format!("{}{path}", base.trim_end_matches('/')),
+    rebase(url, std::env::var("EDGE_CDN_BASE").ok().as_deref(), std::env::var_os("EDGE_SITE_BASE").is_some())
+}
+
+// The real registry's packages live only on the real CDN, so only a moved registry moves them.
+fn rebase(url: &str, base: Option<&str>, registry_moved: bool) -> String {
+    match (url.strip_prefix(ORIGIN), base) {
+        (Some(path), Some(base)) if registry_moved || !path.starts_with("/pkg/") => format!("{}{path}", base.trim_end_matches('/')),
         _ => url.to_string(),
     }
 }
@@ -353,4 +358,21 @@ pub(crate) fn stage(cx: &mut impl AsContextMut<Data = State>, ex: &Exports, byte
 
 pub(crate) fn unstage(cx: &mut impl AsContextMut<Data = State>, ex: &Exports, ptr: i32, len: usize) {
     let _ = ex.wasm_free.call(&mut *cx, (ptr, len.max(1) as i32));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A staged run reads everything it built from tmp, and a package from wherever its registry is.
+    #[test]
+    fn a_staged_run_reads_tmp_but_the_real_registrys_packages() {
+        let tmp = "https://cdn.tmp.edgepython.com/7";
+        for path in ["/compiler.wasm", "/js/src/index.js", "/cli/install.sh"] {
+            assert_eq!(rebase(&format!("{ORIGIN}{path}"), Some(tmp), false), format!("{tmp}{path}"));
+        }
+        let pkg = format!("{ORIGIN}/pkg/test/0.1.0/app.edge");
+        assert_eq!(rebase(&pkg, Some(tmp), false), pkg);
+        assert_eq!(rebase(&pkg, Some(tmp), true), format!("{tmp}/pkg/test/0.1.0/app.edge"));
+    }
 }
