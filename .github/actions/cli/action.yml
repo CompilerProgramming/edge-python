@@ -31,7 +31,8 @@ runs:
       run: |
         echo "MOZJS_FROM_SOURCE=1" >> "$GITHUB_ENV"
         case "$RUNNER_OS" in
-          Linux) sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev python3 ;;
+          # The image carries several LLVMs, and bindgen needs the libclang of the one llvm-config names.
+          Linux) sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev python3 && echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> "$GITHUB_ENV" ;;
           # Xcode's objdump is llvm-objdump under another name.
           macOS) mkdir -p "$RUNNER_TEMP/bin" && ln -sf /usr/bin/objdump "$RUNNER_TEMP/bin/llvm-objdump" && echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH" ;;
         esac
