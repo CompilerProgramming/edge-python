@@ -27,6 +27,7 @@ export interface PrefetchCtx {
     entryDir: string
     cache: CacheBackend
     baseUrl?: string | null
+    read?: (url: string) => Promise<Response>
     integrityActive: boolean
     compilerExports: CompilerExports
     rt: Rt

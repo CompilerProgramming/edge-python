@@ -34,6 +34,8 @@ runs:
       run: |
         deno run -A npm:typescript@5.9.3/tsc -p tsconfig.json
         deno run -A npm:typescript@5.9.3/tsc -p tsconfig.worker.json
+        # The engine as one classic script, the page hands it to the room as a whole.
+        deno bundle --platform browser --format iife src/worker/worker.ts -o dist/worker/bundle.js
 
     # The Deno and Playwright suites run in the test job, against this tree on tmp.
     - name: Stage on tmp

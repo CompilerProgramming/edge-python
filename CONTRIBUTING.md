@@ -54,7 +54,7 @@ The other suites read the builds from a CDN, the way CI does. Build what you cha
 
 ```bash
 cargo wasm
-(cd js && deno run -A npm:typescript@5.9.3/tsc -p tsconfig.json && deno run -A npm:typescript@5.9.3/tsc -p tsconfig.worker.json)
+(cd js && deno run -A npm:typescript@5.9.3/tsc -p tsconfig.json && deno run -A npm:typescript@5.9.3/tsc -p tsconfig.worker.json && deno bundle --platform browser --format iife src/worker/worker.ts -o dist/worker/bundle.js)
 cd infra && npm ci && npm run stage -- ../_cdn && npm run cdn:local -- ../_cdn # keep it running
 ```
 

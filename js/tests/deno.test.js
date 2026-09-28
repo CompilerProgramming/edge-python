@@ -4,9 +4,9 @@ if (!BASE) throw new Error("set EDGE_CDN_BASE (npm run cdn:local in infra)");
 const WASM = `${BASE}/compiler.wasm`;
 
 // A fresh engine per test, the query string keeps the module state apart.
-async function boot(name, imports = {}) {
+async function boot(name, imports = {}, base = baseUrl) {
     const engine = await import(new URL(`../src/worker/engine.ts?deno=${name}`, import.meta.url).href);
-    await engine.load({ wasmUrl: WASM, integrity: false, imports });
+    await engine.load({ wasmUrl: WASM, integrity: false, imports, baseUrl: base });
     return engine;
 }
 
@@ -24,7 +24,7 @@ Deno.test("deno: a packed package imports from inside itself", async () => {
     await Deno.writeFile(`${dir}/greet.edge`, new Uint8Array(packed));
     const engine = await boot("package", { greet: new URL(`file://${dir}/greet.edge`).href });
     const lines = [];
-    const { out } = await engine.run({ src: "from greet import hello\nprint(hello('edge'))", baseUrl }, (t) => lines.push(t));
+    const { out } = await engine.run({ src: "from greet import hello\nprint(hello('edge'))" }, (t) => lines.push(t));
     if (out !== "" || lines.join("").trim() !== "hello edge") throw new Error(`unexpected ${JSON.stringify([out, lines])}`);
 });
 
@@ -52,7 +52,7 @@ Deno.test("deno: a packed package resolves its own version through the lock it c
 
     const engine = await boot("lock", { app: new URL(`file://${dir}/app.edge`).href });
     const lines = [];
-    const { out } = await engine.run({ src: "from app import greet\nprint(greet('edge'))", baseUrl }, (t) => lines.push(t));
+    const { out } = await engine.run({ src: "from app import greet\nprint(greet('edge'))" }, (t) => lines.push(t));
     if (out !== "" || lines.join("").trim() !== "HI EDGE") throw new Error(`unexpected ${JSON.stringify([out, lines])}`);
 });
 
@@ -69,7 +69,7 @@ Deno.test("deno: a version no lock holds names edge lock", async () => {
     const engine = await boot("unlocked", { app: new URL(`file://${dir}/app.edge`).href });
     let failed = "";
     try {
-        await engine.run({ src: "import app", baseUrl });
+        await engine.run({ src: "import app" });
     } catch (e) {
         failed = String(e);
     }
@@ -78,7 +78,7 @@ Deno.test("deno: a version no lock holds names edge lock", async () => {
 
 Deno.test("deno: an undeclared name fails at compile time", async () => {
     const engine = await boot("undeclared");
-    const { out } = await engine.run({ src: "import json\nprint(1)", baseUrl });
+    const { out } = await engine.run({ src: "import json\nprint(1)" });
     if (!out.includes("module 'json' is not provided by this host and no edge.json declares it")) throw new Error(`unexpected output ${JSON.stringify(out)}`);
 });
 
@@ -87,9 +87,9 @@ Deno.test("deno: send() names the actor scheduler it lacks", async () => {
     const engine = await boot("send");
     const lines = [];
     const missing = "send() needs an actor scheduler, missing in this runtime";
-    const caught = await engine.run({ src: "try:\n    send('g', 'x')\nexcept RuntimeError as e:\n    print(e)", baseUrl }, (t) => lines.push(t));
+    const caught = await engine.run({ src: "try:\n    send('g', 'x')\nexcept RuntimeError as e:\n    print(e)" }, (t) => lines.push(t));
     if (caught.out !== "" || lines.join("").trim() !== missing) throw new Error(`unexpected ${JSON.stringify([caught.out, lines])}`);
-    const { out } = await engine.run({ src: "send('g', 'x')", baseUrl });
+    const { out } = await engine.run({ src: "send('g', 'x')" });
     if (!out.includes(missing) || !out.includes("<input>:1:1")) throw new Error(`unexpected output ${JSON.stringify(out)}`);
 });
 
@@ -101,9 +101,9 @@ Deno.test("deno: a manifest beside a module joins its relative targets once", as
     await Deno.writeTextFile(`${dir}/pkg/edge.json`, JSON.stringify({ imports: { _impl: "./impl.py" } }));
     await Deno.writeTextFile(`${dir}/pkg/entry.py`, "from _impl import value\n");
     await Deno.writeTextFile(`${dir}/pkg/impl.py`, "value = 42\n");
-    const engine = await boot("facade");
+    const engine = await boot("facade", {}, `file://${dir}/`);
     const lines = [];
-    const { out } = await engine.run({ src: "from pkg import value\nprint(value)", baseUrl: `file://${dir}/` }, (t) => lines.push(t));
+    const { out } = await engine.run({ src: "from pkg import value\nprint(value)" }, (t) => lines.push(t));
     await Deno.remove(dir, { recursive: true });
     if (out !== "" || lines.join("").trim() !== "42") throw new Error(`unexpected ${JSON.stringify([out, lines])}`);
 });
@@ -121,9 +121,9 @@ async function project(files) {
 
 // What a run printed and what it failed with, from a fresh engine.
 async function output(name, src, base) {
-    const engine = await boot(name);
+    const engine = await boot(name, {}, base);
     const lines = [];
-    const { out } = await engine.run({ src, baseUrl: base }, (t) => lines.push(t));
+    const { out } = await engine.run({ src }, (t) => lines.push(t));
     return { out, text: lines.join("").trim() };
 }
 
@@ -247,10 +247,10 @@ Deno.test("deno: the clock stays virtual until a package holds time", async () =
 
 Deno.test("deno: a malformed permissions section stops the run", async () => {
     const base = await project({ "edge.json": JSON.stringify({ permissions: { main: "time:wall" } }) });
-    const engine = await boot("malformed");
+    const engine = await boot("malformed", {}, base);
     let message = "";
     try {
-        await engine.run({ src: "print(1)", baseUrl: base });
+        await engine.run({ src: "print(1)" });
     } catch (e) {
         message = e.message;
     }

@@ -138,15 +138,17 @@ A `.wasm` plugin reaches the same calls through the `Sys` op of the [ABI](/docs/
 
 ## Embedding
 
-A page that runs a program with `createWorker` passes what its root `edge.json` would grant beside the imports.
+A page that runs a program with `createWorker` passes what its root `edge.json` would grant beside the imports, or points `baseUrl` at the directory whose `edge.json` says it.
 
 ```js
 const worker = await createWorker({
-  wasmUrl: "https://cdn.edgepython.com/compiler.wasm",
+  baseUrl: new URL("./app/", location.href).href,
   imports: { calc: "./calc.py" },
   permissions: { main: ["net:api.example.com"] },
 });
 ```
+
+Every worker lives in a sandboxed frame with an origin of its own, so a program holds none of the page's cookies or storage and cannot reach its DOM, even one the page did not write. The page hands the frame the engine and reads the program's files for it, and the browser lets the frame connect only to the origins its imports name and the hosts its permissions grant, so a request the grants would miss still never leaves.
 
 ## See also
 

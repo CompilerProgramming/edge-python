@@ -136,7 +136,7 @@ error: integrity check failed for 'https://example.com/utils.py'
 
 Only `sha256` is supported. Other prefixes fail with `unrecognized integrity fragment`. The JS host checks the pin in its fetch layer. The CLI checks the pin on every module it downloads or reads from disk, `.wasm` plugins included.
 
-In a browser the JS host additionally caches every fetched module in IndexedDB, in a `cas` store (hash to bytes) and a `lockfile` store (spec to hash). Repeat runs make no network requests. If a locked URL later serves different bytes, the run fails with an `integrity drift` error showing both digests. `clearCache()` on the worker wipes both stores. Without IndexedDB, as in Deno, fetched modules stay in memory for the worker's lifetime and no lockfile is kept. The CLI does the same on disk, see [The CLI](#the-cli).
+In a browser a worker keeps every module it fetched in memory for its lifetime, so repeat runs make no network requests, and `clearCache()` empties it. The CLI caches on disk and refuses a download that drifts, see [The CLI](#the-cli).
 
 ## Resolution errors
 
@@ -157,20 +157,20 @@ The first diagnostic is the same for a typo and for a package you forgot to decl
 
 ## In a page
 
-A page runs a program with `createWorker`, which boots the engine in a Web Worker. The page draws itself, the program answers through what it prints and what `run` resolves with, and `pushEvent` wakes a `receive()`.
+A page runs a program with `createWorker`, which boots the engine in a Web Worker inside a sandboxed frame of its own. The page draws itself, the program answers through what it prints and what `run` resolves with, and `pushEvent` wakes a `receive()`.
 
 ```html
 <script type="module">
   import { createWorker } from "https://cdn.edgepython.com/js/src/index.js";
 
-  const worker = await createWorker();
+  const worker = await createWorker({ baseUrl: new URL("./app/", location.href).href });
   worker.onOutput((text) => console.log(text));
   const src = await fetch("./app/main.py").then((r) => r.text());
-  await worker.run(src, { baseUrl: new URL("./app/", location.href).href });
+  await worker.run(src);
 </script>
 ```
 
-`baseUrl` is where the program's files live. The worker reads the `edge.json` there, its imports and what it grants, and fetches only what a run imports. `createWorker` finds `compiler.wasm` beside the host, `wasmUrl` points it elsewhere, and `imports` with `permissions` stand in for an `edge.json` a page does not have. It needs Web Workers and throws `createWorker needs Worker, missing in this runtime` without them. When the JS host is served cross-origin, the worker spawns from a same-origin Blob URL that imports the cross-origin module, because Chromium rejects `new Worker()` on a cross-origin URL.
+A worker runs one program. `baseUrl` is where its files live, and the page reads for it the `edge.json` there, its imports and what it grants, and each file a run imports, never outside that directory and never with the page's cookies. `createWorker` finds `compiler.wasm` beside the host, `wasmUrl` points it elsewhere, and `imports` with `permissions` stand in for an `edge.json` a page does not have. It needs a page and throws `createWorker needs a page, missing in this runtime` without one. How the frame keeps the program apart from the page is in [System](/docs/reference/system#embedding).
 
 ## Writing your own modules
 

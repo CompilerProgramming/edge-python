@@ -1,7 +1,10 @@
 import type { Limits, RunOpts, ExecResult, WorkerRequest, WorkerMessage } from './protocol.ts';
 import type { Permissions } from './system/grants.ts';
+import { isVersion } from './specs.ts';
 
 export interface CreateWorkerOpts {
+    // The program's directory, the page reads its files and its edge.json for the room.
+    baseUrl?: string
     wasmUrl?: string
     imports?: Record<string, string>
     permissions?: Permissions
@@ -36,21 +39,25 @@ interface Pending {
 // WorkerRequest without the reqId, `send` attaches it.
 type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-/* Public entry. `createWorker(opts)` spawns a Web Worker around `engine.ts` and returns a proxy whose methods round-trip via postMessage. */
-export async function createWorker(opts?: CreateWorkerOpts): Promise<WorkerHandle> {
-    if (typeof Worker === 'undefined') throw new Error('createWorker needs Worker, missing in this runtime');
-    // Chromium blocks `new Worker(crossOriginUrl)` even with `type:'module'`, cross-origin runtimes need the Blob bootstrap below.
-    const workerUrl = new URL('./worker/worker.js', import.meta.url);
-    const sameOrigin = workerUrl.origin === self.location.origin;
-    const worker = sameOrigin
-        ? new Worker(workerUrl, { type: 'module' })
-        : spawnCrossOriginWorker(workerUrl.href);
+/* Public entry. `createWorker(opts)` runs one program in a room of its own and returns a proxy whose methods round-trip via postMessage. */
+export async function createWorker(opts: CreateWorkerOpts = {}): Promise<WorkerHandle> {
+    if (typeof document === 'undefined') throw new Error('createWorker needs a page, missing in this runtime');
+    const base = opts.baseUrl ? new URL('./', opts.baseUrl).href : null;
+    // The compiler sits beside the host wherever it ships, the CDN, a dist and the CLI's server.
+    const wasmUrl = opts.wasmUrl ?? new URL('../../compiler.wasm', import.meta.url).href;
+    // The page fetches the engine and hands it over, so the room loads no code of its own.
+    const [source, wasm, root] = await Promise.all([
+        download(new URL('./worker/bundle.js', import.meta.url).href).then((r) => r.text()),
+        download(wasmUrl).then((r) => r.arrayBuffer()),
+        rootOf(opts, base),
+    ]);
+    const { port, close } = await openRoom(source, await roomPolicy(root));
 
     let reqIdCounter = 0;
     const pending = new Map<number, Pending>();
     let outputHandler: ((text: string) => void) | null = null;
 
-    const tell = (msg: WorkerRequest) => worker.postMessage(msg);
+    const tell = (msg: WorkerRequest) => port.postMessage(msg);
 
     const send = <T = unknown>(payload: DistOmit<WorkerRequest, 'reqId'>): Promise<T> => new Promise((resolve, reject) => {
         const reqId = ++reqIdCounter;
@@ -61,15 +68,32 @@ export async function createWorker(opts?: CreateWorkerOpts): Promise<WorkerHandl
     /* Fire a string into the running script's `receive()` queue. */
     const pushEvent = (message: unknown) => tell({ type: 'push-event', message: String(message) });
 
-    worker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
+    /* Reads a file of the program for the room, only inside its directory and never with the page's cookies. */
+    const read = async (id: number, url: string): Promise<void> => {
+        const reply = { type: 'file' as const, id, status: 0, contentType: '', body: null as ArrayBuffer | null };
+        try {
+            if (base && new URL(url).href.startsWith(base)) {
+                const res = await fetch(url, { credentials: 'omit' });
+                reply.status = res.ok ? 200 : res.status;
+                reply.contentType = res.headers.get('content-type') ?? '';
+                reply.body = res.ok ? await res.arrayBuffer() : null;
+            }
+        } catch { /* status 0 reads as a failed fetch in the room */ }
+        tell(reply);
+    };
+
+    port.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
         switch (data.type) {
             case 'line':
                 if (outputHandler) outputHandler(data.text);
                 return;
+            case 'read':
+                void read(data.id, data.url);
+                return;
             case 'response':
             case 'error': {
                 if (data.reqId == null) {
-                    // A requestless error is the bootstrap failing, nothing will ever answer.
+                    // A requestless error is the worker failing, nothing will ever answer.
                     if (data.type === 'error') {
                         for (const cb of pending.values()) cb.reject(new Error(data.message));
                         pending.clear();
@@ -86,21 +110,18 @@ export async function createWorker(opts?: CreateWorkerOpts): Promise<WorkerHandl
         }
     };
 
-    worker.onerror = (e: ErrorEvent) => {
-        const err = new Error(e.message || 'worker error');
-        for (const cb of pending.values()) cb.reject(err);
-        pending.clear();
-    };
-
-    // The compiler sits beside the host wherever it ships, the CDN, a dist and the CLI's server.
-    const wasmUrl = opts?.wasmUrl ?? new URL('../../compiler.wasm', import.meta.url).href;
-    const ready = await send<{ integrityActive: boolean, loadMs: number }>({ type: 'load', opts: { ...opts, wasmUrl } });
+    // A room has no IndexedDB, so its modules stay in memory, and one whose engine fails leaves no frame.
+    const ready = await send<{ integrityActive: boolean, loadMs: number }>({ type: 'load', opts: { ...opts, baseUrl: base, wasm, integrity: false } })
+        .catch((e: unknown) => { close(); throw e; });
 
     return {
         integrityActive: ready.integrityActive,
         loadMs: ready.loadMs,
 
-        run: (src, runOpts = {}) => send<ExecResult>({ type: 'run', src, ...runOpts }),
+        // A worker runs the one program its baseUrl names, so a run cannot point elsewhere.
+        run: (src, runOpts = {}) => 'baseUrl' in runOpts
+            ? Promise.reject(new Error('baseUrl belongs to createWorker, a worker runs one program'))
+            : send<ExecResult>({ type: 'run', src, ...runOpts }),
         /* Preempt every `interval` back-edges, 0 disables. */
         setPreemptInterval: (interval) => send<void>({ type: 'set-preempt-interval', interval }),
         /* Park the program, resolves true when parked. */
@@ -121,33 +142,91 @@ export async function createWorker(opts?: CreateWorkerOpts): Promise<WorkerHandl
 
         dispose() {
             tell({ type: 'dispose' });
-            worker.terminate();
+            close();
             for (const cb of pending.values()) cb.reject(new Error('worker disposed'));
             pending.clear();
         },
     };
 }
 
-/* Buffers messages until the imported worker.js installs self.onmessage, the first postMessage would be lost otherwise. A source string because tsc rewrites import() in compiled code and the helper would not exist inside the Blob. */
-const crossOriginBootstrap = `
-const buffered = [];
-const enqueue = (event) => buffered.push(event.data);
-self.addEventListener('message', enqueue);
-import(__workerUrl).then(() => {
-    self.removeEventListener('message', enqueue);
-    for (const data of buffered) self.dispatchEvent(new MessageEvent('message', { data }));
-}, (err) => {
-    self.postMessage({ type: 'error', message: 'worker bootstrap failed: ' + ((err && err.message) || err) });
+/* A file of the engine, fetched by the page so the room never loads code. */
+async function download(url: string): Promise<Response> {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`fetch failed for '${url}' (${res.status})`);
+    return res;
+}
+
+/* The specs and grants of the program's root manifest, the page's own or the edge.json at its base. */
+async function rootOf(opts: CreateWorkerOpts, base: string | null): Promise<{ specs: string[], permissions: Permissions }> {
+    if (opts.imports || opts.permissions || !base) return { specs: Object.values(opts.imports ?? {}), permissions: opts.permissions ?? {} };
+    const json = (name: string): Promise<Record<string, unknown>> =>
+        fetch(new URL(name, base), { credentials: 'omit' }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+    const manifest = await json('edge.json');
+    const specs = Object.values((manifest['imports'] ?? {}) as Record<string, unknown>).map(String);
+    // A version names a release, and the lock beside the manifest says where its bytes are.
+    const locked = specs.some(isVersion) ? Object.values(await json('edge.lock')).map((entry) => String((entry as { url?: unknown } | null)?.url ?? '')) : [];
+    return { specs: [...specs, ...locked], permissions: (manifest['permissions'] ?? {}) as Permissions };
+}
+
+/* The room's only script, it runs the engine its page hands over and relays both ways through the port. */
+const roomScript = `
+addEventListener('message', function start({ source, data, ports: [port] }) {
+    if (source !== parent || !port) return;
+    removeEventListener('message', start);
+    try {
+        const url = URL.createObjectURL(new Blob([data], { type: 'application/javascript' }));
+        // Chrome refuses a module worker from a blob in an opaque origin, the engine is a classic script.
+        const worker = new Worker(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+        worker.onmessage = (e) => port.postMessage(e.data);
+        worker.onerror = (e) => port.postMessage({ type: 'error', message: e.message || 'worker error' });
+        port.onmessage = (e) => worker.postMessage(e.data);
+    } catch (e) {
+        port.postMessage({ type: 'error', message: 'the room could not start its worker, ' + e.message });
+    }
 });
 `;
 
-/* Blob URL inherits the page's origin, which sidesteps Chromium's cross-origin block. The imported module then loads under CORS (Cloudflare Pages OK by default). */
-function spawnCrossOriginWorker(workerUrl: string): Worker {
-    const source = `const __workerUrl = ${JSON.stringify(workerUrl)};\n${crossOriginBootstrap}`;
-    const blob = new Blob([source], { type: 'application/javascript' });
-    const blobUrl = URL.createObjectURL(blob);
-    const worker = new Worker(blobUrl, { type: 'module' });
-    // Defer revoke a tick, some browsers race it against the module fetch.
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 0);
-    return worker;
+// A policy names only plain origins and hosts, anything else stays out of reach.
+const PLAIN_ORIGIN = /^https?:\/\/[a-z0-9.-]+(:\d+)?$/;
+const PLAIN_HOST = /^[a-z0-9.-]+$/;
+
+/* The origin of an absolute url, when a policy can name it as written. */
+function originOf(spec: string): string[] {
+    try {
+        const { origin } = new URL(spec);
+        return PLAIN_ORIGIN.test(origin) ? [origin] : [];
+    } catch {
+        return [];
+    }
+}
+
+/* The room runs its own script and the engine, and connects only to its imports and its grants. */
+async function roomPolicy({ specs, permissions }: { specs: string[], permissions: Permissions }): Promise<string> {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(roomScript)));
+    const hosts = Object.values(permissions).flat().flatMap((entry) => {
+        const name = String(entry).startsWith('net:') ? String(entry).slice(4) : '';
+        return PLAIN_HOST.test(name) ? ['https', 'http', 'wss', 'ws'].map((scheme) => `${scheme}://${name}:*`) : [];
+    });
+    const reach = [...new Set([...specs.flatMap(originOf), ...hosts])];
+    return [
+        "default-src 'none'",
+        `script-src 'sha256-${btoa(String.fromCharCode(...digest))}' 'wasm-unsafe-eval'`,
+        'worker-src blob:',
+        `connect-src ${reach.length > 0 ? reach.join(' ') : "'none'"}`,
+    ].join('; ');
+}
+
+/* A sandboxed frame with an opaque origin, no cookie, storage or DOM of the page reaches it. */
+async function openRoom(source: string, policy: string): Promise<{ port: MessagePort, close: () => void }> {
+    const frame = document.createElement('iframe');
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.hidden = true;
+    frame.srcdoc = `<!DOCTYPE html><meta http-equiv="Content-Security-Policy" content="${policy}"><script>${roomScript}</script>`;
+    const loaded = new Promise((resolve) => { frame.onload = resolve; });
+    document.body.append(frame);
+    await loaded;
+    const { port1, port2 } = new MessageChannel();
+    frame.contentWindow?.postMessage(source, '*', [port2]);
+    return { port: port1, close: () => { port1.close(); frame.remove(); } };
 }

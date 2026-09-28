@@ -82,12 +82,10 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
     await page.goto("http://localhost/js/tests/index.html");
 
     try {
-        // Boot one tag without an entry, then reuse its worker for every case via run().
-        // The worker reads app/edge.json itself, through the base every run passes.
+        // One worker runs every case, and the page reads app/edge.json and the app's files for it.
         await page.evaluate(async (host) => {
             const { createWorker } = await import(host);
-            globalThis.worker = await createWorker();
-            globalThis.base = new URL("./app/", location.href).href;
+            globalThis.worker = await createWorker({ baseUrl: new URL("./app/", location.href).href });
         }, `https://${CDN_HOST}/js/src/index.js`);
 
         const reqd = (frag) => requested.some((u) => u.includes(frag));
@@ -100,7 +98,7 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
                 globalThis.worker.onOutput((t) => lines.push(t));
                 // A module that fails to load rejects run(), surface it as out for error cases.
                 try {
-                    const { out } = await globalThis.worker.run(src, { baseUrl: globalThis.base });
+                    const { out } = await globalThis.worker.run(src);
                     return { printed: lines.join("").trim(), out };
                 } catch (e) {
                     return { printed: lines.join("").trim(), out: String((e && e.message) || e) };
@@ -291,47 +289,6 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
         throw strays.size ? new Error([...strays].join("\n"), { cause: e }) : e;
     } finally {
         await browser.close();
-    }
-});
-
-// The blob bootstrap posts a requestless error when the cross-origin import fails, createWorker must reject with it instead of hanging.
-Deno.test("js: createWorker rejects on a worker bootstrap failure", async () => {
-    const { createWorker } = await import(new URL("../src/index.ts", import.meta.url).href);
-    const RealWorker = globalThis.Worker;
-    const hadLocation = "location" in globalThis;
-    const RealLocation = globalThis.location;
-    class StubWorker {
-        constructor() {
-            this.onmessage = null;
-            this.onerror = null;
-        }
-        postMessage(msg) {
-            if (msg.type === "load") {
-                queueMicrotask(() => this.onmessage?.({ data: { type: "error", message: "worker bootstrap failed: boom" } }));
-            }
-        }
-        terminate() {}
-    }
-    Object.defineProperty(globalThis, "Worker", { value: StubWorker, configurable: true, writable: true });
-    // A page origin different from the module origin forces the Blob bootstrap path.
-    globalThis.location = new URL("http://localhost/");
-    try {
-        let timer;
-        const result = await Promise.race([
-            createWorker().then(() => null, (e) => e),
-            new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("createWorker hung on bootstrap failure")), 5000); }),
-        ]);
-        clearTimeout(timer);
-        if (!(result instanceof Error)) throw new Error("createWorker resolved despite the bootstrap failure");
-        if (!String(result.message).includes("worker bootstrap failed: boom")) {
-            throw new Error("unexpected rejection: " + result.message);
-        }
-        // Let the bootstrap's deferred revokeObjectURL timer fire.
-        await new Promise((r) => setTimeout(r, 10));
-    } finally {
-        Object.defineProperty(globalThis, "Worker", { value: RealWorker, configurable: true, writable: true });
-        if (hadLocation) globalThis.location = RealLocation;
-        else delete globalThis.location;
     }
 });
 

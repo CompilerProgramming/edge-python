@@ -11,10 +11,14 @@ export interface Limits {
 
 export interface LoadOpts {
     wasmUrl?: string
+    // The compiler's bytes, which a room receives from its page instead of fetching them.
+    wasm?: ArrayBuffer | null
     integrity?: boolean
     imports?: Record<string, string> | null
     // What the embedder's root manifest grants, beside the imports it declares.
     permissions?: Permissions | null
+    // The program's directory, where its files and its edge.json live.
+    baseUrl?: string | null
     version?: string | null
     limits?: Limits | null
 }
@@ -23,7 +27,6 @@ export interface RunOpts {
     src: string
     repl?: boolean
     entryDir?: string
-    baseUrl?: string | null
     incremental?: boolean
     input?: string
 }
@@ -48,10 +51,13 @@ export type WorkerRequest =
     | { type: 'reset', reqId: number }
     | { type: 'clear-cache', reqId: number }
     | { type: 'push-event', reqId?: number, message: string }
-    | { type: 'dispose', reqId?: number };
+    | { type: 'dispose', reqId?: number }
+    // A file the page read for the room, status 0 when it refused or could not read it.
+    | { type: 'file', reqId?: number, id: number, status: number, contentType: string, body: ArrayBuffer | null };
 
 /* Pushes worker to main. 'response' answers a request's reqId, the rest are unsolicited. */
 export type WorkerMessage =
     | { type: 'line', text: string }
+    | { type: 'read', id: number, url: string }
     | { type: 'response', reqId?: number, result: unknown }
     | { type: 'error', reqId?: number, message: string };

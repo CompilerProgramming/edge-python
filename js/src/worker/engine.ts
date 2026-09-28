@@ -40,6 +40,9 @@ let cache: CacheBackend | null = null;
 let integrityActive = false;
 let importsMap: Record<string, string> | null = null;
 let permissionsMap: Permissions | null = null;
+// The program's directory and the page's reader of its files, which a room cannot fetch itself.
+let programBase: string | null = null;
+let readFile: ((url: string) => Promise<Response>) | null = null;
 // Resolves run()'s current `await` when a `PendingEvent` wake-up arrives via `pushEvent`.
 let eventWaiter: (() => void) | null = null;
 // Events `pushEvent`'d before the VM was ready (no `compilerExports`, or no paused run yet). Drained at the next `PENDING_EVENT` yield.
@@ -70,12 +73,16 @@ const requireExports = (): CompilerExports => {
     return compilerExports;
 };
 
+/* A room asks its page for the program's own files and fetches everything else itself. */
+const read = (url: string): Promise<Response> => (readFile && programBase && url.startsWith(programBase) ? readFile(url) : fetch(url));
+
 /* Engine orchestrator, internal to the Worker. Consumers use `createWorker` in `src/index.ts`. Lifecycle is `load` once -> many `run` cycles -> `dispose`, and each run instantiates the compiler fresh with no state leak. */
-export async function load({ wasmUrl, integrity = true, imports = null, permissions = null, version = null, limits: caps = null }: LoadOpts): Promise<{ integrityActive: boolean, loadMs: number }> {
-    if (!wasmUrl) throw new Error('load: wasmUrl is required');
+export async function load({ wasmUrl, wasm = null, integrity = true, imports = null, permissions = null, baseUrl = null, version = null, limits: caps = null }: LoadOpts, reader: ((url: string) => Promise<Response>) | null = null): Promise<{ integrityActive: boolean, loadMs: number }> {
     const t0 = performance.now();
     importsMap = imports;
     permissionsMap = permissions;
+    programBase = baseUrl ? new URL('./', baseUrl).href : null;
+    readFile = reader;
     limits = caps;
 
     cache = await openCache(integrity);
@@ -90,11 +97,17 @@ export async function load({ wasmUrl, integrity = true, imports = null, permissi
         }
     }
 
-    // Plain fetch, no SRI. The browser decodes any Content-Encoding (br/gzip) before compileStreaming.
-    const response = await fetch(wasmUrl);
-    if (!response.ok) throw new Error(`fetch failed for '${wasmUrl}' (${response.status})`);
-    const wrapped = new Response(response.body, { headers: { 'Content-Type': 'application/wasm' } });
-    wasmModule = await WebAssembly.compileStreaming(wrapped);
+    // A room receives the compiler's bytes from its page, anywhere else the engine fetches them.
+    if (wasm) {
+        wasmModule = await WebAssembly.compile(wasm);
+    } else {
+        if (!wasmUrl) throw new Error('load: wasmUrl is required');
+        // Plain fetch, no SRI. The browser decodes any Content-Encoding (br/gzip) before compileStreaming.
+        const response = await fetch(wasmUrl);
+        if (!response.ok) throw new Error(`fetch failed for '${wasmUrl}' (${response.status})`);
+        const wrapped = new Response(response.body, { headers: { 'Content-Type': 'application/wasm' } });
+        wasmModule = await WebAssembly.compileStreaming(wrapped);
+    }
 
     return { integrityActive, loadMs: performance.now() - t0 };
 }
@@ -113,7 +126,7 @@ export async function run(opts: RunOpts, onLine?: (text: string) => void): Promi
 }
 
 /* Shared run/restore core, instance, host imports, prefetch, then drive `start`. */
-async function execute({ src, payload, start, entryDir = '', baseUrl = null, onLine, incremental = false, input }: ExecuteOpts): Promise<ExecResult> {
+async function execute({ src, payload, start, entryDir = '', onLine, incremental = false, input }: ExecuteOpts): Promise<ExecResult> {
     if (!wasmModule || !cache) throw new Error('engine.load() must be called first');
     entryDir = entryDir.replace(/^(\.\/)+/, ''); // specs never carry ./
 
@@ -136,7 +149,8 @@ async function execute({ src, payload, start, entryDir = '', baseUrl = null, onL
 
     const packages = await bfsPrefetch(src, exports, lockfile, {
         cache,
-        baseUrl,
+        baseUrl: programBase,
+        read,
         entryDir,
         knownMissing,
         importsMap,
@@ -446,6 +460,8 @@ export function dispose(): void {
     cache = null;
     importsMap = null;
     permissionsMap = null;
+    programBase = null;
+    readFile = null;
     fetchedSources.clear();
     knownMissing.clear();
     resetNativeTable();

@@ -4,6 +4,8 @@ import type { CacheBackend } from './cache/types.ts';
 export interface FetchCtx {
     cache: CacheBackend
     baseUrl?: string | null
+    // How the engine reaches a url, a room reads the program's own files through its page.
+    read?: (url: string) => Promise<Response>
     knownMissing: Set<string>
     integrityActive: boolean
 }
@@ -14,7 +16,7 @@ export const requestUrl = (target: string, baseUrl?: string | null): string =>
 
 /* CAS-backed fetch keyed by lockfile hash, else fetch + hash + store. Null on fetch failure or non-ok status (opportunistic ok), throws on drift. */
 export async function fetchWithLockfile(spec: string, lockfile: Map<string, string>, ctx: FetchCtx): Promise<Uint8Array | null> {
-    const { cache, baseUrl, knownMissing, integrityActive } = ctx;
+    const { cache, baseUrl, read = fetch, knownMissing, integrityActive } = ctx;
 
     // An explicit #sha256- fragment pins the bytes. It stays in the cache key but leaves the request URL.
     const fragAt = spec.indexOf('#sha256-');
@@ -31,7 +33,7 @@ export async function fetchWithLockfile(spec: string, lockfile: Map<string, stri
 
     let resp: Response;
     try {
-        resp = await fetch(requestUrl(target, baseUrl));
+        resp = await read(requestUrl(target, baseUrl));
     } catch (e) {
         // A manifest probe is opportunistic, a module that fails to fetch is worth a warning.
         if (spec.endsWith('edge.json')) knownMissing.add(spec);

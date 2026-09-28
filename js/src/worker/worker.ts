@@ -8,10 +8,21 @@ const onLine = (text: string) => post({ type: 'line', text });
 /* Fire-and-forget messages return this instead of a result, no 'response' is posted for them. */
 const NO_REPLY: unique symbol = Symbol('no-reply');
 
+// The program's files the page is reading, each settled when its answer arrives.
+const reads = new Map<number, { resolve: (res: Response) => void, reject: (e: Error) => void }>();
+let nextRead = 1;
+
+/* Asks the page for a file of the program, since the room reaches nothing of the page's origin. */
+const readFile = (url: string): Promise<Response> => new Promise((resolve, reject) => {
+    const id = nextRead++;
+    reads.set(id, { resolve, reject });
+    post({ type: 'read', id, url });
+});
+
 function dispatch(req: WorkerRequest): unknown {
     switch (req.type) {
-        case 'load': return engine.load(req.opts);
-        case 'run': return engine.run({ src: req.src, repl: req.repl, entryDir: req.entryDir, baseUrl: req.baseUrl, incremental: req.incremental, input: req.input }, onLine);
+        case 'load': return engine.load(req.opts, readFile);
+        case 'run': return engine.run({ src: req.src, repl: req.repl, entryDir: req.entryDir, incremental: req.incremental, input: req.input }, onLine);
         case 'set-preempt-interval': return engine.setPreemptInterval(req.interval);
         case 'pause': return engine.pause();
         case 'resume': return engine.resume();
@@ -24,6 +35,13 @@ function dispatch(req: WorkerRequest): unknown {
         case 'dispose': engine.dispose(); self.close(); return NO_REPLY;
         // Wake a paused `receive()` in the running script.
         case 'push-event': engine.pushEvent(req.message); return NO_REPLY;
+        case 'file': {
+            const waiting = reads.get(req.id);
+            reads.delete(req.id);
+            if (req.status === 0) waiting?.reject(new TypeError('the page could not read it'));
+            else waiting?.resolve(new Response(req.body, { status: req.status, headers: { 'content-type': req.contentType } }));
+            return NO_REPLY;
+        }
         default: {
             // Unreachable per the types, reached only on main/worker version drift.
             const _exhaustive: never = req;

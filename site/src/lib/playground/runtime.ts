@@ -4,7 +4,7 @@ const LOAD_MS = 7000
 export type Phase = 'runtime' | 'worker' | 'running'
 
 type Worker = {
-  run(source: string, options: { baseUrl: string }): Promise<{ out: string; ms: number }>
+  run(source: string): Promise<{ out: string; ms: number }>
   onOutput(handler: (chunk: string) => void): void
   dispose(): void
 }
@@ -83,7 +83,7 @@ export async function run(
     let timer: ReturnType<typeof setTimeout> | undefined
 
     try {
-      const running = active.run(source, { baseUrl: location.href })
+      const running = active.run(source)
       running.catch(() => {})
 
       const timeout = new Promise<never>((_, reject) => {

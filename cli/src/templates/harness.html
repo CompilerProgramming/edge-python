@@ -10,10 +10,10 @@
     const st = { out: "", done: false, ok: false, code: 0, err: "" };
     window.__edge = st;
     try {
-      // The worker reads the project's edge.json from this server, with its imports already locked.
-      const worker = await createWorker();
+      // The page reads the project's edge.json from this server for the worker, its imports already locked.
+      const worker = await createWorker({ baseUrl: `${location.origin}/` });
       worker.onOutput((text) => { st.out += text });
-      const res = await worker.run(__EDGE_SRC__, { baseUrl: `${location.origin}/` });
+      const res = await worker.run(__EDGE_SRC__);
       st.code = res && res.exitCode ? res.exitCode : 0;
       if (res && res.out) st.err = res.out;
       else st.ok = true;
