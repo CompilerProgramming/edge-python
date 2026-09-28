@@ -242,47 +242,6 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
         if (reqd("re.wasm")) throw new Error("re declared but never imported, yet re.wasm was fetched (not lazy)");
         // if (!reqd("/js/builtins/network")) throw new Error("network imported by the ws cases but never loaded");
 
-        // The IndexedDB cache survives a versionless boot and is wiped only by a version mismatch.
-        const idb = await page.evaluate(async (host) => {
-            if (!globalThis.worker.integrityActive) return null;
-            const readStore = () => new Promise((res, rej) => {
-                const req = indexedDB.open("edgepython", 1);
-                req.onsuccess = () => {
-                    const db = req.result;
-                    const tx = db.transaction("lockfile");
-                    const store = tx.objectStore("lockfile");
-                    const out = { count: 0, version: null };
-                    store.count().onsuccess = (e) => { out.count = e.target.result; };
-                    store.get("\0v").onsuccess = (e) => { out.version = e.target.result ?? null; };
-                    tx.oncomplete = () => { db.close(); res(out); };
-                    tx.onerror = () => rej(tx.error);
-                };
-                req.onerror = () => rej(req.error);
-            });
-            const { createWorker } = await import(host);
-            const spawn = (opts) => createWorker({ wasmUrl: "https://cdn.edgepython.com/compiler.wasm", ...opts });
-            const before = await readStore();
-            const plain = await spawn();
-            const afterPlain = await readStore();
-            plain.dispose();
-            const v1 = await spawn({ version: "t-v1" });
-            const afterV1 = await readStore();
-            v1.dispose();
-            const v1again = await spawn({ version: "t-v1" });
-            const afterV1again = await readStore();
-            v1again.dispose();
-            const v2 = await spawn({ version: "t-v2" });
-            const afterV2 = await readStore();
-            v2.dispose();
-            return { before, afterPlain, afterV1, afterV1again, afterV2 };
-        }, `https://${CDN_HOST}/js/src/index.js`);
-        if (idb) {
-            if (!(idb.before.count > 0)) throw new Error(`cache: corpus left an empty lockfile store ${JSON.stringify(idb.before)}`);
-            if (idb.afterPlain.count !== idb.before.count) throw new Error(`cache: versionless boot wiped the cache ${JSON.stringify(idb)}`);
-            if (idb.afterV1.count !== 1 || idb.afterV1.version !== "t-v1") throw new Error(`cache: fresh version should wipe then stamp ${JSON.stringify(idb.afterV1)}`);
-            if (idb.afterV1again.count !== 1 || idb.afterV1again.version !== "t-v1") throw new Error(`cache: matching version wiped the cache ${JSON.stringify(idb.afterV1again)}`);
-            if (idb.afterV2.count !== 1 || idb.afterV2.version !== "t-v2") throw new Error(`cache: version mismatch should wipe then restamp ${JSON.stringify(idb.afterV2)}`);
-        }
         if (strays.size) throw new Error([...strays].join("\n"));
     } catch (e) {
         // A stray request explains any failure it caused, report it first.

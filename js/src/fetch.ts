@@ -1,35 +1,24 @@
 import { sha256Hex } from './specs.ts';
-import type { CacheBackend } from './cache/types.ts';
 
 export interface FetchCtx {
-    cache: CacheBackend
     baseUrl?: string | null
     // How the engine reaches a url, a room reads the program's own files through its page.
     read?: (url: string) => Promise<Response>
     knownMissing: Set<string>
-    integrityActive: boolean
 }
 
 // Specs are root-relative, the URL join clamps escapes at the origin.
 export const requestUrl = (target: string, baseUrl?: string | null): string =>
     target.includes('://') ? target : new URL(target, baseUrl ?? self.location.href).toString();
 
-/* CAS-backed fetch keyed by lockfile hash, else fetch + hash + store. Null on fetch failure or non-ok status (opportunistic ok), throws on drift. */
-export async function fetchWithLockfile(spec: string, lockfile: Map<string, string>, ctx: FetchCtx): Promise<Uint8Array | null> {
-    const { cache, baseUrl, read = fetch, knownMissing, integrityActive } = ctx;
+/* Fetches a module and checks its #sha256- pin. Null on a failed fetch or a non-ok status, throws on a mismatch. */
+export async function fetchModule(spec: string, ctx: FetchCtx): Promise<Uint8Array | null> {
+    const { baseUrl, read = fetch, knownMissing } = ctx;
 
-    // An explicit #sha256- fragment pins the bytes. It stays in the cache key but leaves the request URL.
+    // An explicit #sha256- fragment pins the bytes. It stays in the spec but leaves the request URL.
     const fragAt = spec.indexOf('#sha256-');
     const pin = fragAt === -1 ? null : spec.slice(fragAt + 8);
     const target = fragAt === -1 ? spec : spec.slice(0, fragAt);
-
-    if (integrityActive) {
-        const expected = lockfile.get(spec);
-        if (expected) {
-            const cached = await cache.getBytes(expected);
-            if (cached) return new Uint8Array(cached);
-        }
-    }
 
     let resp: Response;
     try {
@@ -64,16 +53,6 @@ export async function fetchWithLockfile(spec: string, lockfile: Map<string, stri
         if (pin !== hash) {
             throw new Error(`[edge-python] integrity check failed for '${target}'\n expected sha256-${pin}\n got sha256-${hash}`);
         }
-    }
-
-    if (integrityActive) {
-        const hash = await sha256Hex(bytes);
-        const expected = lockfile.get(spec);
-        if (expected && expected !== hash) {
-            throw new Error(`[edge-python] integrity drift for '${spec}'\n  locked: sha256-${expected}\n  remote: sha256-${hash}`);
-        }
-        await cache.putBytes(hash, bytes);
-        lockfile.set(spec, hash);
     }
 
     return bytes;

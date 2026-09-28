@@ -6,7 +6,7 @@ const WASM = `${BASE}/compiler.wasm`;
 // A fresh engine per test, the query string keeps the module state apart.
 async function boot(name, imports = {}, base = baseUrl) {
     const engine = await import(new URL(`../src/worker/engine.ts?deno=${name}`, import.meta.url).href);
-    await engine.load({ wasmUrl: WASM, integrity: false, imports, baseUrl: base });
+    await engine.load({ wasmUrl: WASM, imports, baseUrl: base });
     return engine;
 }
 

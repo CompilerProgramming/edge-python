@@ -1,10 +1,9 @@
 import { decodeBundle } from './bundle.ts';
-import { fetchWithLockfile } from './fetch.ts';
+import { fetchModule } from './fetch.ts';
 import { loadNativeModule, nativeTable } from './native.ts';
 import { dirOf, isVersion, joinRel, lockedSpec, parentDir } from './specs.ts';
 import type { Locked } from './specs.ts';
 import type { CompilerExports } from './wasm.ts';
-import type { CacheBackend } from './cache/types.ts';
 import type { Rt } from './rt.ts';
 import { check, RESERVED } from './system/grants.ts';
 import type { Permissions } from './system/grants.ts';
@@ -25,10 +24,8 @@ export interface PrefetchCtx {
     importsMap?: Record<string, string> | null
     permissions?: Permissions | null
     entryDir: string
-    cache: CacheBackend
     baseUrl?: string | null
     read?: (url: string) => Promise<Response>
-    integrityActive: boolean
     compilerExports: CompilerExports
     rt: Rt
 }
@@ -87,7 +84,7 @@ function scanImports(src: string, exports: CompilerExports): ImportRecord[] {
 }
 
 /* Lazy BFS prefetch, bare names resolve through programmatic imports then edge.json, only used imports get fetched. */
-export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, lockfile: Map<string, string>, ctx: PrefetchCtx): Promise<Packages> {
+export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, ctx: PrefetchCtx): Promise<Packages> {
     const { fetchedSources, knownMissing, importsMap, entryDir } = ctx;
     const visited = new Set<string>();
     const queue: string[] = [];
@@ -112,7 +109,7 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
     const lockFor = async (dir: string): Promise<Record<string, Locked> | null> => {
         if (locks.has(dir)) return locks.get(dir) ?? null;
         const at = dir + 'edge.lock';
-        const bytes = fetchedSources.get(at) ?? await fetchWithLockfile(at, lockfile, ctx);
+        const bytes = fetchedSources.get(at) ?? await fetchModule(at, ctx);
         const held = bytes ? JSON.parse(TD.decode(bytes)) as Record<string, Locked> : null;
         locks.set(dir, held);
         return held;
@@ -199,7 +196,7 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, loc
 
         let bytes = fetchedSources.get(spec);
         if (bytes === undefined) {
-            const fetched = await fetchWithLockfile(spec, lockfile, ctx);
+            const fetched = await fetchModule(spec, ctx);
             if (!fetched) {
                 // edge.json probes are opportunistic 404s, only a real module import is worth flagging.
                 if (!spec.endsWith('edge.json')) failures.push(schemeHint(spec) ?? `could not fetch module '${spec}'`);

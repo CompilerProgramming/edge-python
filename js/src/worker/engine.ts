@@ -1,4 +1,3 @@
-import { MemoryCache } from '../cache/memory.ts';
 import { bfsPrefetch } from '../prefetch.ts';
 import type { Packages } from '../prefetch.ts';
 import { makeCompilerEnv, resumePlugin } from '../env.ts';
@@ -10,9 +9,8 @@ import { SYSTEM } from '../system/index.ts';
 import { scopes } from '../system/grants.ts';
 import type { Permissions } from '../system/grants.ts';
 import type { CompilerExports } from '../wasm.ts';
-import type { CacheBackend } from '../cache/types.ts';
 import type { Limits, LoadOpts, RunOpts, ExecResult } from '../protocol.ts';
-import { errMsg, fault, writeBytes } from '../util.ts';
+import { fault, writeBytes } from '../util.ts';
 
 const TE = new TextEncoder();
 const TD = new TextDecoder();
@@ -36,8 +34,6 @@ interface ExecuteOpts extends RunOpts {
 // Worker-lifetime state
 let wasmModule: WebAssembly.Module | null = null;
 let compilerExports: CompilerExports | null = null;
-let cache: CacheBackend | null = null;
-let integrityActive = false;
 let importsMap: Record<string, string> | null = null;
 let permissionsMap: Permissions | null = null;
 // The program's directory and the page's reader of its files, which a room cannot fetch itself.
@@ -77,25 +73,13 @@ const requireExports = (): CompilerExports => {
 const read = (url: string): Promise<Response> => (readFile && programBase && url.startsWith(programBase) ? readFile(url) : fetch(url));
 
 /* Engine orchestrator, internal to the Worker. Consumers use `createWorker` in `src/index.ts`. Lifecycle is `load` once -> many `run` cycles -> `dispose`, and each run instantiates the compiler fresh with no state leak. */
-export async function load({ wasmUrl, wasm = null, integrity = true, imports = null, permissions = null, baseUrl = null, version = null, limits: caps = null }: LoadOpts, reader: ((url: string) => Promise<Response>) | null = null): Promise<{ integrityActive: boolean, loadMs: number }> {
+export async function load({ wasmUrl, wasm = null, imports = null, permissions = null, baseUrl = null, limits: caps = null }: LoadOpts, reader: ((url: string) => Promise<Response>) | null = null): Promise<{ loadMs: number }> {
     const t0 = performance.now();
     importsMap = imports;
     permissionsMap = permissions;
     programBase = baseUrl ? new URL('./', baseUrl).href : null;
     readFile = reader;
     limits = caps;
-
-    cache = await openCache(integrity);
-    integrityActive = Boolean(integrity) && cache.persistent;
-
-    // A provided version wipes the cache on mismatch, no version keeps it.
-    if (integrityActive && version) {
-        const stored = await cache.getVersion();
-        if (stored !== version) {
-            await cache.clear();
-            await cache.setVersion(version);
-        }
-    }
 
     // A room receives the compiler's bytes from its page, anywhere else the engine fetches them.
     if (wasm) {
@@ -109,7 +93,7 @@ export async function load({ wasmUrl, wasm = null, integrity = true, imports = n
         wasmModule = await WebAssembly.compileStreaming(wrapped);
     }
 
-    return { integrityActive, loadMs: performance.now() - t0 };
+    return { loadMs: performance.now() - t0 };
 }
 
 export async function run(opts: RunOpts, onLine?: (text: string) => void): Promise<ExecResult> {
@@ -127,14 +111,8 @@ export async function run(opts: RunOpts, onLine?: (text: string) => void): Promi
 
 /* Shared run/restore core, instance, host imports, prefetch, then drive `start`. */
 async function execute({ src, payload, start, entryDir = '', onLine, incremental = false, input }: ExecuteOpts): Promise<ExecResult> {
-    if (!wasmModule || !cache) throw new Error('engine.load() must be called first');
+    if (!wasmModule) throw new Error('engine.load() must be called first');
     entryDir = entryDir.replace(/^(\.\/)+/, ''); // specs never carry ./
-
-    let lockfile = new Map<string, string>();
-    if (integrityActive) {
-        try { lockfile = await cache.loadLockfile(); }
-        catch { /* lockfile load failure is non-fatal, treat as empty */ }
-    }
 
     /* rt built first (lazy getter) so makeCompilerEnv can decode handles during deferred host calls. */
     const rt = makeRt(requireExports);
@@ -144,18 +122,16 @@ async function execute({ src, payload, start, entryDir = '', onLine, incremental
     if (incremental && compilerExports) {
         exports = compilerExports;
     } else {
-        exports = await makeInstance(wasmModule, onLine, lockfile, rt);
+        exports = await makeInstance(wasmModule, onLine, rt);
     }
 
-    const packages = await bfsPrefetch(src, exports, lockfile, {
-        cache,
+    const packages = await bfsPrefetch(src, exports, {
         baseUrl: programBase,
         read,
         entryDir,
         knownMissing,
         importsMap,
         permissions: permissionsMap,
-        integrityActive,
         fetchedSources,
         compilerExports: exports,
         rt,
@@ -195,11 +171,6 @@ async function execute({ src, payload, start, entryDir = '', onLine, incremental
     } finally {
         // A finished run owns no requests or sockets, a REPL keeps them for its next input.
         if (!incremental) closeSystem();
-    }
-
-    if (integrityActive) {
-        try { await cache.saveLockfile(lockfile); }
-        catch { /* persistence failure is non-fatal, lockfile lives in-memory until next save */ }
     }
 
     return result;
@@ -242,13 +213,11 @@ function closeSystem(): void {
 }
 
 /* Fresh instance, resets module registry and native table. */
-async function makeInstance(module: WebAssembly.Module, onLine: ((text: string) => void) | undefined, lockfile: Map<string, string>, rt: Rt): Promise<CompilerExports> {
+async function makeInstance(module: WebAssembly.Module, onLine: ((text: string) => void) | undefined, rt: Rt): Promise<CompilerExports> {
     const env = makeCompilerEnv({
         getExports: requireExports,
         onLine: onLine ?? (() => {}),
         fetchedSources,
-        lockfile,
-        integrityActive,
         rt,
         captureHostCall: (id, call) => { pendingHostCalls.set(id, call); },
     });
@@ -448,16 +417,15 @@ export function reset(): void {
     servedDirs.clear();
 }
 
-export async function clearCache(): Promise<void> {
+/* Forgets every module fetched and every manifest found missing, the next run fetches afresh. */
+export function clearCache(): void {
     fetchedSources.clear();
     knownMissing.clear();
-    if (cache) await cache.clear();
 }
 
 export function dispose(): void {
     wasmModule = null;
     compilerExports = null;
-    cache = null;
     importsMap = null;
     permissionsMap = null;
     programBase = null;
@@ -468,21 +436,4 @@ export function dispose(): void {
     pendingHostCalls.clear();
     closeSystem();
     servedDirs.clear();
-}
-
-async function openCache(integrity: boolean): Promise<CacheBackend> {
-    if (!integrity) return new MemoryCache();
-    try {
-        const { IdbCache } = await import('../cache/idb.ts');
-        const idb = new IdbCache();
-        await idb.open();
-        return idb;
-    } catch (e) {
-        console.warn(
-            '[edge-python] integrity:true requested but IndexedDB unavailable; '
-            + 'running with in-memory cache. Check worker.integrityActive to detect.',
-            errMsg(e)
-        );
-        return new MemoryCache();
-    }
 }

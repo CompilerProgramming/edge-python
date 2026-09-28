@@ -49,7 +49,7 @@ function spawn(cdn: string, packages: Record<string, string>, onPhase?: (phase: 
 
     onPhase?.('worker')
     // A package page adds its own package, pinned, and it wins over an official name it shares.
-    const spawned: Worker = await createWorker({ wasmUrl: `${cdn}/compiler.wasm`, integrity: true, imports: { ...imports(cdn), ...packages } })
+    const spawned: Worker = await createWorker({ wasmUrl: `${cdn}/compiler.wasm`, imports: { ...imports(cdn), ...packages } })
     spawned.onOutput((chunk) => sink?.(chunk))
     ready = true
 

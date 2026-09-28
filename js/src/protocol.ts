@@ -13,13 +13,11 @@ export interface LoadOpts {
     wasmUrl?: string
     // The compiler's bytes, which a room receives from its page instead of fetching them.
     wasm?: ArrayBuffer | null
-    integrity?: boolean
     imports?: Record<string, string> | null
     // What the embedder's root manifest grants, beside the imports it declares.
     permissions?: Permissions | null
     // The program's directory, where its files and its edge.json live.
     baseUrl?: string | null
-    version?: string | null
     limits?: Limits | null
 }
 

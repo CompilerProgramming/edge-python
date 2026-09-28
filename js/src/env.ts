@@ -26,14 +26,12 @@ export interface MakeCompilerEnvOpts {
     getExports: () => CompilerExports
     onLine: (text: string) => void
     fetchedSources: Map<string, Uint8Array>
-    lockfile: Map<string, string>
-    integrityActive: boolean
     rt?: Rt
     captureHostCall?: (id: number, call: DeferredHostCall) => void
 }
 
 /* The `env.*` imports the compiler declares (host_print, host_call_native, host_fetch_bytes, host_now_ns, host_send), wired to closure-captured engine state. */
-export function makeCompilerEnv({ getExports, onLine, fetchedSources, lockfile, integrityActive, rt, captureHostCall }: MakeCompilerEnvOpts): CompilerEnv {
+export function makeCompilerEnv({ getExports, onLine, fetchedSources, rt, captureHostCall }: MakeCompilerEnvOpts): CompilerEnv {
     const readStr = (ptr: number, len: number) => TD.decode(new Uint8Array(getExports().memory.buffer, ptr, len));
     const setU32 = (ptr: number, v: number) => new DataView(getExports().memory.buffer).setUint32(ptr, v, true);
 
@@ -112,20 +110,11 @@ export function makeCompilerEnv({ getExports, onLine, fetchedSources, lockfile, 
         /* Wall-clock ns as BigInt, wasm marshals to i64 (JS Numbers lose precision past 2^53 ns). */
         host_now_ns: () => BigInt(Date.now()) * 1_000_000n,
 
-        /* Serves cached bytes for edge.json walk-up and `#sha256-...` verification, returns 0 on lockfile drift. */
-        host_fetch_bytes: (specPtr, specLen, hashPtr, outLenPtr) => {
+        /* Serves the bytes prefetch already fetched, their `#sha256-...` pin checked when they arrived. */
+        host_fetch_bytes: (specPtr, specLen, _hashPtr, outLenPtr) => {
             const spec = readStr(specPtr, specLen);
             const bytes = fetchedSources.get(spec);
             if (bytes === undefined) { setU32(outLenPtr, 0); return 0; }
-
-            if (integrityActive && hashPtr !== 0) {
-                const knownHex = lockfile.get(spec);
-                if (knownHex) {
-                    const expected = new Uint8Array(getExports().memory.buffer, hashPtr, 32);
-                    const hex = [...expected].map(b => b.toString(16).padStart(2, '0')).join('');
-                    if (hex !== knownHex) { setU32(outLenPtr, 0); return 0; }
-                }
-            }
 
             const exps = getExports();
             const ptr = exps.wasm_alloc(bytes.length);

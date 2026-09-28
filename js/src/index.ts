@@ -8,13 +8,10 @@ export interface CreateWorkerOpts {
     wasmUrl?: string
     imports?: Record<string, string>
     permissions?: Permissions
-    integrity?: boolean
-    version?: string | null
     limits?: Limits | null
 }
 
 export interface WorkerHandle {
-    integrityActive: boolean
     loadMs: number
     run(src: string, runOpts?: Omit<RunOpts, 'src'>): Promise<ExecResult>
     setPreemptInterval(interval: number): Promise<void>
@@ -110,12 +107,11 @@ export async function createWorker(opts: CreateWorkerOpts = {}): Promise<WorkerH
         }
     };
 
-    // A room has no IndexedDB, so its modules stay in memory, and one whose engine fails leaves no frame.
-    const ready = await send<{ integrityActive: boolean, loadMs: number }>({ type: 'load', opts: { ...opts, baseUrl: base, wasm, integrity: false } })
+    // A room whose engine fails to start leaves no frame behind.
+    const ready = await send<{ loadMs: number }>({ type: 'load', opts: { ...opts, baseUrl: base, wasm } })
         .catch((e: unknown) => { close(); throw e; });
 
     return {
-        integrityActive: ready.integrityActive,
         loadMs: ready.loadMs,
 
         // A worker runs the one program its baseUrl names, so a run cannot point elsewhere.
