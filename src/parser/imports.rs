@@ -157,8 +157,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         i
     }
 
-    /* Collects public top-level names from StoreName/MakeFunction, used by import-star. */
-    fn module_public_exports(sub: &SSAChunk) -> Vec<String> {
+    /* Collects top-level names from StoreName/MakeFunction, import-star keeps only the public ones. */
+    fn module_exports(sub: &SSAChunk, public: bool) -> Vec<String> {
         let mut exports: Vec<String> = Vec::new();
         let mut seen: FxHashSet<String> = FxHashSet::default();
         for ins in &sub.instructions {
@@ -172,7 +172,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             let Some(s) = slot_idx else { continue };
             let Some(name) = sub.names.get(s) else { continue };
             let bare = ssa_strip(name).to_string();
-            if bare.starts_with('_') { continue; }
+            if public && bare.starts_with('_') { continue; }
             if seen.insert(bare.clone()) { exports.push(bare); }
         }
         exports
@@ -232,7 +232,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             }
             Resolved::Code { src, canonical } => {
                 let Some(sub) = self.parse_or_get_cached(&canonical, &src, span) else { return; };
-                let exports = Self::module_public_exports(&sub);
+                let exports = Self::module_exports(&sub, false);
                 let import_idx = self.register_import(&canonical, ImportKind::Code(sub));
                 for (name, alias) in &names {
                     if !exports.iter().any(|e| e == name) {
@@ -290,7 +290,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             }
             Resolved::Code { src, canonical } => {
                 let Some(sub) = self.parse_or_get_cached(&canonical, &src, span) else { return; };
-                let exports = Self::module_public_exports(&sub);
+                let exports = Self::module_exports(&sub, true);
                 let import_idx = self.register_import(&canonical, ImportKind::Code(sub));
                 for name in &exports {
                     self.bind_module_attr(import_idx, name, name);

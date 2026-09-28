@@ -281,6 +281,16 @@
     "modules": { "m": { "code": "K = 7\ndef double(x):\n    return x * 2" } }
   },
   {
+    "src": "from m import _hidden, shown\nprint(_hidden, shown)",
+    "output": ["1 2"],
+    "modules": { "m": { "code": "_hidden = 1\nshown = 2" } }
+  },
+  {
+    "src": "from m import *\nprint(_hidden)",
+    "modules": { "m": { "code": "_hidden = 1\nshown = 2" } },
+    "error": "name '_hidden' is not defined"
+  },
+  {
     "src": "from m import label\nprint(__name__)\nprint(label(1))",
     "output": ["__main__", "yes"],
     "modules": { "m": { "code": "def label(p):\n    return 'yes' if p == 1 else 'no'\n\nif __name__ == '__main__':\n    print('ran as main')" } }
