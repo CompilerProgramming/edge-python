@@ -402,7 +402,8 @@ fn system_calls_answer_the_same_with_and_without_web() {
     let program = [
         "import net",
         "import time",
-        &format!("r = net.request('GET', 'http://127.0.0.1:{port}/text')"),
+        &format!("FIXTURE = 'http://127.0.0.1:{port}'"),
+        "r = net.request('GET', FIXTURE + '/text')",
         "status, headers = net.response(r)",
         "body = b''",
         "chunk = net.read(r)",
@@ -410,6 +411,8 @@ fn system_calls_answer_the_same_with_and_without_web() {
         "    body += chunk",
         "    chunk = net.read(r)",
         "print(status, body, time.now() > 10 ** 18)",
+        "heads = net.batch([['response', net.request('GET', url)] for url in [FIXTURE + '/text', FIXTURE + '/text']])",
+        "print([head[0] for head in heads], len(time.batch([['now'], ['now']])))",
         "try:",
         "    net.request('GET', 'http://evil.example/')",
         "except PermissionError as e:",
@@ -420,7 +423,7 @@ fn system_calls_answer_the_same_with_and_without_web() {
         "    print(e)",
     ];
     std::fs::write(dir.join("main.py"), program.join("\n") + "\n").unwrap();
-    let want = "200 b'hello from mock' True\n'main' has no net:evil.example, edge.json grants it net:127.0.0.1\n'main' has no time:monotonic, edge.json grants it time:wall\n";
+    let want = "200 b'hello from mock' True\n[200, 200] 2\n'main' has no net:evil.example, edge.json grants it net:127.0.0.1\n'main' has no time:monotonic, edge.json grants it time:wall\n";
     for args in [&["run", "main.py"][..], &["run", "--web", "main.py"][..]] {
         let (out, err, code) = run_in(&dir, args, None);
         assert_eq!((out.as_str(), code), (want, 0), "{args:?} stderr: {err}");

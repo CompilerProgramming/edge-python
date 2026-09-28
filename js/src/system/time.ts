@@ -1,4 +1,5 @@
 import type { EdgeValue } from '../rt.ts';
+import { batched } from './batch.ts';
 import { SystemError } from './error.ts';
 import { need } from './grants.ts';
 
@@ -17,5 +18,6 @@ export default function time(pkg: string, held: string[]) {
         return [Intl.DateTimeFormat().resolvedOptions().timeZone, -new Date().getTimezoneOffset() * 60];
     }
 
-    return { calls: { now, zone }, close() {} };
+    const calls = { now, zone };
+    return { calls: { ...calls, batch: batched('time', calls) }, close() {} };
 }

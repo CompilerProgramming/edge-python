@@ -117,6 +117,21 @@ while chunk is not None:
     chunk = net.read(r)
 ```
 
+## batch
+
+Every system module also takes `batch(calls)`, a list of `[name, *args]` lists answered in one crossing, the results in the same order. A call that waits holds the batch until every one settles, the first failure raises in the coroutine that made the batch, and each call still checks its own scope.
+
+```python
+import net
+import time
+
+now, zone = time.batch([["now"], ["zone"]])
+ids = net.batch([["request", "GET", url] for url in ["https://api.example.com/a", "https://api.example.com/b"]])
+heads = net.batch([["response", i] for i in ids])
+```
+
+Each crossing between the program and the host pays to decode the arguments and encode the answer, and a batch pays it once for all of its calls.
+
 ## From a plugin
 
 A `.wasm` plugin reaches the same calls through the `Sys` op of the [ABI](/docs/reference/abi#system-calls), with the grants of the package it sits in. A call that waits parks the program, and the plugin finishes its work in `__edge_resume` once the call settles, so the program sees what the plugin makes of the answer.

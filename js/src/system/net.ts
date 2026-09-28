@@ -1,4 +1,5 @@
 import type { EdgeValue } from '../rt.ts';
+import { batched } from './batch.ts';
 import { SystemError } from './error.ts';
 import { need } from './grants.ts';
 
@@ -145,5 +146,6 @@ export default function net(pkg: string, held: string[]) {
         streams.clear();
     }
 
-    return { calls: { request, response, read, connect, send, close }, close: closeAll };
+    const calls = { request, response, read, connect, send, close };
+    return { calls: { ...calls, batch: batched('net', calls) }, close: closeAll };
 }

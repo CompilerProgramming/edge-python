@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn time_answers_only_the_clocks_a_package_holds() {
         let run = run_id();
-        assert_eq!(open(run, "main", "time", &["wall".to_string()]), ["now", "zone"]);
+        assert_eq!(open(run, "main", "time", &["wall".to_string()]), ["now", "zone", "batch"]);
         assert!(matches!(answered(run, "main", "time", "now", &[]), Ok(WireValue::Int(ns)) if ns > 1_700_000_000_000_000_000));
         let denied = answered(run, "main", "time", "now", &[text("monotonic")]).unwrap_err();
         assert_eq!(denied, "PermissionError: 'main' has no time:monotonic, edge.json grants it time:wall");

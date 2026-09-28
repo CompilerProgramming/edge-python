@@ -55,6 +55,32 @@ Deno.test("system: time answers only the clocks a package holds", () => {
     if (typeof name !== "string" || !Number.isInteger(offset)) throw new Error("the zone");
 });
 
+Deno.test("system: a batch answers many calls of a module in one crossing", async () => {
+    const clock = time("main", ["wall", "zone"]).calls;
+    const [now, zone] = clock.batch([["now"], ["zone"]]);
+    if (typeof now !== "bigint" || !Array.isArray(zone)) throw new Error("a batch of calls that answer at once");
+    denied(() => clock.batch([["now", "monotonic"]]), "'main' has no time:monotonic, edge.json grants it time:wall, time:zone");
+    for (const bad of [[["tick"]], "now", [["now"], 7], [["batch"]]]) {
+        try {
+            clock.batch(bad);
+            throw new Error(`${JSON.stringify(bad)} was taken`);
+        } catch (e) {
+            if (e.name !== "ValueError") throw e;
+        }
+    }
+    // A call that waits holds the batch until every one of them settles.
+    const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, () => new Response("hi", { status: 201 }));
+    const at = `http://127.0.0.1:${server.addr.port}/`;
+    const web = net("main", ["127.0.0.1"]);
+    const [a, b] = web.calls.batch([["request", "GET", at], ["request", "GET", at]]);
+    const heads = await web.calls.batch([["response", a], ["response", b]]);
+    const bodies = await web.calls.batch([["read", a], ["read", b]]);
+    web.close();
+    await server.shutdown();
+    const text = bodies.map((body) => new TextDecoder().decode(body)).join(" ");
+    if (heads[0][0] !== 201 || heads[1][0] !== 201 || text !== "hi hi") throw new Error(`unexpected ${JSON.stringify(heads)} ${text}`);
+});
+
 Deno.test("system: net reaches only its hosts and the ids its package opened", async () => {
     const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, () => new Response("hi"));
     const at = `http://127.0.0.1:${server.addr.port}/`;
