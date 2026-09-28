@@ -73,6 +73,12 @@ runs:
         shared-key: ${{ inputs.mode != 'release' && 'cli-debug' || '' }}
         key: ${{ inputs.target }}
 
+    # The archive changes only with mozjs_sys, so its lock entry names it, not the whole lock a release bumps.
+    - name: SpiderMonkey revision
+      id: mozjs
+      shell: bash
+      run: echo "revision=$(grep -A2 '^name = "mozjs_sys"$' cli/Cargo.lock | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+
     # After rust-cache, so the archive is saved before rust-cache clears the files loose in target.
     - name: Cache SpiderMonkey
       uses: actions/cache@v6
@@ -80,7 +86,7 @@ runs:
         path: |
           cli/target/libmozjs-*.tar.gz
           cli/target/*/libmozjs-*.tar.gz
-        key: mozjs-${{ inputs.target || runner.arch }}-${{ hashFiles('cli/Cargo.lock') }}
+        key: mozjs-${{ inputs.target || runner.arch }}-${{ steps.mozjs.outputs.revision }}
 
     # SpiderMonkey compiles once per revision and target, and later jobs link the archive mozjs made of it.
     - name: Link or build SpiderMonkey
