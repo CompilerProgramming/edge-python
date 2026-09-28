@@ -87,5 +87,23 @@
     "run": ["build", "--app"],
     "creates": ["app"],
     "then": { "bin": "./app", "env": { "EDGE_CDN_BASE": "http://127.0.0.1:1", "XDG_CACHE_HOME": "empty-cache" }, "stdout": ["A-B!"] }
+  },
+  {
+    "given": {
+      "edge.json": "{ \"imports\": { \"slugify_mod\": \"./slugify_mod.wasm\" }, \"permissions\": { \"main\": [\"time:wall\"] } }\n",
+      "main.py": "from slugify_mod import wall_ns\nprint(wall_ns() > 10 ** 18)\n"
+    },
+    "copy": { "slugify_mod.wasm": "target/wasm32-unknown-unknown/release/slugify_mod.wasm" },
+    "run": ["run", "main.py"],
+    "stdout": ["True"]
+  },
+  {
+    "given": {
+      "edge.json": "{ \"imports\": { \"slugify_mod\": \"./slugify_mod.wasm\" } }\n",
+      "main.py": "from slugify_mod import wall_ns\ntry:\n    wall_ns()\nexcept PermissionError as e:\n    print(e)\n"
+    },
+    "copy": { "slugify_mod.wasm": "target/wasm32-unknown-unknown/release/slugify_mod.wasm" },
+    "run": ["run", "main.py"],
+    "stdout": ["'main' imports time, which edge.json does not grant it"]
   }
 ]

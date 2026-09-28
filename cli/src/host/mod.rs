@@ -187,15 +187,21 @@ impl Host {
     }
 }
 
+/* One export of a plugin instance, with the ABI exports its calls go through. */
+#[derive(Clone)]
+pub struct Plugin {
+    pub func: TypedFunc<(i32, i32, i32), i32>,
+    pub alloc: TypedFunc<i32, i32>,
+    pub free: Option<TypedFunc<(i32, i32), ()>>,
+    pub memory: Memory,
+    // Optional, where a system call the plugin waited on settles.
+    pub resume: Option<TypedFunc<(i32, i32, i32), i32>>,
+}
+
 /* One entry of the native table the compiler dispatches `host_call_native` through. */
 #[derive(Clone)]
 pub enum Native {
-    Plugin {
-        func: TypedFunc<(i32, i32, i32), i32>,
-        alloc: TypedFunc<i32, i32>,
-        free: Option<TypedFunc<(i32, i32), ()>>,
-        memory: Memory,
-    },
+    Plugin(Box<Plugin>),
     // An export of a JavaScript module, answered by that module's runtime.
     Js {
         runtime: usize,
@@ -233,6 +239,10 @@ pub struct State {
     pub registered: Registered,
     // Ids of host calls parked since the last dispatch, each answer arrives as a completion.
     pub deferred: Vec<u32>,
+    // The plugin calls running now, innermost last, which `edge_call_id` answers with.
+    pub running: Vec<u32>,
+    // The plugin waiting on each call id, resumed once the system call it made settles.
+    pub waiting: HashMap<u32, Box<Plugin>>,
     // Messages send() handed over, None outside an actor pool where no scheduler drains them.
     pub outbox: Option<Vec<(String, String)>>,
     pub limiter: MemoryCap,

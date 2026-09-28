@@ -56,6 +56,8 @@ impl Host {
             fetched: HashMap::new(),
             registered: HashMap::new(),
             deferred: Vec::new(),
+            running: Vec::new(),
+            waiting: HashMap::new(),
             outbox: None,
             limiter: MemoryCap { max: memory.unwrap_or(usize::MAX) },
             slot: 0,
@@ -461,6 +463,7 @@ impl Vm {
         state.natives.clear();
         state.registered.clear();
         state.deferred.clear();
+        state.waiting.clear();
         state.js.clear();
         drop(inst);
         self.parked.clear();
@@ -516,19 +519,25 @@ impl Vm {
         let mut inst = self.enter()?;
         let raw = {
             let Instance { store, ex, .. } = &mut *inst;
-            match value {
-                Ok(value) => {
+            match (store.data_mut().waiting.remove(&id), value) {
+                // A plugin waiting on this call finishes its own work before the program sees the result.
+                (Some(plugin), settled) => super::env::resume(&mut *store, ex, id, plugin, settled),
+                (None, Ok(value)) => {
                     let handle = rt::encode(&mut *store, ex, &value).map_err(|e| anyhow!(e))?;
                     ex.set_host_result_by_id.call(&mut *store, (id as i32, handle as i32))
                 }
-                Err(msg) => {
+                (None, Err(msg)) => {
                     let (kind, msg) = super::env::kind_of(&msg);
                     let handle = rt::encode(&mut *store, ex, &WireValue::Bytes(msg.as_bytes().to_vec())).map_err(|e| anyhow!(e))?;
                     ex.set_host_error_by_id.call(&mut *store, (id as i32, kind, handle as i32))
                 }
             }
         };
+        // A resumed plugin that waits again is already in flight on the same id.
+        let waits = std::mem::take(&mut inst.store.data_mut().deferred).len();
         let code = inst.checked(raw)?;
+        drop(inst);
+        self.inflight += waits;
         if code != 0 {
             bail!("host call {id} delivery returned {code}");
         }

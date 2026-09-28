@@ -1,9 +1,9 @@
-use super::{read, read_u32, stage, unstage, write, write_u32, wt, Exports, Instance, Native, State};
+use super::{read, read_u32, stage, unstage, write, write_u32, wt, Exports, Instance, Native, Plugin, State};
 use anyhow::{anyhow, Result};
 use compiler::abi::EDGE_ABI_VERSION;
 use wasmtime::{Caller, ExternType, InstancePre, Linker, Memory, TypedFunc};
 
-/* The six `env` imports a plugin declares, each bridges guest memory to the compiler exports. */
+/* The seven `env` imports a plugin declares, each bridges guest memory to the compiler exports. */
 pub fn link(linker: &mut Linker<State>) -> Result<()> {
     linker
         .func_wrap("env", "edge_op", |mut caller: Caller<'_, State>, op: i32, recv: i32, name_ptr: i32, name_len: i32, argv_ptr: i32, argc: i32, out: i32| -> wasmtime::Result<i32> {
@@ -62,6 +62,9 @@ pub fn link(linker: &mut Linker<State>) -> Result<()> {
             let ex = exports(&caller);
             ex.host_edge_release.call(&mut caller, handle)
         })
+        .map_err(|e| anyhow!("{e}"))?;
+    linker
+        .func_wrap("env", "edge_call_id", |caller: Caller<'_, State>| -> i32 { caller.data().running.last().copied().unwrap_or(0) as i32 })
         .map_err(|e| anyhow!("{e}"))?;
     linker
         .func_wrap("env", "edge_throw", |mut caller: Caller<'_, State>, kind: i32, ptr: i32, len: i32| -> wasmtime::Result<()> {
@@ -136,6 +139,7 @@ pub fn register_pre(inst: &mut Instance, what: &str, spec: &str, pre: &InstanceP
     }
     let alloc: TypedFunc<i32, i32> = wt(instance.get_typed_func(&mut inst.store, "__edge_alloc")).map_err(|e| e.to_string())?;
     let free: Option<TypedFunc<(i32, i32), ()>> = instance.get_typed_func(&mut inst.store, "__edge_free").ok();
+    let resume: Option<TypedFunc<(i32, i32, i32), i32>> = instance.get_typed_func(&mut inst.store, "__edge_resume").ok();
     let base = inst.store.data().natives.len();
     let mut names = Vec::new();
     for export in pre.module().exports() {
@@ -149,7 +153,7 @@ pub fn register_pre(inst: &mut Instance, what: &str, spec: &str, pre: &InstanceP
         }
         let Ok(func) = instance.get_typed_func::<(i32, i32, i32), i32>(&mut inst.store, n) else { continue };
         names.push(n.to_string());
-        inst.store.data_mut().natives.push(Native::Plugin { func, alloc: alloc.clone(), free: free.clone(), memory });
+        inst.store.data_mut().natives.push(Native::Plugin(Box::new(Plugin { func, alloc: alloc.clone(), free: free.clone(), memory, resume: resume.clone() })));
     }
     inst.store.data_mut().registered.insert(spec.to_string(), (base, names.clone()));
     inst.register_native(spec, &names, base)

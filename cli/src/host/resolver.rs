@@ -57,6 +57,8 @@ struct Walk<'a> {
     mounted: HashMap<String, Vec<u8>>,
     // Every manifest read, by its dir, for the package name and the permissions it carries.
     manifests: HashMap<String, serde_json::Value>,
+    // A plugin may make system calls, so one loaded needs them served.
+    plugins: bool,
 }
 
 impl<'a> Walk<'a> {
@@ -76,6 +78,7 @@ impl<'a> Walk<'a> {
             origins: HashMap::new(),
             mounted: HashMap::new(),
             manifests: HashMap::new(),
+            plugins: false,
         }
     }
 
@@ -135,8 +138,8 @@ impl<'a> Walk<'a> {
         if let Err(e) = self.inst.set_wall_clock(clock) {
             self.failures.push(e);
         }
-        // SpiderMonkey only starts for a program that imports a name no manifest declares, the only way to reach a system module.
-        if self.pending_bare.is_empty() {
+        // SpiderMonkey starts only when a system module is reachable, by an undeclared name or a plugin.
+        if self.pending_bare.is_empty() && !self.plugins {
             return;
         }
         let modules = system::modules();
@@ -225,6 +228,7 @@ impl<'a> Walk<'a> {
             return;
         }
         let name = self.origins.get(spec).map_or_else(|| target(spec).to_string(), |(name, _)| name.clone());
+        self.plugins = true;
         if let Err(e) = plugins::register_bytes(self.inst, &name, spec, bytes) {
             self.failures.push(e);
         }

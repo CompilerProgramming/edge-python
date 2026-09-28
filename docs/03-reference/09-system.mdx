@@ -117,6 +117,10 @@ while chunk is not None:
     chunk = net.read(r)
 ```
 
+## From a plugin
+
+A `.wasm` plugin reaches the same calls through the `Sys` op of the [ABI](/docs/reference/abi#system-calls), with the grants of the package it sits in. A call that waits parks the program, and the plugin finishes its work in `__edge_resume` once the call settles, so the program sees what the plugin makes of the answer.
+
 ## Embedding
 
 A page that runs a program with `createWorker` passes what its root `edge.json` would grant beside the imports.

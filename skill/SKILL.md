@@ -751,7 +751,7 @@ import time
 }
 ```
 
-Only the root grants. A dependency lists what it needs in its own `edge.json` in the same shape, which grants it nothing, and trust is never inherited, so the root writes out every entry for every package however deep. `edge lock` stops until the root grants every ask, a package that asks needs a `name`, and no package may be named `all` or `main`. A package is the nearest `edge.json` above its files. Each call checks its scope again, a call outside the grant raises `PermissionError`, a subclass of `OSError`, and a request or socket belongs to the package that opened it. An `eval` group holds no permission.
+Only the root grants. A dependency lists what it needs in its own `edge.json` in the same shape, which grants it nothing, and trust is never inherited, so the root writes out every entry for every package however deep. `edge lock` stops until the root grants every ask, a package that asks needs a `name`, and no package may be named `all` or `main`. A package is the nearest `edge.json` above its files. Each call checks its scope again, a call outside the grant raises `PermissionError`, a subclass of `OSError`, and a request or socket belongs to the package that opened it. An `eval` group holds no permission. A `.wasm` plugin reaches the same calls through the `Sys` op of the ABI with the grants of its package, and finishes a call that waits in `__edge_resume`.
 
 ### time
 

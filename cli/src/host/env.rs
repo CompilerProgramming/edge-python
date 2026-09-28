@@ -1,8 +1,8 @@
 use super::js::Called;
-use super::{read, read_u32, rt, stage, unstage, write, write_u32, Exports, Native, State};
+use super::{read, read_u32, rt, stage, unstage, write, write_u32, Exports, Native, Plugin, State};
 use anyhow::{anyhow, Result};
 use compiler::abi::WireValue;
-use wasmtime::{Caller, Linker};
+use wasmtime::{AsContextMut, Caller, Linker};
 
 // The RUNTIME error kind of the ABI.
 pub const ERR_RUNTIME: i32 = 2;
@@ -71,13 +71,16 @@ fn call_native(caller: &mut Caller<'_, State>, id: i32, call_id: i32, argv_ptr: 
         return Ok(1);
     };
     match native {
-        Native::Plugin { func, alloc, free, memory } => {
+        Native::Plugin(plugin) => {
             let argv = read(caller, ex.memory, argv_ptr, argc * 4);
             let len = (argc * 4).max(4);
-            let g_argv = alloc.call(&mut *caller, len)?;
-            let g_out = alloc.call(&mut *caller, 4)?;
-            write(caller, memory, g_argv, &argv);
-            let status = match func.call(&mut *caller, (g_argv, argc, g_out)) {
+            let g_argv = plugin.alloc.call(&mut *caller, len)?;
+            let g_out = plugin.alloc.call(&mut *caller, 4)?;
+            write(caller, plugin.memory, g_argv, &argv);
+            caller.data_mut().running.push(call_id as u32);
+            let called = plugin.func.call(&mut *caller, (g_argv, argc, g_out));
+            caller.data_mut().running.pop();
+            let mut status = match called {
                 Ok(status) => status,
                 Err(e) => {
                     throw(caller, &ex, &format!("native module trapped: {e}"));
@@ -85,12 +88,20 @@ fn call_native(caller: &mut Caller<'_, State>, id: i32, call_id: i32, argv_ptr: 
                 }
             };
             if status == 0 {
-                let handle = read_u32(caller, memory, g_out);
+                let handle = read_u32(caller, plugin.memory, g_out);
                 write_u32(caller, ex.memory, out_ptr, handle);
             }
-            if let Some(free) = free {
+            if let Some(free) = &plugin.free {
                 let _ = free.call(&mut *caller, (g_argv, len));
                 let _ = free.call(&mut *caller, (g_out, 4));
+            }
+            // A plugin waiting on a system call finishes in its resume export once that settles.
+            if status == 2 && plugin.resume.is_none() {
+                throw(caller, &ex, "native module waits on a system call but exports no __edge_resume");
+                status = 1;
+            }
+            if status == 2 {
+                caller.data_mut().waiting.insert(call_id as u32, plugin);
             }
             Ok(status)
         }
@@ -181,6 +192,62 @@ fn answered(caller: &mut Caller<'_, State>, ex: &Exports, out_ptr: i32, call_id:
     }
 }
 
+/* Hands a settled system call to its waiting plugin, then delivers what the plugin answers. */
+pub(super) fn resume(cx: &mut impl AsContextMut<Data = State>, ex: &Exports, id: u32, plugin: Box<Plugin>, settled: Result<WireValue, String>) -> wasmtime::Result<i32> {
+    let Some(resume) = plugin.resume.clone() else { return Ok(2) };
+    // A failed call reaches the plugin as a zero handle with its error stashed.
+    let answer = match settled {
+        Ok(value) => rt::encode(cx, ex, &value).map_err(|e| wasmtime::format_err!("{e}"))? as i32,
+        Err(msg) => {
+            throw(cx, ex, &msg);
+            0
+        }
+    };
+    let out = plugin.alloc.call(&mut *cx, 4)?;
+    cx.as_context_mut().data_mut().running.push(id);
+    let called = resume.call(&mut *cx, (id as i32, answer, out));
+    cx.as_context_mut().data_mut().running.pop();
+    let status = called.unwrap_or_else(|e| {
+        throw(cx, ex, &format!("native module trapped: {e}"));
+        1
+    });
+    let handle = read_u32(cx, plugin.memory, out);
+    if let Some(free) = &plugin.free {
+        let _ = free.call(&mut *cx, (out, 4));
+    }
+    match status {
+        0 => ex.set_host_result_by_id.call(&mut *cx, (id as i32, handle as i32)),
+        // Still waiting, the system call it just made settles on the same id.
+        2 => {
+            cx.as_context_mut().data_mut().waiting.insert(id, plugin);
+            Ok(0)
+        }
+        _ => {
+            let (kind, msg) = take_error(cx, ex)?;
+            let handle = rt::encode(cx, ex, &WireValue::Bytes(msg.into_bytes())).map_err(|e| wasmtime::format_err!("{e}"))?;
+            ex.set_host_error_by_id.call(&mut *cx, (id as i32, kind, handle as i32))
+        }
+    }
+}
+
+/* The error a plugin stashed, as its kind and message. */
+fn take_error(cx: &mut impl AsContextMut<Data = State>, ex: &Exports) -> wasmtime::Result<(i32, String)> {
+    let mut size = 256;
+    loop {
+        let kind = ex.wasm_alloc.call(&mut *cx, 4)?;
+        let buf = ex.wasm_alloc.call(&mut *cx, size)?;
+        let got = ex.host_edge_take_error.call(&mut *cx, (kind, buf, size))?;
+        let taken = (read_u32(cx, ex.memory, kind) as i32, String::from_utf8_lossy(&read(cx, ex.memory, buf, got.max(0))).into_owned());
+        let _ = ex.wasm_free.call(&mut *cx, (kind, 4));
+        let _ = ex.wasm_free.call(&mut *cx, (buf, size));
+        match got {
+            n if n >= 0 => return Ok(taken),
+            -1 => return Ok((ERR_RUNTIME, "native call failed".to_string())),
+            n => size = -n,
+        }
+    }
+}
+
 /* The error kind a message raises as, picked by its class prefix, a custom kind keeps the class in the message. */
 pub(super) fn kind_of(msg: &str) -> (i32, &str) {
     match msg.split_once(": ") {
@@ -193,7 +260,7 @@ pub(super) fn kind_of(msg: &str) -> (i32, &str) {
 }
 
 /* Stashes the error the compiler raises once the call returns 1, a class prefix picks its kind. */
-pub(super) fn throw(caller: &mut Caller<'_, State>, ex: &Exports, msg: &str) {
+pub(super) fn throw(caller: &mut impl AsContextMut<Data = State>, ex: &Exports, msg: &str) {
     let (kind, msg) = kind_of(msg);
     if let Ok(ptr) = stage(caller, ex, msg.as_bytes()) {
         let _ = ex.host_edge_throw.call(&mut *caller, (kind, ptr, msg.len() as i32));
