@@ -1,4 +1,5 @@
-import { nativeTable } from './native.ts';
+import { nativeTable, running, waiting } from './native.ts';
+import type { WasmPdkFn } from './native.ts';
 import type { CompilerExports } from './wasm.ts';
 import type { Rt, EdgeValue } from './rt.ts';
 import { errMsg, fault, writeBytes, ERR_RUNTIME, ERR_TYPE } from './util.ts';
@@ -113,15 +114,24 @@ export function makeCompilerEnv({ getExports, onLine, fetchedSources, lockfile, 
             }
 
             let status: number;
+            running.push(call_id);
             try {
                 status = fn(g_argv, argc, g_out) as number;
             } catch (e) {
                 stashError(exports, `native module trapped: ${errMsg(e)}`);
                 return 1;
+            } finally {
+                running.pop();
             }
             if (status === 0) {
                 compView().setUint32(out_ptr, guestView().getUint32(g_out, true), true);
             }
+            // A plugin waiting on a system call finishes in its resume export once that settles.
+            if (status === 2 && !fn.__edge_resume) {
+                stashError(exports, `native module '${fn.__edge_name}' waits on a system call but exports no __edge_resume`);
+                status = 1;
+            }
+            if (status === 2) waiting.set(call_id, fn);
             // Optional export, pre-__edge_free plugins still leak.
             fn.__edge_free?.(g_argv, argvLen);
             fn.__edge_free?.(g_out, 4);
@@ -156,6 +166,52 @@ export function makeCompilerEnv({ getExports, onLine, fetchedSources, lockfile, 
         /* No actor scheduler lives in a page or a worker, so send() raises its missing-scheduler error. */
         host_send: () => 1,
     };
+}
+
+/* Hands a settled system call to its waiting plugin, then delivers what the plugin answers. */
+export function resumePlugin(exports: CompilerExports, rt: Rt, id: number, fn: WasmPdkFn, settled: { value: unknown } | { kind: number, message: string }): number {
+    waiting.delete(id);
+    // A failed call reaches the plugin as a zero handle with its error stashed.
+    let answer = 0;
+    if ('value' in settled) answer = rt.encodeAny(settled.value as EdgeValue);
+    else stashError(exports, settled.message, settled.kind);
+    const out = fn.__edge_alloc(4);
+    let status: number;
+    running.push(id);
+    try {
+        status = fn.__edge_resume?.(id, answer, out) ?? 1;
+    } catch (e) {
+        stashError(exports, `native module trapped: ${errMsg(e)}`);
+        status = 1;
+    } finally {
+        running.pop();
+    }
+    const handle = new DataView(fn.__edge_memory.buffer).getUint32(out, true);
+    fn.__edge_free?.(out, 4);
+    if (status === 0) return exports.set_host_result_by_id(id, handle);
+    // Still waiting, the system call it just made settles on the same id.
+    if (status === 2) {
+        waiting.set(id, fn);
+        return 0;
+    }
+    const [kind, message] = takeError(exports);
+    return exports.set_host_error_by_id(id, kind, rt.encodeAny(message));
+}
+
+/* The error a plugin stashed, as its kind and message. */
+function takeError(exports: CompilerExports): [number, string] {
+    let size = 256;
+    for (;;) {
+        const kind = exports.wasm_alloc(4);
+        const buf = exports.wasm_alloc(size);
+        const got = exports.host_edge_take_error(kind, buf, size);
+        const result: [number, string] = [new DataView(exports.memory.buffer).getUint32(kind, true), TD.decode(new Uint8Array(exports.memory.buffer, buf, Math.max(0, got)))];
+        exports.wasm_free(kind, 4);
+        exports.wasm_free(buf, size);
+        if (got >= 0) return result;
+        if (got === -1) return [ERR_RUNTIME, 'native call failed'];
+        size = -got;
+    }
 }
 
 function stashError(exports: CompilerExports, message: string, kind = ERR_RUNTIME): void {

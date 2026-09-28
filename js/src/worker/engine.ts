@@ -1,11 +1,11 @@
 import { MemoryCache } from '../cache/memory.ts';
 import { bfsPrefetch } from '../prefetch.ts';
 import type { Packages } from '../prefetch.ts';
-import { makeCompilerEnv } from '../env.ts';
+import { makeCompilerEnv, resumePlugin } from '../env.ts';
 import type { DeferredHostCall } from '../env.ts';
 import { makeRt } from '../rt.ts';
 import type { Rt, EdgeValue } from '../rt.ts';
-import { nativeTable, resetNativeTable } from '../native.ts';
+import { nativeTable, resetNativeTable, waiting } from '../native.ts';
 import { SYSTEM } from '../system/index.ts';
 import { scopes } from '../system/grants.ts';
 import type { Permissions } from '../system/grants.ts';
@@ -356,10 +356,12 @@ async function drive(exports: CompilerExports, rt: Rt, status: number, t0: numbe
                     const asked = call.pending ?? delegate?.(call.module, call.name, call.args);
                     if (!asked) throw new Error('native deferred but setHostCallDelegate() never set');
                     const value = await asked;
-                    rv = exports.set_host_result_by_id(id, rt.encodeAny(value as EdgeValue));
+                    const plugin = waiting.get(id);
+                    rv = plugin ? resumePlugin(exports, rt, id, plugin, { value }) : exports.set_host_result_by_id(id, rt.encodeAny(value as EdgeValue));
                 } catch (e) {
                     const [kind, message] = fault(e);
-                    rv = exports.set_host_error_by_id(id, kind, rt.encodeAny(message));
+                    const plugin = waiting.get(id);
+                    rv = plugin ? resumePlugin(exports, rt, id, plugin, { kind, message }) : exports.set_host_error_by_id(id, kind, rt.encodeAny(message));
                 }
                 if (rv !== 0) throw new Error(`host-call ${id} delivery returned ${rv} for '${call.module}.${call.name}'`);
             }));

@@ -13,6 +13,8 @@ export interface WasmPdkFn extends NativeFnBase {
     __edge_alloc: (size: number) => number
     __edge_free?: (ptr: number, len: number) => void
     __edge_memory: WebAssembly.Memory
+    // Optional, where a system call the plugin waited on settles.
+    __edge_resume?: (call: number, answer: number, out: number) => number
 }
 
 export interface CapabilityFn extends NativeFnBase {
@@ -53,11 +55,19 @@ const ABI_VERSION = 1;
 
 export const nativeTable: NativeFn[] = [];
 
+// The plugin calls running now, innermost last, which `edge_call_id` answers with.
+export const running: number[] = [];
+
+// The plugin waiting on each call id, resumed once the system call it made settles.
+export const waiting = new Map<number, WasmPdkFn>();
+
 export function resetNativeTable(): void {
     nativeTable.length = 0;
+    running.length = 0;
+    waiting.clear();
 }
 
-/* Build the 6 `env.edge_*` imports for wasm-pdk plugins, bridging guest and compiler memory. */
+/* Build the 7 `env.edge_*` imports for wasm-pdk plugins, bridging guest and compiler memory. */
 export function makeGuestEnv(compilerExports: CompilerExports) {
     const compMem = () => new Uint8Array(compilerExports.memory.buffer);
     const compView = () => new DataView(compilerExports.memory.buffer);
@@ -110,6 +120,8 @@ export function makeGuestEnv(compilerExports: CompilerExports) {
             },
 
             edge_release: (h: number): void => compilerExports.host_edge_release(h),
+
+            edge_call_id: (): number => running[running.length - 1] ?? 0,
 
             edge_throw: (kind: number, msg_ptr: number, msg_len: number): void => {
                 const c = stage(msg_ptr, msg_len);
@@ -165,6 +177,7 @@ async function builtinWasmPdkLoader(module: WebAssembly.Module, ctx: NativeLoadC
         // Optional on older plugins, callers use `?.`.
         v.__edge_free = instance.exports.__edge_free as ((ptr: number, len: number) => void) | undefined;
         v.__edge_memory = instance.exports.memory as WebAssembly.Memory;
+        v.__edge_resume = instance.exports.__edge_resume as WasmPdkFn['__edge_resume'];
         v.__edge_kind = 'wasmpdk';
         fns.push(v);
     }

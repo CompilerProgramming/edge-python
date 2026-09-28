@@ -260,6 +260,31 @@ Deno.test("deno: net reaches only the hosts its package holds", async () => {
     if (got.out !== "" || got.text !== "200 b'got /items' None\n'main' has no net:localhost, edge.json grants it net:127.0.0.1") throw new Error(`unexpected ${JSON.stringify(got)}`);
 });
 
+// The pdk example, built by `cargo build --release --target wasm32-unknown-unknown -p slugify-mod`.
+const PLUGIN = new URL("../../target/wasm32-unknown-unknown/release/slugify_mod.wasm", import.meta.url);
+
+Deno.test("deno: a plugin reaches system calls and awaits the ones that wait", async () => {
+    const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, () => new Response("ok", { status: 201 }));
+    const base = await project({ "edge.json": JSON.stringify({ imports: { slugify_mod: "./slugify_mod.wasm" }, permissions: { main: ["time:wall", "net:127.0.0.1"] } }) });
+    await Deno.writeFile(new URL("slugify_mod.wasm", base), await Deno.readFile(PLUGIN));
+    const src = [
+        "from slugify_mod import wall_ns, status_of",
+        "print(wall_ns() > 10 ** 18)",
+        `print(status_of('http://127.0.0.1:${server.addr.port}/'))`,
+        "try:",
+        "    status_of('http://127.0.0.1:1/')",
+        "except OSError as e:",
+        "    print(type(e).__name__)",
+        "try:",
+        "    status_of('http://evil.example/')",
+        "except PermissionError as e:",
+        "    print(e)",
+    ].join("\n");
+    const got = await output("plugin-system", src, base);
+    await server.shutdown();
+    if (got.out !== "" || got.text !== "True\n201\nOSError\n'main' has no net:evil.example, edge.json grants it net:127.0.0.1") throw new Error(`unexpected ${JSON.stringify(got)}`);
+});
+
 Deno.test("deno: the clock stays virtual until a package holds time", async () => {
     let t0 = performance.now();
     const virtual = await output("virtual", "sleep(3600)\nprint('an hour, at once')", baseUrl);

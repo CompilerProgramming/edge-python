@@ -27,6 +27,16 @@ runs:
       shell: bash
       run: deno run -A npm:playwright install --with-deps chromium
 
+    # The Deno suite loads the pdk example to prove a plugin reaches and awaits system calls.
+    - name: Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+
+    - name: Build the plugin fixture
+      shell: bash
+      run: cargo build --locked --release --target wasm32-unknown-unknown -p slugify-mod
+
     # The Deno suite proves the host runs with no browser, the Playwright one drives Chromium.
     - name: JS host
       shell: bash
