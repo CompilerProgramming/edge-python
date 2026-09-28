@@ -29,6 +29,30 @@ fn join_all(sep: String, parts: Args) -> Result<String> {
     Ok(out)
 }
 
+/// Nanoseconds on the wall clock, a system call that answers at once. Showcases `Handle::sys`.
+#[plugin_fn]
+fn wall_ns() -> Result<i64> {
+    let now = Handle::sys("time.now", &[])?;
+    i64::from_handle(now.raw())
+}
+
+/// The status `url` answers with, the response waits and `resume` finishes. Showcases `#[plugin_resume]`.
+#[plugin_fn]
+fn status_of(url: String) -> Result<i64> {
+    let (method, target) = (encode(Value::Bytes(b"GET".to_vec()))?, encode(Value::Bytes(url.into_bytes()))?);
+    let id = Handle::sys("net.request", &[method.raw(), target.raw()])?;
+    status(Handle::sys("net.response", &[id.raw()])?)
+}
+
+#[plugin_resume]
+fn resume(_call: u32, head: Result<Handle>) -> Result<i64> {
+    status(head?)
+}
+
+fn status(head: Handle) -> Result<i64> {
+    i64::from_handle(head.get_item(&encode(Value::Int(0))?)?.raw())
+}
+
 /// Accumulates slug parts across calls. Exercises mutable state and Option/Result returns.
 #[plugin_class]
 pub struct Slugger {

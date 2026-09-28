@@ -13,11 +13,11 @@ extern crate alloc;
 /// }
 /// ```
 pub use wasm_pdk_macros::plugin_fn;
-pub use wasm_pdk_macros::{plugin_const, plugin_class, plugin_methods, plugin_ctor};
+pub use wasm_pdk_macros::{plugin_const, plugin_class, plugin_methods, plugin_ctor, plugin_resume};
 
 /// Curated import surface that hides `__internals` / `__edge_alloc` from glob users.
 pub mod prelude {
-    pub use crate::{plugin_fn, plugin_const, plugin_class, plugin_methods, plugin_ctor, Handle, Value, Bytes, Args, Error, Result, FromValue, IntoValue, Kwargs, PluginCell};
+    pub use crate::{plugin_fn, plugin_const, plugin_class, plugin_methods, plugin_ctor, plugin_resume, call_id, Handle, Value, Bytes, Args, Error, Result, FromValue, IntoValue, Kwargs, PluginCell};
 }
 
 /* Plugin bootstrap */
@@ -119,7 +119,11 @@ unsafe extern "C" {
     pub fn edge_release(h: u32);
     pub fn edge_take_error(out_kind: *mut u32, dst: *mut u8, dst_max: u32) -> i32;
     pub fn edge_throw(kind: u32, msg_ptr: *const u8, msg_len: u32);
+    pub fn edge_call_id() -> u32;
 }
+
+/// The call running in this plugin, the key to keep state under while a system call waits.
+pub fn call_id() -> u32 { unsafe { edge_call_id() } }
 
 /* ABI version handshake */
 
@@ -140,6 +144,13 @@ pub use wasm_abi::{op, tag};
 pub mod __internals {
     use super::Error;
     use alloc::string::ToString;
+
+    /// A failed call's status, 2 while a system call waits, else 1 with its error stashed.
+    pub fn fail(e: Error) -> i32 {
+        if matches!(e, Error::Waiting) { return 2; }
+        stash_error(e);
+        1
+    }
 
     /// Invoked by `#[plugin_fn]` expansion when a user fn returns `Err(_)`.
     pub fn stash_error(e: Error) {
@@ -178,6 +189,8 @@ pub enum Error {
     Index(String),
     Key(String),
     Custom { kind: u32, message: String },
+    /// A system call is still waiting, the host resumes the plugin through `#[plugin_resume]` once it settles.
+    Waiting,
 }
 
 impl Error {
@@ -186,6 +199,7 @@ impl Error {
             Self::Type(s) | Self::Value(s) | Self::Runtime(s)
             | Self::Attribute(s) | Self::Index(s) | Self::Key(s) => s,
             Self::Custom { message, .. } => message,
+            Self::Waiting => "waiting on a system call",
         }
     }
     pub fn kind(&self) -> u32 {
@@ -197,6 +211,7 @@ impl Error {
             Self::Index(_) => 4,
             Self::Key(_) => 5,
             Self::Custom { kind, .. } => *kind,
+            Self::Waiting => 2,
         }
     }
     pub fn from_kind(kind: u32, message: String) -> Self {
@@ -532,6 +547,17 @@ impl Handle {
     /// Invoke `recv.<name>(args)`. Argv handles stay owned by the caller.
     pub fn call(&self, name: &str, args: &[u32]) -> Result<Handle> {
         Self::raw_op(op::CALL, self.raw, name, args).map(Handle::from_raw)
+    }
+
+    /// The system call `module.name`, `Error::Waiting` while it waits and the answer comes to `#[plugin_resume]`.
+    pub fn sys(name: &str, args: &[u32]) -> Result<Handle> {
+        let argv_ptr = if args.is_empty() { core::ptr::null() } else { args.as_ptr() };
+        let mut out: u32 = 0;
+        match unsafe { edge_op(op::SYS, call_id(), name.as_ptr(), name.len() as u32, argv_ptr, args.len() as u32, &mut out as *mut u32) } {
+            0 => Ok(Handle::from_raw(out)),
+            2 => Err(Error::Waiting),
+            _ => Err(last_error()),
+        }
     }
 
     /// `recv.<name>`, read attribute or bind builtin method.

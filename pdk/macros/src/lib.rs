@@ -113,7 +113,7 @@ pub fn plugin_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             match #impl_name(#(#arg_names),*) {
                 Ok(v) => v,
-                Err(e) => { ::wasm_pdk::__internals::stash_error(e); return 1; }
+                Err(e) => return ::wasm_pdk::__internals::fail(e),
             }
         }
     } else {
@@ -145,11 +145,44 @@ pub fn plugin_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     unsafe { *out = h.into_raw(); }
                     0
                 }
-                Err(e) => { ::wasm_pdk::__internals::stash_error(e); 1 }
+                Err(e) => ::wasm_pdk::__internals::fail(e),
             }
         }
     };
 
+    expanded.into()
+}
+
+/// Exports a `fn(call, answer) -> Result<T>` as `__edge_resume`, where a waiting system call settles.
+#[proc_macro_attribute]
+pub fn plugin_resume(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemFn);
+    let user_name = input.sig.ident.clone();
+    let expanded = quote! {
+        #input
+
+        #[doc(hidden)]
+        #[unsafe(export_name = "__edge_resume")]
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
+        pub extern "C" fn __edge_resume(call: u32, answer: u32, out: *mut u32) -> i32 {
+            // A zero handle means the call failed, its error waits in the host's stash.
+            let answer = match answer {
+                0 => Err(::wasm_pdk::last_error()),
+                h => Ok(::wasm_pdk::Handle::from_raw(h)),
+            };
+            let value = match #user_name(call, answer) {
+                Ok(v) => v,
+                Err(e) => return ::wasm_pdk::__internals::fail(e),
+            };
+            match ::wasm_pdk::IntoValue::into_handle(value) {
+                Ok(h) => {
+                    unsafe { *out = h.into_raw(); }
+                    0
+                }
+                Err(e) => ::wasm_pdk::__internals::fail(e),
+            }
+        }
+    };
     expanded.into()
 }
 
