@@ -3,6 +3,8 @@ import { env } from 'cloudflare:workers'
 import Icon from './ui/icon.astro'
 
 interface Props {
+  // The example's edge-manifest as written, an empty one when it declares none.
+  manifest?: string
   code: string
   name?: string
   output?: string
@@ -14,12 +16,19 @@ interface Props {
   imports?: Record<string, string>
 }
 
-const { code, name, output = '', placeholder, minLines = 1, maxLines = 5, outputMaxLines = 5, imports } = Astro.props
+const { manifest: written = '{}', code, name, output = '', placeholder, minLines = 1, maxLines = 5, outputMaxLines = 5, imports } = Astro.props
 
 const rows = Math.min(Math.max(code.split('\n').length, minLines), maxLines)
 
-// What the example runs under, shown as the file it would be in a project.
-const manifest = JSON.stringify(imports ? { imports } : {}, null, 2)
+/* What the example runs under, shown as the file it would be in a project, the page's own package beside its imports. */
+const manifest = (() => {
+  try {
+    const declared = JSON.parse(written)
+    return JSON.stringify(imports ? { ...declared, imports: { ...declared.imports, ...imports } } : declared, null, 2)
+  } catch {
+    return written
+  }
+})()
 
 const panel = 'bg-panel rounded-2xl mb-6'
 const card = 'bg-page border border-line-strong rounded-2xl overflow-hidden p-4'

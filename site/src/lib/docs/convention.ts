@@ -16,11 +16,17 @@ export function check(page: string, text: string) {
   let open: string | null = null
   let closed: string | null = null
   let headings = 0
+  // The lines of the edge-manifest being read, checked once its fence closes.
+  let manifest: string[] = []
+  const lone = () => new Error(`'${page}' has an edge-manifest block that no edge-python block follows`)
 
   for (const line of read.body.split('\n')) {
     const trimmed = line.trim()
     if (trimmed.startsWith('```')) {
       if (open !== null) {
+        if (open === 'edge-manifest' && !object(manifest.join('\n'))) {
+          throw new Error(`'${page}' has an edge-manifest block that is not a JSON object`)
+        }
         closed = open
         open = null
       } else {
@@ -28,25 +34,42 @@ export function check(page: string, text: string) {
         if (lang === 'output' && closed !== 'edge-python') {
           throw new Error(`'${page}' has an output block that follows no edge-python block`)
         }
+        if (closed === 'edge-manifest' && lang !== 'edge-python') throw lone()
         open = lang
         closed = null
+        manifest = []
       }
       continue
     }
+    if (open === 'edge-manifest') manifest.push(line)
     if (open === null) {
       if (line.startsWith('# ')) headings++
       if (tagged(line)) {
         throw new Error(`'${page}' writes the raw HTML '${tagged(line)}', and a page is markdown the site renders itself`)
       }
       // Blank lines keep two fences adjacent, prose between them does not.
-      if (trimmed) closed = null
+      if (trimmed) {
+        if (closed === 'edge-manifest') throw lone()
+        closed = null
+      }
     }
   }
 
   if (open !== null) throw new Error(`'${page}' leaves a code fence unterminated`)
+  if (closed === 'edge-manifest') throw lone()
   if (headings !== 1) throw new Error(`'${page}' has ${headings} top-level headings, the renderer needs exactly one`)
 
   return read
+}
+
+// An edge-manifest holds one JSON object, the edge.json its example runs under.
+function object(text: string): boolean {
+  try {
+    const value: unknown = JSON.parse(text)
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+  } catch {
+    return false
+  }
 }
 
 /* The first HTML tag a prose line opens, since a page the registry renders is markdown from a stranger and a raw tag would run on our origin. Inline code drops out first, so a page can still write about `<script>`. */

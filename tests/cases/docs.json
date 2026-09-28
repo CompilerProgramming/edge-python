@@ -204,5 +204,39 @@
     "files": {
       "01-intro.mdx": "---\ntitle: Intro\ndescription: Where to start.\n---\n\n# Intro\n\nIt holds when a < b and b > c.\n"
     }
+  },
+  {
+    "name": "a manifest before a runnable fence",
+    "files": {
+      "01-intro.mdx": "---\ntitle: Intro\ndescription: Where to start.\n---\n\n# Intro\n\n```edge-manifest\n{ \"permissions\": { \"main\": [\"time:wall\"] } }\n```\n\n```edge-python\nimport time\n```\n\n```output\n```\n"
+    }
+  },
+  {
+    "name": "a manifest before a plain fence",
+    "files": {
+      "01-intro.mdx": "---\ntitle: Intro\ndescription: Where to start.\n---\n\n# Intro\n\n```edge-manifest\n{}\n```\n\n```python\nprint(1)\n```\n"
+    },
+    "error": "no edge-python block follows"
+  },
+  {
+    "name": "a manifest separated by prose",
+    "files": {
+      "01-intro.mdx": "---\ntitle: Intro\ndescription: Where to start.\n---\n\n# Intro\n\n```edge-manifest\n{}\n```\n\nProse between.\n\n```edge-python\nprint(1)\n```\n"
+    },
+    "error": "no edge-python block follows"
+  },
+  {
+    "name": "a manifest that ends the page",
+    "files": {
+      "01-intro.mdx": "---\ntitle: Intro\ndescription: Where to start.\n---\n\n# Intro\n\n```edge-python\nprint(1)\n```\n\n```edge-manifest\n{}\n```\n"
+    },
+    "error": "no edge-python block follows"
+  },
+  {
+    "name": "a manifest that is not an object",
+    "files": {
+      "01-intro.mdx": "---\ntitle: Intro\ndescription: Where to start.\n---\n\n# Intro\n\n```edge-manifest\n[\"net:api.example.com\"]\n```\n\n```edge-python\nprint(1)\n```\n"
+    },
+    "error": "is not a JSON object"
   }
 ]

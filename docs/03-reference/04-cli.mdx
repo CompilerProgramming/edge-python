@@ -174,7 +174,7 @@ A `.edge` and an app binary also carry the `README.md` and any `LICENSE` at the 
 
 Documentation is packed only after every page passes the rendering convention, so a package reaches a registry with pages the site can lay out. The build fails otherwise, since shipping documentation that cannot be laid out is worse than shipping none.
 
-A page nests one folder deep at most and carries a numeric prefix on every path segment. It opens with a closed frontmatter block holding a `title` and a `description`, has exactly one top-level heading, and places an `output` block only ever directly after an `edge-python` block. The site holds its own `docs/` to the same rules, read from the same place.
+A page nests one folder deep at most and carries a numeric prefix on every path segment. It opens with a closed frontmatter block holding a `title` and a `description`, has exactly one top-level heading, and places an `output` block only ever directly after an `edge-python` block. An `edge-manifest` block sits only ever directly before one and holds a single JSON object, the `edge.json` that example runs under, such as `{ "permissions": { "main": ["time:wall"] } }`, and an example without one runs under `{}`. The site holds its own `docs/` to the same rules, read from the same place.
 
 ```text
 $ edge build

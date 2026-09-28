@@ -1,6 +1,6 @@
 import { createMarkdownProcessor, type MarkdownRenderer } from '@astrojs/markdown-remark'
 import { front } from './convention'
-import { MARK, PAIRS, remarkPlayground, type Pair } from './remark-playground'
+import { MARK, EXAMPLES, remarkPlayground, type Example } from './remark-playground'
 
 type Heading = { type: string; depth?: number }
 
@@ -11,11 +11,11 @@ const remarkTitle = () => (tree: { children: Heading[] }) => {
 }
 
 /* A page as the route lays it out, prose already HTML and every runnable fence lifted out, so the markup for an editor lives in the one component instead of in a string. */
-export type Block = { kind: 'prose'; html: string } | ({ kind: 'playground' } & Pair)
+export type Block = { kind: 'prose'; html: string } | ({ kind: 'playground' } & Example)
 
 export type Rendered = { title: string; description: string; blocks: Block[] }
 
-// One processor for the isolate. The pairs ride back on each render's own frontmatter, so two renders cannot cross.
+// One processor for the isolate. The examples ride back on each render's own frontmatter, so two renders cannot cross.
 let building: Promise<MarkdownRenderer> | null = null
 
 /* Markdown with no highlighting, because the client paints code once it has the grammar and a page should not wait on one. */
@@ -39,18 +39,18 @@ export async function render(page: string, text: string): Promise<Rendered> {
   const { keys, body } = front(page, text)
   const { code, metadata } = await (await processor()).render(body)
 
-  const found = (metadata.frontmatter[PAIRS] ?? []) as Pair[]
+  const found = (metadata.frontmatter[EXAMPLES] ?? []) as Example[]
   const blocks: Block[] = []
 
-  // A capturing split alternates the prose and the index of the pair that sat between two runs of it.
+  // A capturing split alternates the prose and the index of the example that sat between two runs of it.
   code.split(MARK).forEach((piece, at) => {
     if (at % 2 === 0) {
       if (piece.trim()) blocks.push({ kind: 'prose', html: piece })
       return
     }
 
-    const pair = found[Number(piece)]
-    if (pair) blocks.push({ kind: 'playground', ...pair })
+    const example = found[Number(piece)]
+    if (example) blocks.push({ kind: 'playground', ...example })
   })
 
   return { title: keys.get('title') ?? page, description: keys.get('description') ?? '', blocks }

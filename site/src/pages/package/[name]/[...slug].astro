@@ -139,7 +139,7 @@ const row = `${cell} border-t border-line-strong`
         <h2>{doc.title}</h2>
 
         {page.blocks.map((block) => (
-          block.kind === 'prose' ? <Fragment set:html={block.html} /> : <Playground code={block.code} output={block.output} imports={own} />
+          block.kind === 'prose' ? <Fragment set:html={block.html} /> : <Playground manifest={block.manifest} code={block.code} output={block.output} imports={own} />
         ))}
       </section>
     </div>

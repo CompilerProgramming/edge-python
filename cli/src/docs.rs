@@ -71,20 +71,35 @@ fn check(page: &str, text: &str) -> Result<()> {
     let mut open: Option<&str> = None;
     let mut closed: Option<&str> = None;
     let mut headings = 0usize;
+    // The lines of the edge-manifest being read, checked once its fence closes.
+    let mut manifest = String::new();
     for line in front(page, text)?.lines() {
         if let Some(rest) = line.trim().strip_prefix("```") {
             match open.take() {
-                Some(lang) => closed = Some(lang),
+                Some(lang) => {
+                    if lang == "edge-manifest" && !object(&manifest) {
+                        bail!("'{page}' has an edge-manifest block that is not a JSON object");
+                    }
+                    closed = Some(lang);
+                }
                 None => {
                     let lang = rest.trim();
                     if lang == "output" && closed != Some("edge-python") {
                         bail!("'{page}' has an output block that follows no edge-python block");
                     }
+                    if closed == Some("edge-manifest") && lang != "edge-python" {
+                        return Err(lone(page));
+                    }
                     open = Some(lang);
                     closed = None;
+                    manifest.clear();
                 }
             }
             continue;
+        }
+        if open == Some("edge-manifest") {
+            manifest.push_str(line);
+            manifest.push('\n');
         }
         if open.is_none() {
             if line.starts_with("# ") {
@@ -95,6 +110,9 @@ fn check(page: &str, text: &str) -> Result<()> {
             }
             // Blank lines keep two fences adjacent, prose between them does not.
             if !line.trim().is_empty() {
+                if closed == Some("edge-manifest") {
+                    return Err(lone(page));
+                }
                 closed = None;
             }
         }
@@ -102,10 +120,23 @@ fn check(page: &str, text: &str) -> Result<()> {
     if open.is_some() {
         bail!("'{page}' leaves a code fence unterminated");
     }
+    if closed == Some("edge-manifest") {
+        return Err(lone(page));
+    }
     if headings != 1 {
         bail!("'{page}' has {headings} top-level headings, the renderer needs exactly one");
     }
     Ok(())
+}
+
+/* An edge-manifest with no edge-python block right after it, which no example would run under. */
+fn lone(page: &str) -> anyhow::Error {
+    anyhow!("'{page}' has an edge-manifest block that no edge-python block follows")
+}
+
+// An edge-manifest holds one JSON object, the edge.json its example runs under.
+fn object(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).is_ok_and(|value| value.is_object())
 }
 
 /* The first HTML tag a prose line opens, since a page the registry renders is markdown from a stranger and a raw tag would run on its origin. Inline code drops out first, so a page can still write about `<script>`. */
