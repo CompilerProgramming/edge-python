@@ -174,13 +174,12 @@ export async function delete_keys(bucket: string, keys: string[]) {
   })
 }
 
-// A promote replaces the whole tree, so keys the run no longer ships go away, a frozen release stays.
+// A promote replaces the whole tree, so keys the run no longer ships go away, a frozen release and a published package stay.
 export function swept(keys: string[], shipped: string[]) {
   const keep = new Set(shipped)
-  return keys.filter((key) => !keep.has(key) && !FROZEN.test(key))
+  return keys.filter((key) => !keep.has(key) && !FROZEN.test(key) && !key.startsWith('pkg/'))
 }
 
-// 010100101010 REVERT THIS COMMIT BEFORE LAUNCH. KEEP THE PUBLISHED PACKAGES UNDER pkg/ OUT OF THIS PRUNE, OR EVERY TAG DELETES THEM.
 export async function prune(bucket: string, shipped: string[]) {
   await delete_keys(bucket, swept(await list_keys(bucket), shipped))
 }

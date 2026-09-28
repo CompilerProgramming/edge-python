@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { client, account_id } from '../client'
-import { DB_NAME, SITE_DIR } from '../constants'
+import { DB_NAME, ENV, SITE_DIR } from '../constants'
 
 export const SCHEMA = `${SITE_DIR}db/schema.sql`
 const SEED = `${SITE_DIR}db/seed.sql`
@@ -44,8 +44,12 @@ export async function ensure_database() {
   return db.uuid!
 }
 
-// Dev holds nothing worth keeping, so it is rebuilt from the schema and never migrated.
+// The one way a promote touches the database, so production is only ever migrated, never emptied.
+export const update_database = () => (ENV === 'prod' ? migrate_database() : reset_database())
+
+// Dev holds nothing worth keeping, so it is rebuilt from the schema, and production refuses before any query.
 export async function reset_database() {
+  if (ENV === 'prod') throw new Error(`D1 "${DB_NAME}" is production, which is only ever migrated, never emptied.`)
   const id = await ensure_database()
 
   const tables = await query<{ name: string }>(id, "select name from sqlite_master where type = 'table' and name not like '\\_cf\\_%' escape '\\' and name not like 'sqlite\\_%' escape '\\'")
@@ -57,7 +61,7 @@ export async function reset_database() {
 }
 
 // Production keeps its rows, so only the migrations it has not recorded yet run.
-export function migrate_database() {
+function migrate_database() {
   if (migrations().length === 0) return console.log(`D1 "${DB_NAME}" has no migrations waiting.`)
 
   execFileSync('npm', ['run', 'config'], { cwd: SITE_DIR, stdio: 'inherit' })

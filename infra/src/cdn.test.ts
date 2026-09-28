@@ -21,9 +21,9 @@ test('the root revalidates and a frozen copy is kept for a year', () => {
   assert.match(FROZEN_CACHE, /max-age=31536000, immutable/)
 })
 
-test('a promote sweeps a root key the run dropped and spares every frozen one', () => {
-  const keys = ['cli/edge-old.tar.gz', 'compiler.wasm', 'v1.0.0/cli/install.sh', 'v1.0.0/compiler.wasm']
-  assert.deepEqual(swept(keys, ['compiler.wasm']), ['cli/edge-old.tar.gz'])
+test('a promote sweeps a root key the run dropped and spares every frozen and published one', () => {
+  const keys = ['cli/edge-old.tar.gz', 'compiler.wasm', 'v1.0.0/cli/install.sh', 'v1.0.0/compiler.wasm', 'pkg/json/0.1.0/app.edge', 'pkgs/old.js']
+  assert.deepEqual(swept(keys, ['compiler.wasm']), ['cli/edge-old.tar.gz', 'pkgs/old.js'])
 })
 
 test('a root key that only opens with a v is swept all the same', () => {
