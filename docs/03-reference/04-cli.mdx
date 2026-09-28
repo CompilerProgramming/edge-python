@@ -58,7 +58,7 @@ With no path, `edge run` reads the script from piped stdin (`cat app.py | edge r
 
 Flags: `--events`, `--save-state`, `--restore-state`, and `--preempt`, see [run flags](/docs/reference/modules#run-flags).
 
-`--web` runs the script on the browser host instead of the native engine, in headless Chrome. The JS host and the engine come out of the binary and are served on a loopback port, so only the modules the manifest declares by URL leave the machine, and `dom`, `storage` and `frame()` work because a real page is running them. It drives a Chrome the system already has, or offers to download one the first time into `~/.local/share/edge/chromium`, which `edge uninstall` offers to remove. `EDGE_CHROME_PATH` names a browser directly. The four flags above belong to the native engine and are refused alongside it rather than ignored.
+`--web` runs the script on the browser host instead of the native engine, in headless Chrome. The JS host and the engine come out of the binary and are served on a loopback port, so only the modules the manifest declares by URL leave the machine, and `dom` and `storage` work because a real page is running them. It drives a Chrome the system already has, or offers to download one the first time into `~/.local/share/edge/chromium`, which `edge uninstall` offers to remove. `EDGE_CHROME_PATH` names a browser directly. The four flags above belong to the native engine and are refused alongside it rather than ignored.
 
 ## `edge serve`: local dev server
 
@@ -112,7 +112,7 @@ Test files declare tests with the `test` package and do not need to call `run()`
 
 Exit codes: `0` when every file passed, `1` when a file failed or no `*_test.py` was found, `2` when the engine session could not start.
 
-`--web` runs the same files on the browser host in headless Chrome, so a package can prove it works where `dom`, `storage` and `frame()` are real. One browser serves the whole suite with a fresh page per file, since launching one costs seconds. Everything else holds, the discovery, the `test` declaration and the exit codes, and the engine comes out of the binary the same way [`edge run --web`](#edge-run-run-a-script) gets it.
+`--web` runs the same files on the browser host in headless Chrome, so a package can prove it works where `dom` and `storage` are real. One browser serves the whole suite with a fresh page per file, since launching one costs seconds. Everything else holds, the discovery, the `test` declaration and the exit codes, and the engine comes out of the binary the same way [`edge run --web`](#edge-run-run-a-script) gets it.
 
 ## `edge init`: scaffold a project
 

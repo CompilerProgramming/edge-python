@@ -25,7 +25,7 @@ fn native_is_impure(id: super::super::types::NativeFnId) -> bool {
         | GetAttr | HasAttr // attr access can run getters
         | Run | ImportModule // arbitrary execution / import
         | Cancel | WithTimeout | Gather // async effects
-        | Globals | Locals | Vars | Frame | Super // reflection of mutable state
+        | Globals | Locals | Vars | Super // reflection of mutable state
         | Id // heap-slot nondeterminism
     )
 }
@@ -978,7 +978,6 @@ impl<'a> VM<'a> {
             Next => self.call_next(argc, chunk, slots),
             Run => self.call_run(argc),
             Sleep => self.call_sleep(),
-            Frame => self.call_frame(),
             Receive => self.call_receive(),
             SendMsg => self.call_send(),
             Map => self.call_map(argc, chunk, slots),

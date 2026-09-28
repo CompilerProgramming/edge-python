@@ -154,17 +154,6 @@ Deno.test("deno: a manifest beside a module joins its relative targets once", as
     if (out !== "" || lines.join("").trim() !== "42") throw new Error(`unexpected ${JSON.stringify([out, lines])}`);
 });
 
-Deno.test("deno: frame() names the Web API it lacks", async () => {
-    const engine = await boot("frame", []);
-    let message = "";
-    try {
-        await engine.run({ src: "frame()\nprint('after')", baseUrl });
-    } catch (e) {
-        message = e.message;
-    }
-    if (message !== "frame() needs requestAnimationFrame, missing in this runtime") throw new Error(`unexpected rejection ${JSON.stringify(message)}`);
-});
-
 /* A project on disk, the edge.json a run reads its grants from beside its files. */
 async function project(files) {
     const dir = await Deno.makeTempDir();

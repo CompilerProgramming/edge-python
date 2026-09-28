@@ -15,7 +15,7 @@ const STATUS_KIND_SHIFT: u32 = 29;
 const STATUS_PAYLOAD_MASK: u32 = (1 << STATUS_KIND_SHIFT) - 1;
 const STATUS_DONE: u32 = 0 << STATUS_KIND_SHIFT;
 const STATUS_PENDING_TIMER: u32 = 1 << STATUS_KIND_SHIFT;
-const STATUS_PENDING_FRAME: u32 = 2 << STATUS_KIND_SHIFT;
+// Kind 2 was the render frame yield, retired so the other kinds keep their numbers.
 const STATUS_PENDING_EVENT: u32 = 3 << STATUS_KIND_SHIFT;
 const STATUS_ERROR: u32 = 4 << STATUS_KIND_SHIFT;
 const STATUS_PENDING_HOST_CALL: u32 = 5 << STATUS_KIND_SHIFT;
@@ -323,7 +323,6 @@ fn step_vm(mut vm: VM<'static>, src: &str, prev_paused: Option<Box<PausedRun>>) 
         Err(VmErr::HostYield(status)) => {
             let (kind, deadline) = match status {
                 SchedulerStatus::PendingTimer(d) => (STATUS_PENDING_TIMER, d),
-                SchedulerStatus::PendingFrame => (STATUS_PENDING_FRAME, 0),
                 SchedulerStatus::PendingEvent => (STATUS_PENDING_EVENT, 0),
                 SchedulerStatus::PendingHostCall => (STATUS_PENDING_HOST_CALL, 0),
                 SchedulerStatus::Preempted => (STATUS_PREEMPTED, 0),

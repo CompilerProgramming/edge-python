@@ -170,7 +170,6 @@ pub fn drive(vm: &mut Vm, mut status: Status, opts: &RunOpts) -> i32 {
                 }
                 step(vm)
             }
-            Status::PendingFrame => return park(vm, "a render frame", opts),
         };
     }
 }
@@ -192,10 +191,9 @@ pub(super) fn sleep_until(deadline: u64) {
     }
 }
 
-/* The park report, a render frame names the missing Web API, a servable wait names its flag. */
+/* The park report, a servable wait names its flag. */
 pub fn suspend_message(what: &str) -> String {
     match what {
-        "a render frame" => "script suspended awaiting a render frame, frame() needs requestAnimationFrame, missing in this runtime".to_string(),
         "an event" => "script suspended awaiting an event (wire --events <file>)".to_string(),
         s => format!("script suspended awaiting {s}, nothing can resume it here"),
     }
@@ -284,7 +282,6 @@ impl Session {
                     _ => step(&mut self.vm),
                 },
                 Status::PendingEvent => return Ok(Outcome { err: Some(suspend_message("an event")), exit_code: None }),
-                Status::PendingFrame => return Ok(Outcome { err: Some(suspend_message("a render frame")), exit_code: None }),
             };
         }
     }

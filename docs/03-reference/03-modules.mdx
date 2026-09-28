@@ -243,11 +243,11 @@ export const dom = ({ pushEvent }) => {
 
 Handlers take decoded JS values and return plain JS values. Opaque objects like DOM nodes model as integer IDs into a registry the handlers own, the `alloc` pattern above. The per-call cost is a `postMessage` round trip, invisible at UI rate. `mainThreadModules` registers an object the page already holds. The same module shipped as a file is an ordinary `imports` entry, `{ "imports": { "dom": "./dom.js" } }` in `edge.json` or the same map passed to `createWorker`, and the host imports the ESM on first use.
 
-A module that reaches a browser global loads anywhere and fails where the global is missing. In a JavaScript runtime without a page, the first `dom` call raises `module 'dom' needs 'document', missing in this runtime` in the calling coroutine, the runtime's own error surfaced by the host, and the same shape covers any module and any missing global, the CLI included. `frame()` there rejects the run with `frame() needs requestAnimationFrame, missing in this runtime`, and `createWorker` without Web Workers throws `createWorker needs Worker, missing in this runtime`.
+A module that reaches a browser global loads anywhere and fails where the global is missing. In a JavaScript runtime without a page, the first `dom` call raises `module 'dom' needs 'document', missing in this runtime` in the calling coroutine, the runtime's own error surfaced by the host, and the same shape covers any module and any missing global, the CLI included. `createWorker` without Web Workers throws `createWorker needs Worker, missing in this runtime`.
 
 ## The CLI
 
-`edge run`, `edge repl`, `edge test`, and `edge actor` run the engine the JS host loads, a `compiler.wasm` built from the same source for speed, precompiled for the host machine and executed under wasmtime. No browser, no server, millisecond startup. JavaScript modules run in StarlingMonkey beside the engine, see [JavaScript in the CLI](#javascript-in-the-cli), and a parked `frame()` reports `frame() needs requestAnimationFrame, missing in this runtime`. Everything runs under the [sandbox limits](/docs/reference/limits-and-errors) with a real wall clock, so `sleep()` and timeouts wait in real time.
+`edge run`, `edge repl`, `edge test`, and `edge actor` run the engine the JS host loads, a `compiler.wasm` built from the same source for speed, precompiled for the host machine and executed under wasmtime. No browser, no server, millisecond startup. JavaScript modules run in StarlingMonkey beside the engine, see [JavaScript in the CLI](#javascript-in-the-cli). Everything runs under the [sandbox limits](/docs/reference/limits-and-errors) with a real wall clock, so `sleep()` and timeouts wait in real time.
 
 ### Module resolution
 

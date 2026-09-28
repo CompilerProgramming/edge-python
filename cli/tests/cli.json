@@ -335,11 +335,6 @@
     "fails": ["module '_dom' needs 'document', missing in this runtime"]
   },
   {
-    "given": { "main.py": "await frame()\n" },
-    "run": ["run", "main.py"],
-    "fails": ["frame() needs requestAnimationFrame, missing in this runtime"]
-  },
-  {
     "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "given": {
       "edge.json": "{ \"imports\": { \"storage\": \"https://cdn.edgepython.com/js/builtins/storage/index.js\" } }\n",

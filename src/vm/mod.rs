@@ -44,8 +44,6 @@ pub(crate) struct Pending {
     pub call_byte_pos: Option<u32>,
     /* Wakeup deadline set by `sleep()` and consumed by the scheduler. */
     pub sleep_until_ns: Option<u64>,
-    /* Set by `frame()`, consumed by `scheduler_step` to transition the coro to `WaitingFrame`. */
-    pub host_frame_request: bool,
     /* Set by `receive()` on empty queue, transitions the coro to `WaitingEvent`. */
     pub event_wait_request: bool,
     /* Set by `call_extern` on deferred native, transitions the coro to `WaitingHostCall`. */
@@ -70,7 +68,6 @@ impl Pending {
             delta_save: alloc::vec::Vec::new(),
             call_byte_pos: None,
             sleep_until_ns: None,
-            host_frame_request: false,
             event_wait_request: false,
             host_call_request: false,
             host_call_id: 0,

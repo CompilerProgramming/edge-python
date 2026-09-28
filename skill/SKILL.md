@@ -91,7 +91,7 @@ A persistent interpreter across prompts. Imports, definitions and mutations surv
 
 `edge test [path]` discovers `*_test.py` recursively, skipping hidden dirs, `node_modules`, `target` and `dist`. A file argument runs exactly that file. Each file executes in a fresh interpreter and state never leaks between files. The project must declare `test`, otherwise the runner stops with `declare test in edge.json (edge add test)`. Exit code is 0 when everything passes, 1 when a file fails or no tests are found, 2 when the engine cannot start. See the test package section for the API.
 
-`edge test --web` runs the same files on the browser host in headless Chrome, one browser for the suite with a fresh page per file, so a package can prove it works where `dom`, `storage` and `frame()` are real.
+`edge test --web` runs the same files on the browser host in headless Chrome, one browser for the suite with a fresh page per file, so a package can prove it works where `dom` and `storage` are real.
 
 ### edge init, edge add, edge remove, edge lock
 
@@ -575,7 +575,6 @@ The primitives are builtins, no import needed.
 | `sleep(s)` | Suspends for `s` seconds, `sleep(0)` yields once, negatives clamp to 0 |
 | `with_timeout(s, coro)` | Runs the coroutine and raises `TimeoutError` when it overruns |
 | `cancel(coro)` | Delivers `CancelledError` at the next tick, uncatchable, runs `finally` |
-| `frame()` | Suspends until the next browser render frame |
 | `receive()` | Parks until a host event or actor message arrives |
 | `send(group, body)` | Hands a string to an actor group, raises `RuntimeError` outside an actor pool |
 

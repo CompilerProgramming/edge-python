@@ -37,9 +37,7 @@ fn main() {
                 Err(VmErr::HostYield(s)) => s,
                 _ => break,
             };
-            let drivable = matches!(park, SchedulerStatus::Preempted
-                | SchedulerStatus::PendingEvent
-                | SchedulerStatus::PendingFrame);
+            let drivable = matches!(park, SchedulerStatus::Preempted | SchedulerStatus::PendingEvent);
             if !drivable { break; }
 
             if !hopped {
@@ -53,7 +51,7 @@ fn main() {
             }
 
             if matches!(park, SchedulerStatus::Preempted) { continue; }
-            // receive() needs an event, frame() re-enters.
+            // receive() needs an event.
             if wakeups >= MAX_WAKEUPS { break; }
             wakeups += 1;
             if matches!(park, SchedulerStatus::PendingEvent) && vm.push_event("e").is_err() { break; }

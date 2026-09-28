@@ -844,7 +844,6 @@ These functions drive coroutines. [Async](/docs/language/async) owns the full mo
 - `sleep(seconds)` suspends for the duration. A negative value clamps to zero.
 - `with_timeout(seconds, coro)` returns the coroutine's result or raises `TimeoutError` at the deadline.
 - `cancel(coro)` flags a coroutine for cancellation at its next step.
-- `frame()` suspends until the host's next render frame.
 - `receive()` pops the oldest queued host message.
 
 ```edge-python

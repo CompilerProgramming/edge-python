@@ -22,7 +22,6 @@ const TD = new TextDecoder();
 const STATUS_KIND_SHIFT = 29;
 const STATUS_DONE = 0;
 const STATUS_PENDING_TIMER = 1;
-const STATUS_PENDING_FRAME = 2;
 const STATUS_PENDING_EVENT = 3;
 const STATUS_ERROR = 4;
 const STATUS_PENDING_HOST_CALL = 5;
@@ -328,9 +327,6 @@ async function drive(exports: CompilerExports, rt: Rt, status: number, t0: numbe
             const nowNs = BigInt(Date.now()) * 1_000_000n;
             const waitMs = deadlineNs > nowNs ? Number((deadlineNs - nowNs) / 1_000_000n) : 0;
             await new Promise(r => setTimeout(r, waitMs));
-        } else if (kind === STATUS_PENDING_FRAME) {
-            if (typeof requestAnimationFrame === 'undefined') throw new Error('frame() needs requestAnimationFrame, missing in this runtime');
-            await new Promise(r => requestAnimationFrame(r));
         } else if (kind === STATUS_PENDING_EVENT) {
             // Drain events buffered before VM was ready. `inject_event` wakes the waiter on the first and queues the rest for later `receive()` calls, no `await` needed.
             let injected = 0;

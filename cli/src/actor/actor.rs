@@ -194,10 +194,6 @@ impl Actor {
                     self.done = true;
                     return Step::Failed(format!("error: {}", driver::suspend_message("a host call")), self.in_flight.take());
                 }
-                Status::PendingFrame => {
-                    self.done = true;
-                    return Step::Failed(format!("error: {}", driver::suspend_message("a render frame")), self.in_flight.take());
-                }
                 Status::Error(tb) => {
                     self.done = true;
                     return Step::Failed(tb, self.in_flight.take());
@@ -273,7 +269,6 @@ fn run_eval(ctx: &Context, body: &str, limits: Limits, preempt: usize, capture: 
                 vm.resume().map_err(|e| format!("error: {e}"))?
             }
             Status::PendingEvent => return Err(format!("error: {}", driver::suspend_message("receive()"))),
-            Status::PendingFrame => return Err(format!("error: {}", driver::suspend_message("a render frame"))),
         };
     }
     drop(vm);

@@ -13,7 +13,7 @@ The blob embeds the source and a structural fingerprint of the compiled bytecode
 
 A run freezes at a suspension point, and there are two ways to reach one.
 
-The program can reach it on its own through an empty `receive()`, a `sleep(n>0)`, a `frame()`, or a pending host call (see [Async](/docs/language/async)). At those points the VM unwinds to a clean serializable state and stays there until the host wakes it.
+The program can reach it on its own through an empty `receive()`, a `sleep(n>0)`, or a pending host call (see [Async](/docs/language/async)). At those points the VM unwinds to a clean serializable state and stays there until the host wakes it.
 
 The host can also force one. With `setPreemptInterval(n)` the VM yields every `n` loop back-edges, so `pause()` stops a program that has no suspension point at all, including a bare `while True:` that only counts. The program needs no cooperation and no rewriting. See [Pause from the host](#pause-from-the-host).
 

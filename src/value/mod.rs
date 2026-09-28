@@ -228,7 +228,6 @@ builtins! {
     Super => "super", 0;
     Property => "property", var;
     StaticMethod => "staticmethod", 1;
-    Frame => "frame", var;
     ClassMethod => "classmethod", 1;
     SendMsg => "send", 2;
 }

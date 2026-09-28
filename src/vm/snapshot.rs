@@ -11,7 +11,7 @@ use super::{Pending, VM};
 use super::types::*;
 
 const MAGIC: u32 = 0x4E53_5045;
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
 
 pub type SnapErr = String;
 
@@ -211,7 +211,6 @@ codec!(struct SyncFrame, put_sync_frame, get_sync_frame {
 codec!(enum SchedulerStatus, put_sched, get_sched {
     0 Done,
     1 PendingTimer(d: u64),
-    2 PendingFrame,
     3 PendingEvent,
     4 PendingHostCall,
     5 Preempted,
@@ -250,7 +249,6 @@ codec!(enum WaitKind, put_wait_kind, get_wait_kind {
 codec!(enum CoroState, put_coro_state, get_coro_state {
     0 Ready,
     1 Sleeping(d: u64),
-    2 WaitingFrame,
     3 WaitingEvent,
     4 WaitingHostCall(id: u64),
     5 WaitingForChildren { tasks: vals, kind: (put_wait_kind, get_wait_kind) },
@@ -294,7 +292,6 @@ codec!(struct Pending, put_pending, get_pending {
     delta_save: [put_i32_pair, get_i32_pair],
     call_byte_pos: opt_u32,
     sleep_until_ns: opt_u64,
-    host_frame_request: boolean,
     event_wait_request: boolean,
     host_call_request: boolean,
     host_call_id: u64,
@@ -771,7 +768,6 @@ pub fn inspect_stack(vm: &VM) -> String {
         let state = match &h.state {
             CoroState::Ready => "ready",
             CoroState::Sleeping(_) => "sleeping",
-            CoroState::WaitingFrame => "waiting_frame",
             CoroState::WaitingEvent => "waiting_event",
             CoroState::WaitingHostCall(_) => "waiting_host_call",
             CoroState::WaitingForChildren { .. } => "waiting_for_children",

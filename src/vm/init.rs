@@ -145,7 +145,7 @@ impl<'a> VM<'a> {
 
     pub fn run(&mut self) -> Result<Val, VmErr> {
         self.error_byte_pos = None;
-        // Resume path, scheduler non-empty means a prior `run()` yielded, wake `WaitingFrame` (rAF fired) and drain.
+        // Resume path, scheduler non-empty means a prior `run()` yielded, so it drains what is ready.
         let fresh_entry = self.scheduler.is_empty();
         if fresh_entry {
             // Fresh entry. Initialise imports before user code, DFS gives topological order naturally.
@@ -162,12 +162,6 @@ impl<'a> VM<'a> {
                 coro,
                 state: CoroState::Ready,
             });
-        } else {
-            for h in self.scheduler.iter_mut() {
-                if matches!(h.state, CoroState::WaitingFrame) {
-                    h.state = CoroState::Ready;
-                }
-            }
         }
         self.top_loop()?;
         // Inspect the module body's outcome (BodyRef::Module). Single entry point for both fresh and resume.

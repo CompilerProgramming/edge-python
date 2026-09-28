@@ -357,7 +357,7 @@ impl<'a> VM<'a> {
         }
     }
 
-    /* Single scheduler driver, picks a Ready coro and steps it. On no Ready, classifies the wait-state and yields to the host (PendingTimer / PendingFrame / PendingHostCall / PendingEvent) or returns Ok when nothing alive remains. */
+    /* Single scheduler driver, picks a Ready coro and steps it. On no Ready, classifies the wait-state and yields to the host (PendingTimer / PendingHostCall / PendingEvent) or returns Ok when nothing alive remains. */
     pub(crate) fn top_loop(&mut self) -> Result<(), VmErr> {
         loop {
             // Charge the full scheduler scan so accumulating coroutines stay bounded.
@@ -365,7 +365,6 @@ impl<'a> VM<'a> {
             self.wake_waiting_outers();
             let mut next_ready: Option<usize> = None;
             let mut min_wake: Option<u64> = None;
-            let mut any_frame = false;
             let mut any_event = false;
             let mut any_host_call = false;
             let mut alive = false;
@@ -380,7 +379,6 @@ impl<'a> VM<'a> {
                         alive = true;
                         if min_wake.is_none_or(|m| *deadline_ns < m) { min_wake = Some(*deadline_ns); }
                     }
-                    CoroState::WaitingFrame => { any_frame = true; alive = true; }
                     CoroState::WaitingEvent => { any_event = true; alive = true; }
                     CoroState::WaitingHostCall(_) => { any_host_call = true; alive = true; }
                     CoroState::WaitingForChildren { .. } => { alive = true; }
@@ -396,8 +394,7 @@ impl<'a> VM<'a> {
                 }
                 continue;
             }
-            // Yield priority order, frame tick > sleep/timeout deadline > host call > event.
-            if any_frame { return Err(VmErr::HostYield(SchedulerStatus::PendingFrame)); }
+            // Yield priority order, sleep/timeout deadline > host call > event.
             match min_wake {
                 // On the virtual clock a host call takes no time, so it answers before any deadline.
                 Some(_) if any_host_call && self.time_hook.is_none() => return Err(VmErr::HostYield(SchedulerStatus::PendingHostCall)),
@@ -435,7 +432,6 @@ impl<'a> VM<'a> {
                 "cannot cancel a coroutine suspended inside a synchronous helper"));
         }
         self.pending.sleep_until_ns = None;
-        self.pending.host_frame_request = false;
         self.pending.event_wait_request = false;
         self.pending.host_call_request = false;
         self.pending.waiting_for_children = None;
@@ -462,9 +458,8 @@ impl<'a> VM<'a> {
             self.scheduler[idx].state = self.run_cancellation(coro);
             return Ok(());
         }
-        // Snapshot before resume so a yield during sleep / frame / receive / run can read it.
+        // Snapshot before resume so a yield during sleep / receive / run can read it.
         self.pending.sleep_until_ns = None;
-        self.pending.host_frame_request = false;
         self.pending.event_wait_request = false;
         self.pending.host_call_request = false;
         self.pending.waiting_for_children = None;
@@ -481,11 +476,9 @@ impl<'a> VM<'a> {
         let new_state = match result {
             Err(e) => CoroState::Errored(e),
             Ok(v) if yielded => {
-                // Suspension precedence order, sleep > frame > receive > host-call > children > bare yield.
+                // Suspension precedence order, sleep > receive > host-call > children > bare yield.
                 if let Some(until) = self.pending.sleep_until_ns.take() {
                     CoroState::Sleeping(until)
-                } else if core::mem::replace(&mut self.pending.host_frame_request, false) {
-                    CoroState::WaitingFrame
                 } else if core::mem::replace(&mut self.pending.event_wait_request, false) {
                     CoroState::WaitingEvent
                 } else if core::mem::replace(&mut self.pending.host_call_request, false) {
@@ -501,14 +494,6 @@ impl<'a> VM<'a> {
             Ok(v) => CoroState::Done(v),
         };
         self.scheduler[idx].state = new_state;
-        Ok(())
-    }
-
-    /* Suspend until the host's next render frame, browsers hook `requestAnimationFrame`. */
-    pub fn call_frame(&mut self) -> Result<(), VmErr> {
-        self.pending.host_frame_request = true;
-        self.push(Val::none());
-        self.yielded = true;
         Ok(())
     }
 

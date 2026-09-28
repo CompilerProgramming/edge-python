@@ -16,7 +16,6 @@ const KIND_SHIFT: u32 = 29;
 pub enum Status {
     Done,
     PendingTimer(u64),
-    PendingFrame,
     PendingEvent,
     PendingHostCall,
     Error(String),
@@ -190,7 +189,6 @@ impl Instance {
                 let raw = self.ex.last_yield_deadline_ns.call(&mut self.store, ());
                 Status::PendingTimer(self.checked(raw)? as u64)
             }
-            2 => Status::PendingFrame,
             3 => Status::PendingEvent,
             4 => Status::Error(String::from_utf8_lossy(&self.read_out()).into_owned()),
             5 => Status::PendingHostCall,

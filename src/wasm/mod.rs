@@ -64,7 +64,7 @@ pub(super) enum ModuleEntry {
 pub(super) struct PausedRun {
     /* Option so `step_vm` can `take()` for re-entry and stash back without a dummy VM. */
     pub vm: Option<VM<'static>>,
-    /* Earliest wake-up deadline (ns) from the last yield, zero for `PendingFrame` / `PendingEvent`. */
+    /* Earliest wake-up deadline (ns) from the last yield, zero for `PendingEvent`. */
     pub last_yield_deadline_ns: u64,
 }
 
