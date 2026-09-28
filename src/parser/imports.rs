@@ -212,7 +212,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             Resolved::Native { bindings, classes, consts, .. } => {
                 // Register module first so LoadModule can target it for class and const imports.
                 let import_idx = self.register_import(&url, Self::native_import_kind(&bindings, &classes, &consts));
-                // Classes and consts bind via LoadModule+LoadAttr (module attr), functions take the extern_table fast path.
+                // Every name binds as a module attribute, so it exports and reads as a value, and functions also take the extern_table fast path.
                 for (name, alias) in &names {
                     if classes.iter().any(|c| c.name == *name) || consts.iter().any(|c| c.name == *name) {
                         self.bind_module_attr(import_idx, name, alias);
@@ -227,6 +227,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                     if idx > 0xFF { self.error_at(span.0, span.1, "too many native imports (max 256 per module)"); continue; }
                     self.chunk.extern_table.push(binding_to_extern(b));
                     self.chunk.extern_index.insert(alias.clone(), idx);
+                    self.bind_module_attr(import_idx, name, alias);
                 }
             }
             Resolved::Code { src, canonical } => {

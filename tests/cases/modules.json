@@ -261,6 +261,21 @@
     "modules": { "m": { "native": ["add"] } }
   },
   {
+    "src": "import w\nfrom w import add\nprint(w.add(1, 2), add(3, 4))",
+    "output": ["3 7"],
+    "modules": { "m": { "native": ["add"] }, "w": { "code": "from m import add" } }
+  },
+  {
+    "src": "from m import add as plus\nf = plus\nprint(f(4, 5))",
+    "output": ["9"],
+    "modules": { "m": { "native": ["add"] } }
+  },
+  {
+    "src": "import w\nprint(w.sha_256, w.f_2())",
+    "output": ["1 2"],
+    "modules": { "w": { "code": "sha_256 = 1\ndef f_2():\n    return 2" } }
+  },
+  {
     "src": "from m import *\nprint(K)\nprint(double(5))",
     "output": ["7", "10"],
     "modules": { "m": { "code": "K = 7\ndef double(x):\n    return x * 2" } }

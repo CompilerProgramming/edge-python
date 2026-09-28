@@ -121,34 +121,32 @@ impl<'a> VM<'a> {
 
     // `obj.<name>` resolution shared by `handle_load_attr` and `exec_call_method`.
     pub(crate) fn resolve_attr(&self, obj: Val, name: &str) -> Result<AttrLookup, VmErr> {
-        let bare = crate::parser::ssa_strip(name);
-
         // Module attr lookup is a linear scan, the table is sized for around 30 entries.
         if obj.is_heap()
             && let HeapObj::Module(mod_name, attrs) = self.heap.get(obj) {
-                if let Some((_, v)) = attrs.iter().find(|(n, _)| n == bare) {
+                if let Some((_, v)) = attrs.iter().find(|(n, _)| n == name) {
                     return Ok(AttrLookup::ModuleAttr(*v));
                 }
-                return Err(VmErr::Attribute(s!("module '", str mod_name, "' has no attribute '", str bare, "'")));
+                return Err(VmErr::Attribute(s!("module '", str mod_name, "' has no attribute '", str name, "'")));
             }
 
         // ExcInstance attr, only `e.args` is defined.
         if obj.is_heap()
             && let HeapObj::ExcInstance(_, args) = self.heap.get(obj) {
-                if bare == "args" { return Ok(AttrLookup::ExcArgs(args.clone())); }
+                if name == "args" { return Ok(AttrLookup::ExcArgs(args.clone())); }
                 let ty = self.type_name(obj);
-                return Err(VmErr::Attribute(s!("'", str ty, "' object has no attribute '", str bare, "'")));
+                return Err(VmErr::Attribute(s!("'", str ty, "' object has no attribute '", str name, "'")));
             }
 
         // Bound methods expose their receiver, and user methods also their function. Builtin bound methods have no `__func__`, like Python.
         if obj.is_heap() {
             match self.heap.get(obj) {
-                HeapObj::BoundUserMethod(recv, func, _) => match bare {
+                HeapObj::BoundUserMethod(recv, func, _) => match name {
                     "__self__" => return Ok(AttrLookup::ClassMember(*recv)),
                     "__func__" => return Ok(AttrLookup::ClassMember(*func)),
                     _ => {}
                 },
-                HeapObj::BoundMethod(recv, _) if bare == "__self__" => {
+                HeapObj::BoundMethod(recv, _) if name == "__self__" => {
                     return Ok(AttrLookup::ClassMember(*recv));
                 }
                 _ => {}
@@ -158,13 +156,13 @@ impl<'a> VM<'a> {
         // Function attributes, a stored attr wins over the derived `__name__`.
         if obj.is_heap()
             && let HeapObj::Func(_, _, _, attrs) = self.heap.get(obj)
-            && let Some(v) = attrs.borrow().iter().find(|(n, _)| n == bare).map(|(_, v)| *v)
+            && let Some(v) = attrs.borrow().iter().find(|(n, _)| n == name).map(|(_, v)| *v)
         {
             return Ok(AttrLookup::ClassMember(v));
         }
 
         // `__name__` on callables and types resolves to their declared name.
-        if obj.is_heap() && bare == "__name__" {
+        if obj.is_heap() && name == "__name__" {
             let resolved = match self.heap.get(obj) {
                 HeapObj::Func(fi, ..) => self.function_names.get(*fi).cloned(),
                 HeapObj::Type(n) => Some(n.clone()),
@@ -177,7 +175,7 @@ impl<'a> VM<'a> {
         // Class attr, `MyClass.method` returns the unbound function (no `self` prepended).
         if obj.is_heap()
             && let HeapObj::Class(cls_name, _, _) = self.heap.get(obj) {
-                if let Some((v, defining)) = self.lookup_class_member(obj, bare) {
+                if let Some((v, defining)) = self.lookup_class_member(obj, name) {
                     // `staticmethod` accessed on the class itself unwraps to the plain function.
                     if v.is_heap() && let HeapObj::StaticMethod(func) = self.heap.get(v) {
                         return Ok(AttrLookup::ClassMember(*func));
@@ -189,7 +187,7 @@ impl<'a> VM<'a> {
                     return Ok(AttrLookup::ClassMember(v));
                 }
                 let cls_name = cls_name.clone();
-                return Err(VmErr::Attribute(s!("type object '", str &cls_name, "' has no attribute '", str bare, "'")));
+                return Err(VmErr::Attribute(s!("type object '", str &cls_name, "' has no attribute '", str name, "'")));
             }
 
         // Instance attribute lookup, check `__dict__` first, then the class chain (direct + bases).
@@ -200,7 +198,7 @@ impl<'a> VM<'a> {
                     .find(|(k, _)| k.is_heap() && matches!(self.heap.get(*k), HeapObj::Str(s) if s == name))
                     .map(|(_, v)| v);
                 if let Some(v) = found { return Ok(AttrLookup::InstanceField(v)); }
-                if let Some((mv, defining)) = self.lookup_class_member(cls_val, bare) {
+                if let Some((mv, defining)) = self.lookup_class_member(cls_val, name) {
                     return Ok(self.bind_member(mv, obj, defining));
                 }
                 let ty = self.type_name(obj);
@@ -225,16 +223,16 @@ impl<'a> VM<'a> {
         // `prop.setter` produces a callable that re-builds the property with a new setter (powers `@x.setter`).
         if obj.is_heap()
             && matches!(self.heap.get(obj), HeapObj::Property(..))
-            && bare == "setter" {
+            && name == "setter" {
                 return Ok(AttrLookup::PropertySetterRef(obj));
             }
 
         // Builtin classmethods accessed on the type object (e.g. dict.fromkeys, bytes.fromhex, int.from_bytes) resolve under the type's own name rather than "type".
         if obj.is_heap()
             && let HeapObj::Type(n) = self.heap.get(obj)
-            && matches!(bare, "fromkeys" | "fromhex" | "from_bytes") {
+            && matches!(name, "fromkeys" | "fromhex" | "from_bytes") {
                 let n = n.clone();
-                if let Some(id) = lookup_method(&n, bare) { return Ok(AttrLookup::BuiltinMethod(id)); }
+                if let Some(id) = lookup_method(&n, name) { return Ok(AttrLookup::BuiltinMethod(id)); }
             }
 
         // Builtin type method.
@@ -247,8 +245,7 @@ impl<'a> VM<'a> {
     /* instance fallback via `__getattr__(name)`. Called by `LoadAttr` / `CallMethod` after the normal lookup raises `AttributeError`. */
     pub(crate) fn try_getattr_fallback(&mut self, obj: Val, name: &str, chunk: &SSAChunk, slots: &mut [Val]) -> Result<Option<Val>, VmErr> {
         if !obj.is_heap() || !matches!(self.heap.get(obj), HeapObj::Instance(..)) { return Ok(None); }
-        let bare = crate::parser::ssa_strip(name);
-        let name_val = self.heap.alloc(HeapObj::Str(bare.to_string()))?;
+        let name_val = self.heap.alloc(HeapObj::Str(name.to_string()))?;
         self.try_call_dunder(obj, "__getattr__", &[name_val], chunk, slots)
     }
 

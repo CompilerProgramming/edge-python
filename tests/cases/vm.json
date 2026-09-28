@@ -1711,6 +1711,7 @@
   {"src": "class P:\n    def __format__(self, spec):\n        return 'fmt:' + spec\nprint(f'{P():>10}')\nprint(format(P(), 'x'))", "output": ["fmt:>10", "fmt:x"]},
   {"src": "class Proxy:\n    def __getattr__(self, name):\n        return 'attr:' + name\np = Proxy()\nprint(p.foo)\nprint(p.bar)", "output": ["attr:foo", "attr:bar"]},
   {"src": "class P:\n    def __init__(self):\n        self.x = 1\n    def __getattr__(self, name):\n        return 'fallback'\np = P()\nprint(p.x)\nprint(p.y)", "output": ["1", "fallback"]},
+  {"src": "class Box:\n    level_2 = 'class'\n    def step_1(self):\n        return 'step'\n    def __getattr__(self, name):\n        return name\nBox.count_3 = 3\nb = Box()\nprint(b.step_1(), Box.level_2, Box.count_3, b.key_4)", "output": ["step class 3 key_4"]},
   {"src": "class P:\n    def __getattr__(self, name):\n        raise AttributeError('no ' + name)\nprint(P().missing)", "output": [], "error": "AttributeError"},
   {"src": "class Suppress:\n    def __enter__(self):\n        return self\n    def __exit__(self, *a):\n        return True\nwith Suppress():\n    raise ValueError('x')\nprint('after')", "output": ["after"]},
   {"src": "class Pass:\n    def __enter__(self):\n        return self\n    def __exit__(self, *a):\n        return False\ntry:\n    with Pass():\n        raise ValueError('x')\nexcept ValueError:\n    print('caught')", "output": ["caught"]},

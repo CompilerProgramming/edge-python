@@ -1072,12 +1072,12 @@ impl<'a> VM<'a> {
         let name = chunk.names.get(op as usize).ok_or(cold_runtime("StoreAttr: bad name index"))?.clone();
         if let HeapObj::Instance(cls_val, _) = self.heap.get(obj) {
             let cls_val = *cls_val;
-            if let Some((member, _)) = self.lookup_class_member(cls_val, ssa_strip(&name))
+            if let Some((member, _)) = self.lookup_class_member(cls_val, &name)
                 && member.is_heap()
                 && let HeapObj::Property(_, setter) = self.heap.get(member) {
                 let setter = *setter;
                 if setter.is_none() {
-                    return Err(VmErr::Attribute(s!("can't set attribute '", str ssa_strip(&name), "'")));
+                    return Err(VmErr::Attribute(s!("can't set attribute '", str &name, "'")));
                 }
                 if self.depth >= self.max_calls { return Err(cold_depth()); }
                 self.push(setter);
@@ -1090,11 +1090,11 @@ impl<'a> VM<'a> {
         }
         // Class attribute, insert or replace in the mutable members store.
         if let HeapObj::Class(_, _, members) = self.heap.get(obj) {
-            set_member(members, ssa_strip(&name), value);
+            set_member(members, &name, value);
             return Ok(());
         }
         if let HeapObj::Func(_, _, _, attrs) = self.heap.get(obj) {
-            set_member(attrs, ssa_strip(&name), value);
+            set_member(attrs, &name, value);
             return Ok(());
         }
         let key = self.heap.alloc(HeapObj::Str(name))?;
