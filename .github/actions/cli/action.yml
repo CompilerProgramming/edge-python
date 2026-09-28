@@ -29,7 +29,6 @@ runs:
     - name: SpiderMonkey build tools
       shell: bash
       run: |
-        echo "MOZJS_FROM_SOURCE=1" >> "$GITHUB_ENV"
         case "$RUNNER_OS" in
           # The image carries several LLVMs, and bindgen needs the libclang of the one llvm-config names.
           Linux) sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev python3 && echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> "$GITHUB_ENV" ;;
@@ -60,19 +59,36 @@ runs:
         # The engine as one classic script, the page hands it to the room as a whole.
         deno bundle --platform browser --format iife src/worker/worker.ts -o dist/worker/bundle.js
 
-    - name: Toolchain (lint)
-      if: inputs.mode == 'lint'
+    - name: Toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
-        components: clippy
+        components: ${{ inputs.mode == 'lint' && 'clippy' || '' }}
+        targets: ${{ inputs.mode == 'test' && 'wasm32-unknown-unknown' || inputs.target }}
 
-    - name: Cache Rust (lint)
-      if: inputs.mode == 'lint'
+    - name: Cache Rust
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: cli -> target
         # lint and every test suite build the same debug SpiderMonkey, so they share one cache.
-        shared-key: cli-debug
+        shared-key: ${{ inputs.mode != 'release' && 'cli-debug' || '' }}
+        key: ${{ inputs.target }}
+
+    # After rust-cache, so the archive is saved before rust-cache clears the files loose in target.
+    - name: Cache SpiderMonkey
+      uses: actions/cache@v6
+      with:
+        path: |
+          cli/target/libmozjs-*.tar.gz
+          cli/target/*/libmozjs-*.tar.gz
+        key: mozjs-${{ inputs.target || runner.arch }}-${{ hashFiles('cli/Cargo.lock') }}
+
+    # SpiderMonkey compiles once per revision and target, and later jobs link the archive mozjs made of it.
+    - name: Link or build SpiderMonkey
+      shell: bash
+      run: |
+        shopt -s nullglob
+        archive=(cli/target/libmozjs-*.tar.gz cli/target/*/libmozjs-*.tar.gz)
+        if [ ${#archive[@]} -gt 0 ]; then echo "MOZJS_ARCHIVE=$PWD/$archive"; else echo "MOZJS_CREATE_ARCHIVE=1"; fi >> "$GITHUB_ENV"
 
     - name: Clippy and check
       if: inputs.mode == 'lint'
@@ -81,19 +97,6 @@ runs:
       run: |
         cargo clippy --locked --all-targets -- -D warnings
         cargo check
-
-    - name: Toolchain (release)
-      if: inputs.mode == 'release'
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        targets: ${{ inputs.target }}
-
-    - name: Cache Rust (release)
-      if: inputs.mode == 'release'
-      uses: Swatinem/rust-cache@v2
-      with:
-        workspaces: cli -> target
-        key: ${{ inputs.target }}
 
     - name: Build release
       if: inputs.mode == 'release'
@@ -105,7 +108,7 @@ runs:
         case "$TARGET" in
           # musl-gcc has no C++, so the static Linux build runs in Alpine, whose libc is musl.
           *linux-musl)
-            docker run --rm -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -w "$GITHUB_WORKSPACE/cli" -e EDGE_COMPILER_WASM -e OWNER="$(id -u):$(id -g)" \
+            docker run --rm -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -w "$GITHUB_WORKSPACE/cli" -e EDGE_COMPILER_WASM -e MOZJS_ARCHIVE -e MOZJS_CREATE_ARCHIVE -e OWNER="$(id -u):$(id -g)" \
               rust:alpine sh -c 'sh ../.github/actions/cli/musl.sh && chown -R "$OWNER" target'
             mkdir -p "target/$TARGET/release" && cp target/release/edge "target/$TARGET/release/edge" ;;
           *) cargo build --locked --release --target "$TARGET" ;;
@@ -126,19 +129,6 @@ runs:
       uses: ./.github/actions/upload
       with:
         part: cli
-
-    - name: Toolchain (test)
-      if: inputs.mode == 'test'
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        targets: wasm32-unknown-unknown
-
-    - name: Cache Rust (test)
-      if: inputs.mode == 'test'
-      uses: Swatinem/rust-cache@v2
-      with:
-        workspaces: cli -> target
-        shared-key: cli-debug
 
     # The plugin suite in plugins.json loads this pdk/example build from the root target dir.
     - name: Build the plugin fixture
