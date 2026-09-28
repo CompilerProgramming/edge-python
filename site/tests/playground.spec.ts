@@ -105,3 +105,19 @@ test('runs an edit once typing pauses and reports a mismatch against the documen
 
   await expect(status(page)).toHaveText('Output, differs', { timeout: 30000 })
 })
+
+test.describe('on a touch screen', () => {
+  test.use({ hasTouch: true })
+
+  // A phone keeps the hover a tap leaves, which once held the menu open.
+  test('closes the file menu on a second tap of its button', async ({ page }) => {
+    const button = page.locator('[data-files] > button')
+    const pick = page.locator('[data-pick="edge.json"]')
+
+    await button.tap()
+    await expect(pick).toBeVisible()
+
+    await button.tap()
+    await expect(pick).toBeHidden()
+  })
+})
