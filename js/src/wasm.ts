@@ -5,6 +5,7 @@ export interface CompilerExports {
     out_len(): number
     wasm_alloc(size: number): number
     wasm_free(ptr: number, size: number): void
+    sha256_hex(ptr: number, len: number): number
     register_code_module(spec_ptr: number, spec_len: number, src_ptr: number, src_len: number): void
     register_native_module(spec_ptr: number, spec_len: number, names_ptr: number, names_len: number, base_id: number): void
     register_module_error(spec_ptr: number, spec_len: number, msg_ptr: number, msg_len: number): void

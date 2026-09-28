@@ -1,8 +1,3 @@
-export const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
-    const digest = await crypto.subtle.digest('SHA-256', bytes as BufferSource);
-    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
-};
-
 // What `edge.lock` holds for one name, the address to fetch and the digest those bytes must have.
 export interface Locked {
     version?: string

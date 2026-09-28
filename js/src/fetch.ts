@@ -1,10 +1,22 @@
-import { sha256Hex } from './specs.ts';
+import { writeBytes } from './util.ts';
+import type { CompilerExports } from './wasm.ts';
+
+const TD = new TextDecoder();
 
 export interface FetchCtx {
     baseUrl?: string | null
     // How the engine reaches a url, a room reads the program's own files through its page.
     read?: (url: string) => Promise<Response>
     knownMissing: Set<string>
+    compilerExports: CompilerExports
+}
+
+/* The engine hashes a pin, since the worker a room starts has no crypto.subtle. */
+function sha256Hex(exports: CompilerExports, bytes: Uint8Array): string {
+    const ptr = writeBytes(exports, bytes);
+    const len = exports.sha256_hex(ptr, bytes.length);
+    exports.wasm_free(ptr, Math.max(1, bytes.length));
+    return TD.decode(new Uint8Array(exports.memory.buffer, exports.out_ptr(), len));
 }
 
 // Specs are root-relative, the URL join clamps escapes at the origin.
@@ -49,7 +61,7 @@ export async function fetchModule(spec: string, ctx: FetchCtx): Promise<Uint8Arr
     const bytes = new Uint8Array(await resp.arrayBuffer());
 
     if (pin) {
-        const hash = await sha256Hex(bytes);
+        const hash = sha256Hex(ctx.compilerExports, bytes);
         if (pin !== hash) {
             throw new Error(`[edge-python] integrity check failed for '${target}'\n expected sha256-${pin}\n got sha256-${hash}`);
         }

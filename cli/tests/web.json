@@ -17,6 +17,15 @@
     "fails": ["ValueError: on purpose"]
   },
   {
+    "given": {
+      "edge.json": "{ \"imports\": { \"greet\": \"./greet.py#sha256-2eee58b9a692a7707eb962ef3f297fbac73daed26c205595b5ad71f7913471dd\" } }\n",
+      "greet.py": "def hi():\n    return 'hi'\n",
+      "main.py": "from greet import hi\nprint(hi())\n"
+    },
+    "run": ["run", "--web", "main.py"],
+    "stdout": ["hi"]
+  },
+  {
     "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "given": {
       "edge.json": "{ \"imports\": { \"test\": \"https://cdn.edgepython.com/std/test.py\" } }\n",

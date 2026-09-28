@@ -211,6 +211,13 @@ pub extern "C" fn vm_drop(id: u32) -> i32 {
     })
 }
 
+/* The sha256 of the host's bytes as hex, since the worker a room starts has no crypto.subtle. */
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sha256_hex(ptr: *const u8, len: u32) -> u32 {
+    let digest = crate::util::sha256::sha256(unsafe { safe_bytes(ptr, len) });
+    write_out_bytes(crate::util::sha256::hex_encode(&digest).into_bytes()) as u32
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn register_code_module(spec_ptr: *const u8, spec_len: u32, src_ptr: *const u8, src_len: u32) {
     let spec = unsafe { safe_str_owned(spec_ptr, spec_len) };

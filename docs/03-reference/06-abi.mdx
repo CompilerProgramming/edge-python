@@ -452,6 +452,7 @@ Distinct from the sealed plugin imports above, these are exports on `compiler.wa
 | `vm_select` | `(id: u32) -> i32` | Point every per-run export at slot `id`. Returns `0`, or `1` when no such slot exists. |
 | `vm_drop` | `(id: u32) -> i32` | Free slot `id` and its run. Returns `0`, or `1` when there is nothing to drop. Slot `0` always stays. |
 | `register_module_error` | `(spec_ptr: *const u8, spec_len: u32, msg_ptr: *const u8, msg_len: u32)` | Refuse a spec or bare name. Importing it fails at compile time, at the import, with `msg`. |
+| `sha256_hex` | `(ptr: *const u8, len: u32) -> u32` | Write the sha256 of the bytes at `ptr` into the out buffer as 64 hex characters. Returns its byte length. A host checks a `#sha256-` pin with it, even in a worker without `crypto.subtle`. |
 
 A system module registers per package, under `system:<name>@<dir>` where `dir` is the directory of that package's `edge.json`. A bare name no manifest declares resolves there, to the module when the host registered it with `register_native_module`, or to its refusal with `register_module_error`.
 
