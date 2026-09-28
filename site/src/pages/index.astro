@@ -6,6 +6,7 @@ import Field from '../components/ui/field.astro'
 import PackageCard from '../components/package-card.astro'
 import Agent from '../components/agent.astro'
 import { counted, listed } from '../lib/server/packages'
+import { OWNER } from '../lib/account/handle'
 
 const guides = [
   { icon: 'file', label: 'Quickstart', detail: 'curl -fsSL https://cdn.edgepython.com/cli/install.sh | sh', href: '/docs/getting-started/quickstart' },
@@ -28,7 +29,7 @@ const shelf = (sort?: string) => {
 const sorts = [
   { label: 'Popular', href: shelf(), current: !recent },
   { label: 'Recent', href: shelf('recent'), current: recent },
-  { label: 'std', href: '/@dylan', current: false }
+  { label: 'std', href: `/@${OWNER}`, current: false }
 ]
 
 const { results: packages } = await listed(env.DB, { asked: asked || undefined, recent })

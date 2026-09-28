@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { expect, type APIRequestContext } from '@playwright/test'
 import { MAILS, arriving, mailedCode, mintToken, packed, published, signIn, test, unique } from './helpers'
 import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NOTICE } from '../src/lib/server/packages'
+import { OWNER } from '../src/lib/account/handle'
 
 const DOCS = fileURLToPath(new URL('../../docs/', import.meta.url))
 
@@ -483,6 +484,21 @@ test.describe('publishing', () => {
     const over = await send(request, token, Buffer.concat([release(naming(), '0.1.0'), Buffer.alloc(MAX_ARTIFACT)]))
     expect(over.status()).toBe(413)
     expect((await over.json()).error).toBe(`An artifact is ${MAX_ARTIFACT} bytes at most.`)
+  })
+
+  // One account on both sides, since the handle is all that tells the owner apart.
+  test('holds a third new name in a minute for everyone but the owner', async ({ request }) => {
+    await signIn(request)
+    const token = await mintToken(request)
+    const burst = async () => {
+      const statuses = []
+      for (let at = 0; at < 3; at++) statuses.push((await send(request, token, release(naming(), '0.1.0'))).status())
+      return statuses
+    }
+
+    expect(await burst()).toEqual([201, 201, 429])
+    expect((await request.patch('/api/me', { data: { handle: OWNER, name: 'Corpus', avatar: { icon: 1, palette: 'sky' } } })).status()).toBe(200)
+    expect(await burst()).toEqual([201, 201, 201])
   })
 
   /* The bundle is opened here, so bytes that are not an archive never reach storage and a hand-built request cannot skip the read. */

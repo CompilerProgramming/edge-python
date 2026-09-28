@@ -1,3 +1,6 @@
+// The account that publishes the standard library, which the home page shelves as std.
+export const OWNER = 'dylan'
+
 // Handles live under @, so this list is about names nobody should claim, not about routes.
 export const RESERVED = ['404', 'api', 'docs', 'packages', 'publish', 'settings', 'terms', 'unclaimed', 'welcome']
 

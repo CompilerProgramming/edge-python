@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test'
 import { mintToken, packed, published, signedIn, test } from './helpers'
+import { OWNER } from '../src/lib/account/handle'
 
 const INTRO = `---
 title: Introduction
@@ -147,7 +148,7 @@ test('puts the newest release first under Recent and sends std to its maintainer
   expect(shelf).toContain(`/package/${older.name}`)
   expect(shelf.indexOf(`/package/${newer.name}`)).toBeLessThan(shelf.indexOf(`/package/${older.name}`))
 
-  await expect(page.locator('[data-sorts]').getByRole('link', { name: 'std', exact: true })).toHaveAttribute('href', '/@dylan')
+  await expect(page.locator('[data-sorts]').getByRole('link', { name: 'std', exact: true })).toHaveAttribute('href', `/@${OWNER}`)
 })
 
 test('says nothing is there for a name nobody published', async ({ page }) => {

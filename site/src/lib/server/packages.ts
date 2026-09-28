@@ -33,6 +33,9 @@ export const MAX_NEW_VERSIONS = 60
 // What one account's artifacts may add up to, since nothing reclaims the room a version takes.
 export const STARTER_STORAGE = 50 << 20
 export const MAX_STORAGE = 1 << 30
+
+// The owner publishes the whole standard library at once, so its day and its room hold five times as much.
+export const OWNER_SCALE = 5
 const DAY = 86_400_000
 
 /* A name that reads the same in a url, an import and a listing. */

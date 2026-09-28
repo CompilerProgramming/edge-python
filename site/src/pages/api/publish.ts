@@ -3,12 +3,13 @@ import { env } from 'cloudflare:workers'
 import { sha256hex } from '../../lib/crypto'
 import { json } from '../../lib/server/http'
 import { tokenUser } from '../../lib/server/tokens'
-import { roomFor } from '../../lib/server/users'
+import { roomFor, userById } from '../../lib/server/users'
+import { OWNER } from '../../lib/account/handle'
 import { bytes as sized } from '../../lib/format'
 import type { Packed } from '../../lib/server/bundle'
 import { packed } from '../../lib/server/bundle'
 import type { Page } from '../../lib/server/packages'
-import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NEW_NAMES, MAX_NEW_VERSIONS, MAX_NOTICE, RESERVED, checkLocks, checkPages, claimedToday, described, floored, keyOf, linked, named, noticed, packageByName, publish, publishedToday, storedBytes, versionExists, versioned } from '../../lib/server/packages'
+import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NEW_NAMES, MAX_NEW_VERSIONS, MAX_NOTICE, OWNER_SCALE, RESERVED, checkLocks, checkPages, claimedToday, described, floored, keyOf, linked, named, noticed, packageByName, publish, publishedToday, storedBytes, versionExists, versioned } from '../../lib/server/packages'
 
 /* The artifact is the only thing sent. Everything a listing shows is read out of it here, so a publisher declares nothing twice and cannot declare it differently from what they shipped. */
 export const POST: APIRoute = async ({ request }) => {
@@ -46,16 +47,21 @@ export const POST: APIRoute = async ({ request }) => {
   const held = await packageByName(env.DB, name)
   if (held && held.user_id !== userId) return json({ error: `The name ${name} belongs to someone else.` }, 409)
 
+  // The owner publishes the standard library in bursts, so no minute's limiter holds it and its day runs larger.
+  const owner = (await userById(env.DB, userId))?.handle === OWNER
+  const names = owner ? MAX_NEW_NAMES * OWNER_SCALE : MAX_NEW_NAMES
+  const versions = owner ? MAX_NEW_VERSIONS * OWNER_SCALE : MAX_NEW_VERSIONS
+
   // A name nobody holds is the scarce thing, so it costs more than another version of your own.
   const limit = held ? env.PUBLISH_VERSION : env.PUBLISH_NAME
-  if (!(await limit.limit({ key: userId })).success) return json({ error: 'Too many packages published. Try again later.' }, 429)
+  if (!owner && !(await limit.limit({ key: userId })).success) return json({ error: 'Too many packages published. Try again later.' }, 429)
 
-  if (!held && (await claimedToday(env.DB, userId)) >= MAX_NEW_NAMES) {
-    return json({ error: `You can claim ${MAX_NEW_NAMES} names a day.` }, 429)
+  if (!held && (await claimedToday(env.DB, userId)) >= names) {
+    return json({ error: `You can claim ${names} names a day.` }, 429)
   }
 
-  if ((await publishedToday(env.DB, userId)) >= MAX_NEW_VERSIONS) {
-    return json({ error: `You can publish ${MAX_NEW_VERSIONS} versions a day.` }, 429)
+  if ((await publishedToday(env.DB, userId)) >= versions) {
+    return json({ error: `You can publish ${versions} versions a day.` }, 429)
   }
 
   // Refused before the bytes are stored, since nothing reclaims the room afterwards.

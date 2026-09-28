@@ -1,7 +1,8 @@
 import { random } from '../crypto'
 import type { Avatar, Palette } from '../account/avatar'
 import type { Me, Public } from '../account/auth'
-import { MAX_STORAGE, STARTER_STORAGE } from './packages'
+import { MAX_STORAGE, OWNER_SCALE, STARTER_STORAGE } from './packages'
+import { OWNER } from '../account/handle'
 
 export type User = {
   id: string
@@ -135,10 +136,11 @@ export async function linkedProviders(db: D1Database, userId: string) {
   return results.map((row) => row.provider)
 }
 
-// Its own number when one was set, otherwise what the way it signs in is worth.
+// Its own number when one was set, otherwise what the way it signs in is worth, scaled for the owner.
 export async function roomFor(db: D1Database, userId: string) {
-  const held = await db.prepare('select quota from user where id = ?').bind(userId).first<{ quota: number | null }>()
+  const held = await db.prepare('select quota, handle from user where id = ?').bind(userId).first<{ quota: number | null; handle: string | null }>()
   if (held?.quota != null) return held.quota
+  if (held?.handle === OWNER) return MAX_STORAGE * OWNER_SCALE
 
   const linked = await linkedProviders(db, userId)
   return linked.some((provider) => provider !== 'email') ? MAX_STORAGE : STARTER_STORAGE
