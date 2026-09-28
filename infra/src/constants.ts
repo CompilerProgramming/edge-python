@@ -6,6 +6,9 @@ export const RESOURCE_HASH = '506cf1'
 export const ENV = process.env.EDGE_ENV === 'prod' ? 'prod' : 'dev'
 export const ZONE = 'edgepython.com'
 
+// Production keeps what people made, its rows and published packages, and dev keeps nothing between promotes.
+export const keeps = (env: string) => env === 'prod'
+
 // Every name one environment owns, exported so a test can hold dev and prod side by side.
 export function names(env: string) {
   const worker = `${RESOURCE_HASH}-${env}`

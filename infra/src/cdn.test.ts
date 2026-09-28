@@ -21,11 +21,17 @@ test('the root revalidates and a frozen copy is kept for a year', () => {
   assert.match(FROZEN_CACHE, /max-age=31536000, immutable/)
 })
 
-test('a promote sweeps a root key the run dropped and spares every frozen and published one', () => {
-  const keys = ['cli/edge-old.tar.gz', 'compiler.wasm', 'v1.0.0/cli/install.sh', 'v1.0.0/compiler.wasm', 'pkg/json/0.1.0/app.edge', 'pkgs/old.js']
-  assert.deepEqual(swept(keys, ['compiler.wasm']), ['cli/edge-old.tar.gz', 'pkgs/old.js'])
+test('a promote sweeps a root key the run dropped and spares every frozen one on either side', () => {
+  const keys = ['cli/edge-old.tar.gz', 'compiler.wasm', 'v1.0.0/cli/install.sh', 'v1.0.0/compiler.wasm']
+  for (const env of ['dev', 'prod']) assert.deepEqual(swept(keys, ['compiler.wasm'], env), ['cli/edge-old.tar.gz'])
+})
+
+test('a promote keeps the published packages in production and sweeps them in dev', () => {
+  const keys = ['pkg/json/0.1.0/app.edge', 'pkgs/old.js']
+  assert.deepEqual(swept(keys, [], 'prod'), ['pkgs/old.js'])
+  assert.deepEqual(swept(keys, [], 'dev'), keys)
 })
 
 test('a root key that only opens with a v is swept all the same', () => {
-  assert.deepEqual(swept(['v1/old.js', 'vm/compiler.wasm'], []), ['v1/old.js', 'vm/compiler.wasm'])
+  assert.deepEqual(swept(['v1/old.js', 'vm/compiler.wasm'], [], 'dev'), ['v1/old.js', 'vm/compiler.wasm'])
 })

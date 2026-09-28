@@ -4,7 +4,7 @@ import { dirname, extname, join, relative, sep } from 'node:path'
 import { brotliCompressSync, constants } from 'node:zlib'
 import Cloudflare from 'cloudflare'
 import { account_id, client, zone_id } from '../client'
-import { BUCKET, CDN_DOMAIN, TMP_BUCKET, TMP_CDN_DOMAIN, TMP_CDN_URL, TMP_EXPIRY_SECONDS, ZONE } from '../constants'
+import { BUCKET, CDN_DOMAIN, ENV, TMP_BUCKET, TMP_CDN_DOMAIN, TMP_CDN_URL, TMP_EXPIRY_SECONDS, ZONE, keeps } from '../constants'
 
 const TYPES: Record<string, string> = {
   '.wasm': 'application/wasm',
@@ -174,14 +174,14 @@ export async function delete_keys(bucket: string, keys: string[]) {
   })
 }
 
-// A promote replaces the whole tree, so keys the run no longer ships go away, a frozen release and a published package stay.
-export function swept(keys: string[], shipped: string[]) {
+// A promote replaces the whole tree, sparing a frozen release and the packages its environment keeps.
+export function swept(keys: string[], shipped: string[], env: string) {
   const keep = new Set(shipped)
-  return keys.filter((key) => !keep.has(key) && !FROZEN.test(key) && !key.startsWith('pkg/'))
+  return keys.filter((key) => !keep.has(key) && !FROZEN.test(key) && !(keeps(env) && key.startsWith('pkg/')))
 }
 
 export async function prune(bucket: string, shipped: string[]) {
-  await delete_keys(bucket, swept(await list_keys(bucket), shipped))
+  await delete_keys(bucket, swept(await list_keys(bucket), shipped, ENV))
 }
 
 // Downloads a run's public tree from tmp, decoded, minus the build inputs.
