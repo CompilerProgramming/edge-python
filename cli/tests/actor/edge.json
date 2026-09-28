@@ -1,6 +1,3 @@
 {
-  "imports": {
-    "time": "https://cdn.edgepython.com/js/builtins/time/index.js",
-    "network": "https://cdn.edgepython.com/js/builtins/network/index.js"
-  }
+  "imports": {}
 }

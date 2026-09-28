@@ -40,7 +40,7 @@ cargo wasm # compiler.wasm, CI ships a smaller build
 cargo build --release # .rlib and cdylib for Rust embedders
 ```
 
-`cli/` embeds `compiler.wasm` and the JS host from `js/dist` at build time. Build them first, or point `EDGE_COMPILER_WASM` and `EDGE_JS_DIST` at copies. It precompiles StarlingMonkey from `target/starling.wasm` or `EDGE_STARLING_WASM`, keeps only its hash, and downloads the artifact from `EDGE_CDN_BASE` on the first JavaScript import. Releases embed the speed build from `cargo wasm-cli`.
+`cli/` embeds `compiler.wasm` and the JS host from `js/dist` at build time. Build them first, or point `EDGE_COMPILER_WASM` and `EDGE_JS_DIST` at copies. Releases embed the speed build from `cargo wasm-cli`.
 
 The system calls in `js/src/system` run in SpiderMonkey inside the CLI, through `mozjs`, which compiles SpiderMonkey from source on the first build and wants clang, python3 and `llvm-objdump` on the path. On macOS a symlink named `llvm-objdump` to `/usr/bin/objdump` serves, and CI sets `MOZJS_FROM_SOURCE=1` on every target. The static Linux binary builds inside `rust:alpine` through [`.github/actions/cli/musl.sh`](.github/actions/cli/musl.sh), since musl-gcc has no C++.
 
@@ -55,9 +55,6 @@ The other suites read the builds from a CDN, the way CI does. Build what you cha
 ```bash
 cargo wasm
 (cd js && deno run -A npm:typescript@5.9.3/tsc -p tsconfig.json && deno run -A npm:typescript@5.9.3/tsc -p tsconfig.worker.json)
-curl -fsSL https://github.com/bytecodealliance/StarlingMonkey/releases/download/starlingmonkey-v0.3.0/starling.wasm -o target/starling.wasm
-echo "b5707b9d97164e0c29e471844a9ccdd81c445a5d379a9299ae2ee7a9dab3aabe  target/starling.wasm" | shasum -a 256 -c
-(cd cli && cargo build) # the stage ships its js-runtime artifact
 cd infra && npm ci && npm run stage -- ../_cdn && npm run cdn:local -- ../_cdn # keep it running
 ```
 

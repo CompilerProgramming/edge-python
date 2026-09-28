@@ -5,7 +5,7 @@ description: "The edge CLI, from run and serve to test, build, actor and package
 
 # Command line interface
 
-The `edge` CLI runs on macOS, Linux, and WSL. It embeds the engine the JS host loads, a `compiler.wasm` built from the same source for speed and precompiled for the host machine, executed under wasmtime, so `run`, `repl`, `test`, and `actor` start in milliseconds with no browser and no server behind them. JavaScript modules run in StarlingMonkey, a runtime the CLI downloads once on the first JavaScript import, and scripts that need a browser (`dom`, `storage`, `frame()`) belong to the JS host, see [JavaScript in the CLI](/docs/reference/modules#javascript-in-the-cli) for what runs where.
+The `edge` CLI runs on macOS, Linux, and WSL. It embeds the engine the JS host loads, a `compiler.wasm` built from the same source for speed and precompiled for the host machine, executed under wasmtime, so `run`, `repl`, `test`, and `actor` start in milliseconds with no browser and no server behind them. The [system calls](/docs/reference/system) run in SpiderMonkey inside the binary, so a program answers the same on both hosts.
 
 ```bash
 edge run app.py        # run a script, a .edge, or stdin (--web)
@@ -16,8 +16,8 @@ edge repl              # interactive shell
 edge test              # run *_test.py files
 edge init my-app       # scaffold a project
 edge publish app.edge  # send a packed .edge to the registry
-edge add network       # add a package to edge.json
-edge remove network    # remove a package from edge.json
+edge add json          # add a package to edge.json
+edge remove json       # remove a package from edge.json
 edge lock              # resolve edge.json into edge.lock
 edge uninstall         # remove the binary and the PATH entry
 ```
@@ -58,7 +58,7 @@ With no path, `edge run` reads the script from piped stdin (`cat app.py | edge r
 
 Flags: `--events`, `--save-state`, `--restore-state`, and `--preempt`, see [run flags](/docs/reference/modules#run-flags).
 
-`--web` runs the script on the browser host instead of the native engine, in headless Chrome. The JS host and the engine come out of the binary and are served on a loopback port, so only the modules the manifest declares by URL leave the machine, and `dom` and `storage` work because a real page is running them. It drives a Chrome the system already has, or offers to download one the first time into `~/.local/share/edge/chromium`, which `edge uninstall` offers to remove. `EDGE_CHROME_PATH` names a browser directly. The four flags above belong to the native engine and are refused alongside it rather than ignored.
+`--web` runs the script on the browser host instead of the native engine, in headless Chrome. The JS host and the engine come out of the binary and are served on a loopback port, so only the modules the manifest declares by URL leave the machine. It drives a Chrome the system already has, or offers to download one the first time into `~/.local/share/edge/chromium`, which `edge uninstall` offers to remove. `EDGE_CHROME_PATH` names a browser directly. The four flags above belong to the native engine and are refused alongside it rather than ignored.
 
 ## `edge serve`: local dev server
 
@@ -112,7 +112,7 @@ Test files declare tests with the `test` package and do not need to call `run()`
 
 Exit codes: `0` when every file passed, `1` when a file failed or no `*_test.py` was found, `2` when the engine session could not start.
 
-`--web` runs the same files on the browser host in headless Chrome, so a package can prove it works where `dom` and `storage` are real. One browser serves the whole suite with a fresh page per file, since launching one costs seconds. Everything else holds, the discovery, the `test` declaration and the exit codes, and the engine comes out of the binary the same way [`edge run --web`](#edge-run-run-a-script) gets it.
+`--web` runs the same files on the browser host in headless Chrome, so a package can prove it works where the system calls run in a real browser. One browser serves the whole suite with a fresh page per file, since launching one costs seconds. Everything else holds, the discovery, the `test` declaration and the exit codes, and the engine comes out of the binary the same way [`edge run --web`](#edge-run-run-a-script) gets it.
 
 ## `edge init`: scaffold a project
 
@@ -135,14 +135,13 @@ $ edge init my-app
 Edits [`edge.json`](/docs/reference/modules#edgejson) by name, so you never paste URLs. Each line prints the name and what it wrote.
 
 ```text
-$ edge add math network
+$ edge add math
   + math       0.1.0
-  + network    https://cdn.edgepython.com/js/builtins/network/index.js
 
   updated edge.json, run edge lock to resolve it
 ```
 
-A name is looked up in the registry at its newest version, or at the one `json@0.1.0` names, and the entry it writes is that version alone. An unknown name or version aborts the whole command before any write. Point a name at a custom URL with `edge add foo=https://example.com/foo.wasm`. It goes to `imports` too, whatever the URL, because each host tells a code module, a native module, and a JS module apart by the artifact. `edge add` keeps `extends` and any other key already in the manifest. `edge remove` deletes entries the same way, and neither touches `edge.lock`.
+A name is looked up in the registry at its newest version, or at the one `json@0.1.0` names, and the entry it writes is that version alone. An unknown name or version aborts the whole command before any write. Point a name at a custom URL with `edge add foo=https://example.com/foo.wasm`. It goes to `imports` too, whatever the URL, because each host tells a code module and a native module apart by the artifact, and a `.js` or `.mjs` URL is refused before anything is written. `edge add` keeps `extends` and any other key already in the manifest. `edge remove` deletes entries the same way, and neither touches `edge.lock`.
 
 ## `edge lock`: resolve the manifest
 
@@ -167,7 +166,7 @@ Packs the project and its imports into one artifact, in one of three modes for t
 | `edge build --app` | a standalone binary | any host of the same OS and CPU, offline, nothing installed |
 | `edge build --web` | a self-contained `dist/` | any browser |
 
-Each mode packs differently. The default `.edge` carries the project and its custom imports, since `edge` is already present where it lands. `--app` appends the project to this `edge` binary, so `./app` runs it directly and honors the run flags `--save-state`, `--restore-state`, `--preempt` and `--events`. `--web` writes the JS host it carries under `dist/js/` with `compiler.wasm` beside it, so neither reaches the network, adds every declared module with what it needs from the same origin (its relative JavaScript and Python imports and a sibling `edge.json`), and rewrites `edge.json` to the vendored paths, so the `dist/` works offline with `dom` and `network` included.
+Each mode packs differently. The default `.edge` carries the project and its custom imports, since `edge` is already present where it lands. `--app` appends the project to this `edge` binary, so `./app` runs it directly and honors the run flags `--save-state`, `--restore-state`, `--preempt` and `--events`. `--web` writes the JS host it carries under `dist/js/` with `compiler.wasm` beside it, so neither reaches the network, adds every declared module with what it needs from the same origin (its relative imports and a sibling `edge.json`), and rewrites `edge.json` to the vendored paths, so the `dist/` works offline.
 
 All three carry every module the manifest declares by URL, with the files it imports beside it, which is what makes the artifact the whole program and lets a registry read what it needs without opening a CLI. A declared version resolves through [`edge.lock`](/docs/reference/modules#edgelock) first, and a build refuses to pack while one is unlocked. A `.edge` and an app binary carry the lock beside each manifest they carry, so the artifact resolves its own names. A `--web` build rewrites every root import to a vendored path and so leaves the root lock out of `dist/`, while a nested package keeps its own.
 
@@ -176,8 +175,6 @@ A `.edge` and an app binary also carry the `README.md` and any `LICENSE` at the 
 Documentation is packed only after every page passes the rendering convention, so a package reaches a registry with pages the site can lay out. The build fails otherwise, since shipping documentation that cannot be laid out is worse than shipping none.
 
 A page nests one folder deep at most and carries a numeric prefix on every path segment. It opens with a closed frontmatter block holding a `title` and a `description`, has exactly one top-level heading, and places an `output` block only ever directly after an `edge-python` block. The site holds its own `docs/` to the same rules, read from the same place.
-
-An app binary for a project that declares a JavaScript module also carries the precompiled runtime, around 26 MB. A run prefers that copy, then the cache, then the download, so a packed app never needs the network. An `.edge` leaves the runtime out because the `edge` that runs it brings its own.
 
 ```text
 $ edge build

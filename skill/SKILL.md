@@ -14,11 +14,7 @@ This document is self-verifying and its examples follow the cells v1 grammar. A 
     "re": "https://cdn.edgepython.com/std/re.wasm",
     "math": "https://cdn.edgepython.com/std/math.wasm",
     "struct": "https://cdn.edgepython.com/std/struct.wasm",
-    "test": "https://cdn.edgepython.com/std/test.py",
-    "dom": "https://cdn.edgepython.com/js/builtins/dom/entry.py",
-    "storage": "https://cdn.edgepython.com/js/builtins/storage/index.js",
-    "network": "https://cdn.edgepython.com/js/builtins/network/index.js",
-    "time": "https://cdn.edgepython.com/js/builtins/time/index.js"
+    "test": "https://cdn.edgepython.com/std/test.py"
   }
 }
 ```
@@ -91,11 +87,11 @@ A persistent interpreter across prompts. Imports, definitions and mutations surv
 
 `edge test [path]` discovers `*_test.py` recursively, skipping hidden dirs, `node_modules`, `target` and `dist`. A file argument runs exactly that file. Each file executes in a fresh interpreter and state never leaks between files. The project must declare `test`, otherwise the runner stops with `declare test in edge.json (edge add test)`. Exit code is 0 when everything passes, 1 when a file fails or no tests are found, 2 when the engine cannot start. See the test package section for the API.
 
-`edge test --web` runs the same files on the browser host in headless Chrome, one browser for the suite with a fresh page per file, so a package can prove it works where `dom` and `storage` are real.
+`edge test --web` runs the same files on the browser host in headless Chrome, one browser for the suite with a fresh page per file, so a package can prove it answers the same in a browser.
 
 ### edge init, edge add, edge remove, edge lock
 
-`edge init [name]` scaffolds `main.py`, an empty `edge.json` and `index.html`, with `--bare` skipping the HTML. `edge add json network` looks each name up in the registry at its newest version, or at the one `json@0.1.0` names, writes one `imports` entry holding that version alone, and prints it with what the package asks the root to grant. `edge add foo=<url>` registers a custom URL verbatim, also under `imports`, since each host tells a `.py`, `.wasm` or `.js` module apart by the artifact. `edge add` keeps `extends` and any other key already there. `edge remove` deletes entries. Unknown names abort the whole command before any write, and neither command touches `edge.lock`.
+`edge init [name]` scaffolds `main.py`, an empty `edge.json` and `index.html`, with `--bare` skipping the HTML. `edge add json` looks each name up in the registry at its newest version, or at the one `json@0.1.0` names, writes one `imports` entry holding that version alone, and prints it with what the package asks the root to grant. `edge add foo=<url>` registers a custom URL verbatim, also under `imports`, since each host tells a `.py` and a `.wasm` module apart by the artifact, and a `.js` or `.mjs` URL is refused before anything is written. `edge add` keeps `extends` and any other key already there. `edge remove` deletes entries. Unknown names abort the whole command before any write, and neither command touches `edge.lock`.
 
 `edge lock` turns each declared version into the URL and digest of that release and writes `edge.lock` beside the manifest, rebuilding the whole file each time. It is the only command that asks the registry where a name points, so `edge run`, `edge test` and `edge build` read the lock and resolve nothing themselves. A version with no entry, or one whose entry holds another release, fails with `'json' is not locked, run edge lock`. It also walks every package in the tree, each through its own `edge.lock`, and writes nothing while the root's `permissions` misses what one asks for, a check `edge run`, `edge test` and `edge build` repeat before compiling.
 
@@ -113,7 +109,7 @@ Three mutually exclusive modes.
 | `edge build --app` | `app` | Standalone binary, runs offline on the same OS and CPU with nothing installed |
 | `edge build --web` | `dist/` | Browser distribution with the vendored JS host and packages |
 
-`--out <path>` overrides the default. The bundle contains every `.py`, `.js`, `.mjs` and `.wasm` under the project plus `edge.json`, the `README.md` and any `LICENSE` at the project root, together with each module the manifest declares by URL and the files it imports. When `edge.json` declares a `docs` directory, a `.edge` also carries its `.mdx` pages under a reserved `@docs/` prefix, checked against the rendering convention first, and an app binary leaves them out. An app binary for a project with a JavaScript module also carries the precompiled runtime, about 26 MB, so it runs offline. The entry is `main.py`, `app.py` or `index.py` when present. An app binary accepts only the snapshot flags `--save-state`, `--restore-state`, `--preempt` and `--events`.
+`--out <path>` overrides the default. The bundle contains every `.py` and `.wasm` under the project plus `edge.json`, the `README.md` and any `LICENSE` at the project root, together with each module the manifest declares by URL and the files it imports. When `edge.json` declares a `docs` directory, a `.edge` also carries its `.mdx` pages under a reserved `@docs/` prefix, checked against the rendering convention first, and an app binary leaves them out. The entry is `main.py`, `app.py` or `index.py` when present. An app binary accepts only the snapshot flags `--save-state`, `--restore-state`, `--preempt` and `--events`.
 
 ### edge publish
 
@@ -134,8 +130,7 @@ Interactive removal of the binary and PATH entries.
 | Variable | Effect |
 |---|---|
 | `EDGE_COMPILER_WASM` | Path to `compiler.wasm` for the CLI build |
-| `EDGE_STARLING_WASM` | Path to the pinned StarlingMonkey `starling.wasm` the CLI build precompiles |
-| `EDGE_CDN_BASE` | Serve the official CDN origin from another base for module downloads, the JavaScript runtime and `edge build --web`, used by tests and staging |
+| `EDGE_CDN_BASE` | Serve the official CDN origin from another base for module downloads and `edge build --web`, used by tests and staging |
 
 ## The Python delta
 
@@ -290,19 +285,18 @@ from lib.helpers import slugify as sl
 
 Not supported. `from . import x` and any form of dynamic import.
 
-Bare names resolve through `edge.json`, walking up from the importing file with the nearest manifest winning. The manifest maps each name to a path, a URL, or a `major.minor.patch` version naming a registry package under `imports`, and `extends` may name a parent manifest. A version resolves through the `edge.lock` beside the manifest that declared it, which every host reads before the compiler sees the manifest, so the compiler only ever meets a path or a URL. An `edge` field names the lowest engine the project runs on, `major.minor.patch`, and it runs on that version or any later one, never on an earlier one, which stops with `this project needs edge 0.7.0, this is 0.6.45`. The artifact decides the kind, `.py` is a code module, `.wasm` a native plugin and `.js` a JavaScript module, which the JS host runs on the page's main thread and the CLI in StarlingMonkey, so a manifest never classifies a package. A leftover `system` section fails with `edge.json at '<path>': move the system entries into imports`. `permissions` grants the system modules, see that section. `name`, `version`, `description`, `repository` and `docs` are the registry fields, ignored by the compiler and shape-checked by the CLI. Only what nothing else supplies belongs there, so an author and a date come from the publishing account and the license is read from the packed `LICENSE` file.
+Bare names resolve through `edge.json`, walking up from the importing file with the nearest manifest winning. The manifest maps each name to a path, a URL, or a `major.minor.patch` version naming a registry package under `imports`, and `extends` may name a parent manifest. A version resolves through the `edge.lock` beside the manifest that declared it, which every host reads before the compiler sees the manifest, so the compiler only ever meets a path or a URL. An `edge` field names the lowest engine the project runs on, `major.minor.patch`, and it runs on that version or any later one, never on an earlier one, which stops with `this project needs edge 0.7.0, this is 0.6.45`. The artifact decides the kind, `.py` is a code module and `.wasm` a native plugin, so a manifest never classifies a package, and a `.js` or `.mjs` import fails with `module 'charts' is JavaScript, ship a .py or a .wasm`, since no JavaScript loads besides the host's own system calls. A leftover `system` section fails with `edge.json at '<path>': move the system entries into imports`. `permissions` grants the system modules, see that section. `name`, `version`, `description`, `repository` and `docs` are the registry fields, ignored by the compiler and shape-checked by the CLI. Only what nothing else supplies belongs there, so an author and a date come from the publishing account and the license is read from the packed `LICENSE` file.
 
 ```json
 {
   "imports": {
     "utils": "./lib/utils.py",
-    "mypkg": "https://example.com/mypkg.wasm",
-    "charts": "https://example.com/charts.js"
+    "mypkg": "https://example.com/mypkg.wasm"
   }
 }
 ```
 
-The official names `json`, `re`, `math`, `struct`, `test`, `dom`, `network`, `storage` and `time` resolve only when declared, `edge add <name>` then `edge lock` writes each entry, and an undeclared name fails at compile time with `module '<name>' is not provided by this host and no edge.json declares it`, and the CLI adds a `help:` line with the `edge add` command for an official name. The CLI keeps the std packages inside the binary, so they need no network there, and downloads each JavaScript module once into its cache. Modules are singletons with shared mutable state, an import cycle raises `RuntimeError` at startup, and inside an imported module `__name__` is its canonical spec so `if __name__ == "__main__":` blocks are skipped on import. `import_module(name)` looks up a module already bound by a plain `import` in scope.
+The official names `json`, `re`, `math`, `struct` and `test` resolve only when declared, `edge add <name>` then `edge lock` writes each entry, and an undeclared name fails at compile time with `module '<name>' is not provided by this host and no edge.json declares it`, and the CLI adds a `help:` line with the `edge add` command for an official name. The CLI keeps the std packages inside the binary, so they need no network there. Modules are singletons with shared mutable state, an import cycle raises `RuntimeError` at startup, and inside an imported module `__name__` is its canonical spec so `if __name__ == "__main__":` blocks are skipped on import. `import_module(name)` looks up a module already bound by a plain `import` in scope.
 
 ## Builtins
 
@@ -824,7 +818,7 @@ got hello
 
 ### The untrusted model
 
-`eval: true` groups compile each message as its own program in a fresh wasm instance with its own memory, capped by the group's `heap` limit and a 256 MiB reservation, and cut off after ten seconds of wall-clock time by a deadline the host enforces from outside. No state survives between messages. A bundle that carries its own `edge.json` resolves through it, any other message through the pool's manifest. Either way `.wasm` plugins are refused, remote modules load only from `https://cdn.edgepython.com/`, the JavaScript runtime has no network and `send()` has no scheduler, so untrusted code cannot send, reach the network or load modules from disk. A `code` or `run` group is trusted instead, it keeps state, can send and can use `network`, so reach for `eval` when the code is not yours.
+`eval: true` groups compile each message as its own program in a fresh wasm instance with its own memory, capped by the group's `heap` limit and a 256 MiB reservation, and cut off after ten seconds of wall-clock time by a deadline the host enforces from outside. No state survives between messages. A bundle that carries its own `edge.json` resolves through it, any other message through the pool's manifest. Either way `.wasm` plugins are refused, remote modules load only from `https://cdn.edgepython.com/`, `net` and `time` are refused and `send()` has no scheduler, so untrusted code cannot send, reach the network or load modules from disk. A `code` or `run` group is trusted instead, it keeps state, can send and can use `net` and `time` under the pool's grants, so reach for `eval` when the code is not yours.
 
 ```yml untrusted
 groups:

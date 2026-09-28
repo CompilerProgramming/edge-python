@@ -1,4 +1,3 @@
-use super::js::Called;
 use super::{read, read_u32, rt, stage, unstage, write, write_u32, Exports, Native, Plugin, State};
 use anyhow::{anyhow, Result};
 use compiler::abi::WireValue;
@@ -63,7 +62,7 @@ fn exports(caller: &Caller<'_, State>) -> Exports {
     caller.data().exports.clone().expect("compiler exports bound before any host call")
 }
 
-/* Dispatches one extern call, plugins get staged argv, JavaScript exports get decoded values. */
+/* Dispatches one extern call, plugins get staged argv, system calls get decoded values. */
 fn call_native(caller: &mut Caller<'_, State>, id: i32, call_id: i32, argv_ptr: i32, argc: i32, out_ptr: i32) -> wasmtime::Result<i32> {
     let ex = exports(caller);
     let Some(native) = caller.data().natives.get(id as usize).cloned() else {
@@ -133,43 +132,6 @@ fn call_native(caller: &mut Caller<'_, State>, id: i32, call_id: i32, argv_ptr: 
                 super::system::Called::Pending => None,
             });
             answered(caller, &ex, out_ptr, call_id, answer)
-        }
-        Native::Js { runtime, name } => {
-            // The trailing kwargs slot is dropped, JavaScript exports take positional values.
-            let raw = read(caller, ex.memory, argv_ptr, (argc - 1).max(0) * 4);
-            let mut args = Vec::with_capacity(raw.len() / 4);
-            for handle in raw.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)) {
-                match rt::decode(caller, &ex, handle) {
-                    Ok(value) => args.push(value),
-                    Err(e) => {
-                        throw(caller, &ex, &e);
-                        return Ok(1);
-                    }
-                }
-            }
-            let state = caller.data_mut();
-            let (slot, deadline) = (state.slot, state.deadline);
-            let called = match (state.events.clone(), state.js.get_mut(runtime)) {
-                (Some(events), Some(js)) => js.call(slot, &name, args, events, call_id as u32, deadline),
-                _ => Err(format!("{name} has no interpreter to answer")),
-            };
-            match called.and_then(|called| match called {
-                Called::Value(value) => rt::encode(caller, &ex, &value).map(Some),
-                Called::Pending => Ok(None),
-            }) {
-                Ok(Some(handle)) => {
-                    write_u32(caller, ex.memory, out_ptr, handle);
-                    Ok(0)
-                }
-                Ok(None) => {
-                    caller.data_mut().deferred.push(call_id as u32);
-                    Ok(2)
-                }
-                Err(e) => {
-                    throw(caller, &ex, &e);
-                    Ok(1)
-                }
-            }
         }
     }
 }

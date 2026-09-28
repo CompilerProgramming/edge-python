@@ -100,14 +100,6 @@ impl Actor {
         }
     }
 
-    /* Streams the actor's interpreter still has open. */
-    pub fn streams(&self) -> usize {
-        match &self.mode {
-            Mode::Fixed { vm, .. } => vm.streams(),
-            Mode::Eval { .. } => 0,
-        }
-    }
-
     /* True once the instance hosting this actor trapped. */
     pub fn trapped(&self) -> bool {
         match &self.mode {
@@ -168,7 +160,7 @@ impl Actor {
                 Status::Preempted => continue,
                 Status::PendingEvent => {
                     self.in_flight = None;
-                    // A stream event that arrived mid-step goes before the mailbox.
+                    // An event that arrived mid-step goes before the mailbox.
                     if vm.drain_buffered() > 0 {
                         continue;
                     }

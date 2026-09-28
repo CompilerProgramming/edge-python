@@ -119,9 +119,9 @@ An `eval` group runs code it does not trust, and holds no [permission](/docs/ref
 
 Nothing survives between messages, the instance is dropped when the run ends. A bundle that carries its own `edge.json` resolves through it, any other message through the pool's manifest. A bundle that declares a version carries its own `edge.lock` too, or that version is refused.
 
-Either way `.wasm` plugins are refused, remote modules load only from `https://cdn.edgepython.com/`, a JavaScript module's runtime has no network and shares the run's deadline, and `send()` has no scheduler to reach. So untrusted code cannot send to other groups, reach the network, load modules from disk, or resolve a version against the registry. `network` imports there, and every fetch fails with `NetworkError when attempting to fetch resource`.
+Either way `.wasm` plugins are refused, remote modules load only from `https://cdn.edgepython.com/`, `net` and `time` are refused at the import, and `send()` has no scheduler to reach. So untrusted code cannot send to other groups, reach the network, load modules from disk, or resolve a version against the registry.
 
-A `code` or `run` group runs code you trust. It keeps state between messages, can send, and can reach `network`, with the metered limits as the only cap, so keep third-party code out of it and reach for `eval` instead.
+A `code` or `run` group runs code you trust. It keeps state between messages, can send, and can reach `net` and `time` under what the pool's `edge.json` grants, with the metered limits as the only cap, so keep third-party code out of it and reach for `eval` instead.
 
 For a project, `edge build` packs it into a `.edge`, and a client sends it base64-encoded behind an `EDGEPKG:` marker. The actor validates it and serves its files to the compiler from memory, so an untrusted bundle never touches the disk.
 

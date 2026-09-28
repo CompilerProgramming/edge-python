@@ -47,6 +47,9 @@ pub fn add(path: &Path, pkgs: &[String]) -> Result<()> {
         .iter()
         .map(|spec| {
             let (name, version, url) = parse_spec(spec);
+            if url.as_deref().is_some_and(javascript) {
+                bail!("module '{name}' is JavaScript, ship a .py or a .wasm");
+            }
             let target = match url {
                 Some(url) => url,
                 // A version is all the manifest keeps, `edge lock` is what turns it into an address.
@@ -114,10 +117,13 @@ pub fn lock(path: &Path) -> Result<()> {
     let mut lock = Lock::default();
 
     for (name, target) in &manifest.imports {
+        if javascript(target) {
+            bail!("module '{name}' is JavaScript, ship a .py or a .wasm");
+        }
         let entry = match lock::version_of(target) {
             Some(version) => release(name, Some(version), true)?,
-            // A path carries its own bytes, a pinned url its own digest, and a page imports JavaScript unchecked.
-            None if !target.contains("://") || target.contains("#sha256-") || javascript(target) => continue,
+            // A path carries its own bytes and a pinned url its own digest.
+            None if !target.contains("://") || target.contains("#sha256-") => continue,
             None => Entry { version: None, url: target.clone(), digest: lock::digest_of(&download(target)?) },
         };
         ui::added(name, &entry.url);
@@ -131,7 +137,7 @@ pub fn lock(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/* Whether a target is a JavaScript module, which a page imports itself and so cannot hash. */
+/* Whether a target is a JavaScript module, which no host loads besides its own. */
 fn javascript(target: &str) -> bool {
     let path = target.split(['?', '#']).next().unwrap_or(target);
     matches!(path.rsplit('.').next(), Some("js" | "mjs"))
@@ -168,10 +174,8 @@ mod tests {
         assert_eq!(parse_spec("foo=https://x/foo.wasm"), ("foo", None, Some("https://x/foo.wasm".to_string())));
     }
 
-    /* A page imports JavaScript itself, so nothing ever holds its bytes to hash, and the lock records no digest for one rather than handing a browser a pin it has to refuse. */
-    // 010100101010 A REGISTRY PACKAGE WHOSE ARTIFACT IS A .js IS LOCKED BY VERSION AND LEFT UNPINNED BY js/src/specs.ts, COVER THAT END TO END ONCE ONE IS PUBLISHED.
     #[test]
-    fn javascript_is_the_one_artifact_the_lock_leaves_alone() {
+    fn a_javascript_target_is_told_apart_from_the_modules_a_host_loads() {
         for target in ["https://x/charts.js", "https://x/charts.mjs", "https://x/time/index.js?v=2"] {
             assert!(javascript(target), "{target}");
         }

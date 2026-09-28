@@ -2,7 +2,6 @@ pub mod browser;
 pub mod config;
 pub mod driver;
 mod env;
-pub mod js;
 mod plugins;
 mod resolver;
 mod rt;
@@ -20,7 +19,6 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use wasmtime::{AsContextMut, Engine, Instance as Wasm, InstancePre, Linker, Memory, Module, ResourceLimiter, Store, TypedFunc};
-use wasmtime_wasi_http::p2::bindings::sync::ProxyPre;
 
 const COMPILER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/compiler.cwasm"));
 
@@ -116,26 +114,13 @@ pub type EdgeOp = TypedFunc<(i32, i32, i32, i32, i32, i32, i32), i32>;
 pub struct Runtime {
     pub engine: Engine,
     compiler: Module,
-    // The JavaScript runtime, loaded on the first JavaScript import and retried after a failure.
-    js: Mutex<Option<ProxyPre<js::JsState>>>,
 }
 
 impl Runtime {
     pub fn new() -> Result<Arc<Runtime>> {
         let engine = wt(Engine::new(&config::base()))?;
         let compiler = wt(unsafe { Module::deserialize(&engine, COMPILER) })?;
-        Ok(Arc::new(Runtime { engine, compiler, js: Mutex::new(None) }))
-    }
-
-    /* StarlingMonkey ready to instantiate, fetched from the CDN the first time any process needs it. */
-    pub fn js_pre(&self) -> Result<ProxyPre<js::JsState>, String> {
-        let mut slot = self.js.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pre) = slot.as_ref() {
-            return Ok(pre.clone());
-        }
-        let pre = js::load(&self.engine)?;
-        *slot = Some(pre.clone());
-        Ok(pre)
+        Ok(Arc::new(Runtime { engine, compiler }))
     }
 
     /* Advances the engine epoch every tick so untrusted deadlines fire. */
@@ -202,11 +187,6 @@ pub struct Plugin {
 #[derive(Clone)]
 pub enum Native {
     Plugin(Box<Plugin>),
-    // An export of a JavaScript module, answered by that module's runtime.
-    Js {
-        runtime: usize,
-        name: String,
-    },
     // A system call, opened for one package and answered by SpiderMonkey.
     System {
         module: String,
@@ -249,9 +229,6 @@ pub struct State {
     // The selected slot and the channel its completions and events reach it through.
     pub slot: u32,
     pub events: Option<Sender<Completion>>,
-    // Wall-clock ns an untrusted run must finish by, host-side waits honor it too.
-    pub deadline: Option<u64>,
-    pub js: Vec<js::JsRuntime>,
     // The key this instance opened its system modules under, closed with it.
     pub run: u64,
 }

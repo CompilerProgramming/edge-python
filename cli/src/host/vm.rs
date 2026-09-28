@@ -1,4 +1,4 @@
-use super::{now_ns, read, resolver, rt, stage, unstage, wt, Exports, Host, MemoryCap, Project, Sink, State, TICK_NS};
+use super::{read, resolver, rt, stage, unstage, wt, Exports, Host, MemoryCap, Project, Sink, State};
 use anyhow::{anyhow, bail, Result};
 use compiler::abi::WireValue;
 use compiler::vm::Limits;
@@ -26,8 +26,6 @@ pub enum Status {
 pub enum Completion {
     Value { id: u32, value: WireValue },
     Error { id: u32, msg: String },
-    // An event a JavaScript module pushed, the script reads it through receive().
-    Event(String),
 }
 
 /* One compiler instance, its store and the slots its interpreters run in. */
@@ -61,8 +59,6 @@ impl Host {
             limiter: MemoryCap { max: memory.unwrap_or(usize::MAX) },
             slot: 0,
             events: None,
-            deadline: deadline.map(|ticks| now_ns().saturating_add(ticks.saturating_mul(TICK_NS))),
-            js: Vec::new(),
             run: super::system::run_id(),
         };
         let mut store = Store::new(&self.runtime.engine, state);
@@ -232,28 +228,6 @@ impl Instance {
         ex.set_wall_clock.call(&mut self.store, on as i32).map_err(|e| e.to_string())
     }
 
-    /* Starts the JavaScript runtime for `spec` and registers the exports its factory returns. */
-    pub(super) fn register_js(&mut self, spec: &str, label: &str, entry: String, tree: super::js::Tree) -> Result<(), String> {
-        if let Some((base, names)) = self.store.data().registered.get(spec).cloned() {
-            return self.register_native(spec, &names, base);
-        }
-        let pre = self.host.runtime.js_pre().map_err(|e| format!("module '{label}' needs the JavaScript runtime, {e}"))?;
-        let engine = self.host.runtime.engine.clone();
-        let state = self.store.data_mut();
-        let events = state.events.clone().ok_or_else(|| format!("module '{label}' has no interpreter to bind"))?;
-        let scope = super::js::Scope { printer: state.print.clone(), memory: state.limiter.max, offline: self.project.untrusted };
-        let mut js = super::js::JsRuntime::new(label, entry, tree, pre, engine, scope);
-        let names = js.bind(state.slot, events, state.deadline)?;
-        let runtime = state.js.len();
-        state.js.push(js);
-        let base = state.natives.len();
-        for name in &names {
-            state.natives.push(super::Native::Js { runtime, name: name.clone() });
-        }
-        state.registered.insert(spec.to_string(), (base, names.clone()));
-        self.register_native(spec, &names, base)
-    }
-
     // Stages a spec and a payload for one registration call, both freed once it returns.
     fn register_pair(&mut self, spec: &str, payload: &[u8], call: impl FnOnce(&mut Store<State>, &Exports, (i32, i32), (i32, i32)) -> wasmtime::Result<()>) -> Result<(), String> {
         let s = stage(&mut self.store, &self.ex, spec.as_bytes()).map_err(|e| e.to_string())?;
@@ -285,9 +259,6 @@ impl Drop for Vm {
         }
         if let Ok(mut inst) = self.inst.try_borrow_mut() {
             inst.slots -= 1;
-            for js in inst.store.data_mut().js.iter_mut() {
-                js.unbind(self.slot);
-            }
             if !inst.poisoned {
                 let Instance { store, ex, selected, .. } = &mut *inst;
                 let _ = ex.vm_drop.call(&mut *store, self.slot as i32);
@@ -462,7 +433,6 @@ impl Vm {
         state.registered.clear();
         state.deferred.clear();
         state.waiting.clear();
-        state.js.clear();
         drop(inst);
         self.parked.clear();
         Ok(())
@@ -475,12 +445,6 @@ impl Vm {
 
     pub fn inflight(&self) -> usize {
         self.inflight
-    }
-
-    /* Work a bound JavaScript module still has pending, each piece may push another event into receive(). */
-    pub fn streams(&self) -> usize {
-        let inst = self.inst.borrow();
-        inst.store.data().js.iter().filter(|js| js.is_bound(self.slot)).map(|js| js.activity()).sum()
     }
 
     /* Blocks for the next completion, then injects every one that arrived, the count delivered. */
@@ -506,10 +470,6 @@ impl Vm {
 
     fn deliver(&mut self, completion: Completion) -> Result<()> {
         let (id, value) = match completion {
-            Completion::Event(message) => {
-                self.push_event(&message);
-                return Ok(());
-            }
             Completion::Value { id, value } => (id, Ok(value)),
             Completion::Error { id, msg } => (id, Err(msg)),
         };

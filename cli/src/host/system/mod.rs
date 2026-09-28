@@ -175,7 +175,6 @@ mod tests {
         match rx.recv_timeout(Duration::from_secs(10)).expect("the call settled") {
             Completion::Value { value, .. } => Ok(value),
             Completion::Error { msg, .. } => Err(msg),
-            Completion::Event(e) => panic!("unexpected event {e}"),
         }
     }
 

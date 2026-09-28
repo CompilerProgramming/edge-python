@@ -66,9 +66,8 @@
   {
     "given": {
       "edge.json": "{ \"imports\": { \"pkg\": \"./pkg/main.py\" } }\n",
-      "pkg/edge.json": "{ \"imports\": { \"_slug\": \"./slugify_mod.wasm\", \"_js\": \"./helper.js\" } }\n",
-      "pkg/helper.js": "export default () => ({ shout: (s) => s.toUpperCase() + '!' });\n",
-      "pkg/main.py": "from _slug import join_all\nimport _js\n\ndef label(*parts):\n    return _js.shout(join_all(\"-\", *parts))\n",
+      "pkg/edge.json": "{ \"imports\": { \"_slug\": \"./slugify_mod.wasm\" } }\n",
+      "pkg/main.py": "from _slug import join_all\n\ndef label(*parts):\n    return join_all(\"-\", *parts).upper() + \"!\"\n",
       "main.py": "from pkg import label\nprint(label(\"a\", \"b\"))\n"
     },
     "copy": { "pkg/slugify_mod.wasm": "target/wasm32-unknown-unknown/release/slugify_mod.wasm" },
@@ -78,9 +77,8 @@
   {
     "given": {
       "edge.json": "{ \"imports\": { \"pkg\": \"./pkg/main.py\" } }\n",
-      "pkg/edge.json": "{ \"imports\": { \"_slug\": \"./slugify_mod.wasm\", \"_js\": \"./helper.js\" } }\n",
-      "pkg/helper.js": "export default () => ({ shout: (s) => s.toUpperCase() + '!' });\n",
-      "pkg/main.py": "from _slug import join_all\nimport _js\n\ndef label(*parts):\n    return _js.shout(join_all(\"-\", *parts))\n",
+      "pkg/edge.json": "{ \"imports\": { \"_slug\": \"./slugify_mod.wasm\" } }\n",
+      "pkg/main.py": "from _slug import join_all\n\ndef label(*parts):\n    return join_all(\"-\", *parts).upper() + \"!\"\n",
       "main.py": "from pkg import label\nprint(label(\"a\", \"b\"))\n"
     },
     "copy": { "pkg/slugify_mod.wasm": "target/wasm32-unknown-unknown/release/slugify_mod.wasm" },

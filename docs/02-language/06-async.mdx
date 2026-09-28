@@ -166,27 +166,23 @@ caught
 
 ### Concurrent host calls
 
-Deferred host calls (for example `fetch_text` from the `network` package) run concurrently under `gather`. Each parks its coroutine, the host resolves them in parallel, and every result is routed back to the exact coroutine that issued it. A failed call raises only in its own coroutine, at the line that made the call, so a `try` / `except` lets the rest of the batch finish and an uncaught failure's traceback points at that line.
+A system call that waits, such as `net.response`, runs concurrently with others under `gather`. Each parks its coroutine, the host resolves them in parallel, and every result is routed back to the exact coroutine that issued it. A failed call raises only in its own coroutine, at the line that made the call, so a `try` / `except` lets the rest of the batch finish and an uncaught failure's traceback points at that line.
 
-```edge-python
-from network import fetch_text
+```python
+import net
 
 async def status(url):
   try:
-    fetch_text(url)
+    net.response(net.request("GET", url))
     return "ok"
-  except:
+  except OSError:
     return "failed"
 
-# The bad URL raises inside its own coroutine; the others still resolve.
+# The bad host raises inside its own coroutine, the other still resolves, printing ['ok', 'failed'].
 print(gather(status("https://api.github.com/zen"), status("https://nope.invalid/x")))
 ```
 
-```output
-['ok', 'failed']
-```
-
-In the JS host, `fetch_text` runs the platform `fetch()` inside a Web Worker, and a browser subjects it to CORS. The CLI runs the same calls on host threads, so `gather` overlaps them there too, with no CORS.
+The example needs `edge.json` to grant `net:api.github.com` and `net:nope.invalid`, see [System](/docs/reference/system). In the JS host the request is a `fetch` inside a Web Worker, and a browser subjects it to CORS. The CLI runs the same calls on threads of its own, so `gather` overlaps them there too, with no CORS.
 
 ## with_timeout
 

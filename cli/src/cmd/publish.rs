@@ -10,6 +10,9 @@ pub fn run(artifact: &Path) -> Result<()> {
 
     let bytes = fs::read(artifact).with_context(|| format!("reading {}", artifact.display()))?;
     let name = artifact.file_name().unwrap_or(artifact.as_os_str()).to_string_lossy().into_owned();
+    if let Some(path) = javascript_in(&bytes) {
+        bail!("{name} carries '{path}', which is JavaScript, ship a .py or a .wasm");
+    }
 
     let sp = crate::ui::spinner(&format!("publishing {name}"));
 
@@ -25,6 +28,12 @@ pub fn run(artifact: &Path) -> Result<()> {
             Err(e)
         }
     }
+}
+
+/* A JavaScript file the bundle carries, which no host would load, so it is never published. */
+fn javascript_in(artifact: &[u8]) -> Option<String> {
+    let files = crate::pack::Bundle::decode(artifact).map(|b| b.files).unwrap_or_default();
+    files.into_iter().map(|f| f.path).find(|path| matches!(path.rsplit('.').next(), Some("js" | "mjs")))
 }
 
 /* What the registry made of the artifact, which is where the name and version come from now that it reads them itself. */
@@ -55,5 +64,20 @@ fn send(token: &str, artifact: &[u8]) -> Result<Published> {
     match (field("name"), field("version"), field("url")) {
         (Some(name), Some(version), Some(url)) if status < 300 => Ok(Published { name, version, url }),
         _ => bail!("{}", field("error").unwrap_or_else(|| format!("the registry refused it with {status}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pack::{Bundle, Entry};
+
+    #[test]
+    fn a_bundle_carrying_javascript_is_caught_before_it_is_sent() {
+        let packed = |path: &str| Bundle { entry: "main.py".to_string(), files: vec![Entry { path: "main.py".to_string(), bytes: b"print(1)".to_vec() }, Entry { path: path.to_string(), bytes: Vec::new() }] }.encode();
+        assert_eq!(javascript_in(&packed("lib/chart.js")).as_deref(), Some("lib/chart.js"));
+        assert_eq!(javascript_in(&packed("https://x/y.mjs")).as_deref(), Some("https://x/y.mjs"));
+        assert_eq!(javascript_in(&packed("util.py")), None);
+        assert_eq!(javascript_in(b"not a bundle"), None);
     }
 }

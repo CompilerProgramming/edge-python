@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use crate::docs;
-use crate::host::{cdn, get, js};
+use crate::host::{cdn, get};
 use crate::pack::{Bundle, Entry};
 use compiler::modules::{parse_integrity, scan_imports, ImportSpec};
 use compiler::util::sha256::sha256;
@@ -18,12 +18,8 @@ const STANDALONE_MAGIC: &[u8] = b"EDGESFX\x01";
 /* Packs the project as a standalone binary, this exe with the bundle and a trailer appended. */
 pub fn standalone(manifest_path: &Path, out: PathBuf) -> Result<()> {
     // Nobody reads docs out of an executable, so an app binary leaves them behind.
-    let (mut bundle, javascript) = collect_bundle(manifest_path, false)?;
+    let bundle = collect_bundle(manifest_path, false)?;
     let files = bundle.files.len();
-    if javascript {
-        let bytes = js::runtime_bytes().map_err(|e| anyhow!(e))?;
-        bundle.files.push(Entry { path: js::RUNTIME_KEY.to_string(), bytes });
-    }
     let exe = std::env::current_exe().context("locating the edge binary")?;
     let mut image = fs::read(&exe).with_context(|| format!("reading {}", exe.display()))?;
     let payload = bundle.encode();
@@ -40,7 +36,7 @@ pub fn standalone(manifest_path: &Path, out: PathBuf) -> Result<()> {
 
 /* Packs the project as a portable .edge for any host that already has the CLI. */
 pub fn bundle(manifest_path: &Path, out: PathBuf) -> Result<()> {
-    let (bundle, _) = collect_bundle(manifest_path, true)?;
+    let bundle = collect_bundle(manifest_path, true)?;
     let payload = bundle.encode();
     fs::write(&out, &payload).with_context(|| format!("writing {}", out.display()))?;
     let run = out.display();
@@ -51,7 +47,7 @@ pub fn bundle(manifest_path: &Path, out: PathBuf) -> Result<()> {
 }
 
 /* Reads the project scripts, its notices, its edge.json and every url module it declares into a bundle. */
-fn collect_bundle(manifest_path: &Path, with_docs: bool) -> Result<(Bundle, bool)> {
+fn collect_bundle(manifest_path: &Path, with_docs: bool) -> Result<Bundle> {
     let project = match manifest_path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
@@ -68,7 +64,6 @@ fn collect_bundle(manifest_path: &Path, with_docs: bool) -> Result<(Bundle, bool
         if rel == "edge.json" || rel == lock::FILE { continue; }
         files.push(Entry { path: rel, bytes: fs::read(s).with_context(|| format!("reading {}", s.display()))? });
     }
-    let mut javascript = false;
     if manifest_path.exists() {
         files.push(Entry { path: "edge.json".to_string(), bytes: fs::read(manifest_path)? });
         // The lock travels with the manifest it resolves, so the bundle reads a name the same way its project did.
@@ -84,16 +79,16 @@ fn collect_bundle(manifest_path: &Path, with_docs: bool) -> Result<(Bundle, bool
             let pages = docs::collect(&project, manifest.docs.as_deref())?;
             files.extend(pages.into_iter().map(|(path, bytes)| Entry { path, bytes }));
         }
-        javascript = vendor_bundle(&lock::resolved(manifest_path, &manifest.imports)?, &mut files)?;
+        vendor_bundle(&lock::resolved(manifest_path, &manifest.imports)?, &mut files)?;
     }
-    // A nested package answers to its own manifest, so its url modules and runtime ride along too.
+    // A nested package answers to its own manifest, so its url modules ride along too.
     let nested: Vec<PathBuf> = files.iter().filter(|f| f.path.ends_with("/edge.json")).map(|f| project.join(&f.path)).collect();
     for path in nested {
-        javascript |= vendor_bundle(&lock::resolved(&path, &Manifest::load(&path)?.imports)?, &mut files)?;
+        vendor_bundle(&lock::resolved(&path, &Manifest::load(&path)?.imports)?, &mut files)?;
     }
     let mut kept = HashSet::new();
     files.retain(|f| kept.insert(f.path.clone()));
-    Ok((Bundle { entry: find_entry(&scripts, &project), files }, javascript))
+    Ok(Bundle { entry: find_entry(&scripts, &project), files })
 }
 
 /* The readme and licenses at the project root, sorted so two builds of a tree agree. */
@@ -106,7 +101,7 @@ fn collect_notices(project: &Path) -> Vec<PathBuf> {
 
 /* `README.md` or `LICENSE` with any extension, never one the script walk already carries. */
 fn is_notice(path: &Path) -> bool {
-    if matches!(path.extension().and_then(|e| e.to_str()), Some("py" | "js" | "mjs")) {
+    if matches!(path.extension().and_then(|e| e.to_str()), Some("py")) {
         return false;
     }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -114,11 +109,8 @@ fn is_notice(path: &Path) -> bool {
 }
 
 /* Carries each declared url module and the files it reaches, keyed by the address it answers. */
-fn vendor_bundle(imports: &BTreeMap<String, String>, files: &mut Vec<Entry>) -> Result<bool> {
-    let javascript = imports.values().any(|spec| {
-        let path = spec.split(['?', '#']).next().unwrap_or(spec);
-        matches!(path.rsplit('.').next(), Some("js" | "mjs"))
-    });
+fn vendor_bundle(imports: &BTreeMap<String, String>, files: &mut Vec<Entry>) -> Result<()> {
+    refuse_javascript(imports)?;
     let mut seen = HashSet::new();
     for (name, spec) in imports.iter().filter(|(_, spec)| spec.contains("://")) {
         let (url, pin) = parse_integrity(spec).map_err(|e| anyhow!(e))?;
@@ -134,7 +126,18 @@ fn vendor_bundle(imports: &BTreeMap<String, String>, files: &mut Vec<Entry>) -> 
         }
         carry_tree(base, entry, bytes, &mut seen, files).with_context(|| format!("bundling '{name}'"))?;
     }
-    Ok(javascript)
+    Ok(())
+}
+
+/* No host loads JavaScript but its own, so a build declaring one stops before packing. */
+fn refuse_javascript(imports: &BTreeMap<String, String>) -> Result<()> {
+    for (name, spec) in imports {
+        let path = spec.split(['?', '#']).next().unwrap_or(spec);
+        if matches!(path.rsplit('.').next(), Some("js" | "mjs")) {
+            bail!("module '{name}' is JavaScript, ship a .py or a .wasm");
+        }
+    }
+    Ok(())
 }
 
 /* Walks `entry` with everything it imports, each file stored under its own url. */
@@ -152,7 +155,7 @@ fn carry_tree(base: &str, entry: &str, bytes: Vec<u8>, seen: &mut HashSet<String
         };
         for (spec, needed) in file_deps(&rel, &bytes)? {
             let clean = spec.split(['?', '#']).next().unwrap_or(&spec);
-            let dep = js::join(&rel, clean).ok_or_else(|| anyhow!("'{url}' imports '{spec}' from outside its directory"))?;
+            let dep = join(&rel, clean).ok_or_else(|| anyhow!("'{url}' imports '{spec}' from outside its directory"))?;
             queue.push((dep, None, needed));
         }
         files.push(Entry { path: url, bytes });
@@ -300,7 +303,7 @@ fn walk(dir: &Path, out_dir: &Path, found: &mut Vec<PathBuf>) {
         }
         if path.is_dir() {
             walk(&path, out_dir, found);
-        } else if name == "edge.json" || name == lock::FILE || matches!(path.extension().and_then(|e| e.to_str()), Some("py" | "js" | "mjs" | "wasm")) {
+        } else if name == "edge.json" || name == lock::FILE || matches!(path.extension().and_then(|e| e.to_str()), Some("py" | "wasm")) {
             found.push(path);
         }
     }
@@ -308,6 +311,7 @@ fn walk(dir: &Path, out_dir: &Path, found: &mut Vec<PathBuf>) {
 
 /// Every url the manifest declares lands in dist/vendor/<name>/ with the files it reaches beside it.
 fn vendor_packages(imports: &BTreeMap<String, String>, out_dir: &Path) -> Result<BTreeMap<String, String>> {
+    refuse_javascript(imports)?;
     let mut local = BTreeMap::new();
     for (name, spec) in imports.iter().filter(|(_, spec)| spec.contains("://")) {
         let (url, pin) = parse_integrity(spec).map_err(|e| anyhow!(e))?;
@@ -340,7 +344,7 @@ fn vendor_tree(base: &str, entry: &str, bytes: Vec<u8>, out_dir: &Path, dest: &s
         };
         for (spec, needed) in file_deps(&rel, &bytes)? {
             let clean = spec.split(['?', '#']).next().unwrap_or(&spec);
-            let dep = js::join(&rel, clean).ok_or_else(|| anyhow!("'{url}' imports '{spec}' from outside its directory, which a web build cannot vendor"))?;
+            let dep = join(&rel, clean).ok_or_else(|| anyhow!("'{url}' imports '{spec}' from outside its directory, which a web build cannot vendor"))?;
             queue.push((dep, None, needed));
         }
         write_under(out_dir, &format!("{dest}/{rel}"), &bytes)?;
@@ -348,12 +352,27 @@ fn vendor_tree(base: &str, entry: &str, bytes: Vec<u8>, out_dir: &Path, dest: &s
     Ok(())
 }
 
+/* Resolves `spec` against the file `from`, None when it climbs out of the tree's directory. */
+fn join(from: &str, spec: &str) -> Option<String> {
+    let mut parts: Vec<&str> = from.split('/').collect();
+    parts.pop();
+    for seg in spec.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            seg => parts.push(seg),
+        }
+    }
+    Some(parts.join("/"))
+}
+
 /* What a vendored file pulls in beside it, each flagged when the build fails without it. */
 fn file_deps(rel: &str, bytes: &[u8]) -> Result<Vec<(String, bool)>> {
     let text = String::from_utf8_lossy(bytes);
     let ext = Path::new(rel).extension().and_then(|e| e.to_str()).unwrap_or("");
     Ok(match ext {
-        "js" | "mjs" => js::imports(&text).into_iter().map(|spec| (spec.to_string(), true)).collect(),
         "json" => {
             let manifest: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("parsing {rel}"))?;
             let imports = manifest.get("imports").and_then(|i| i.as_object()).into_iter().flatten();
@@ -522,12 +541,11 @@ mod tests {
         fs::write(project.join("NOTES.md"), "not a notice").unwrap();
         fs::create_dir(project.join("sub")).unwrap();
         fs::write(project.join("sub/README.md"), "nested").unwrap();
-        let (bundle, javascript) = collect_bundle(&project.join("edge.json"), true).unwrap();
+        let bundle = collect_bundle(&project.join("edge.json"), true).unwrap();
         let mut paths: Vec<&str> = bundle.files.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
         assert_eq!(paths, ["LICENSE", "LICENSE.py", "LICENSE.txt", "README.md", "main.py"]);
         assert_eq!(bundle.entry, "main.py");
-        assert!(!javascript);
     }
 
     // A packed dependency rides whole, the imports inside it answer from inside it.
@@ -544,7 +562,7 @@ mod tests {
         fs::create_dir(project.join("src")).unwrap();
         fs::write(project.join("src/entry.py"), "from _json import *").unwrap();
         fs::write(project.join("src/json.wasm"), b"\0asm").unwrap();
-        let (bundle, _) = collect_bundle(&project.join("edge.json"), false).unwrap();
+        let bundle = collect_bundle(&project.join("edge.json"), false).unwrap();
         let mut paths: Vec<&str> = bundle.files.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
         assert_eq!(paths, ["src/entry.py", "src/json.wasm"]);
@@ -563,7 +581,7 @@ mod tests {
         fs::write(project.join("pkg/main.py"), "print(2)").unwrap();
         fs::write(project.join("pkg/edge.json"), r#"{ "imports": {} }"#).unwrap();
         fs::write(project.join("pkg/edge.lock"), "{}").unwrap();
-        let (bundle, _) = collect_bundle(&project.join("edge.json"), false).unwrap();
+        let bundle = collect_bundle(&project.join("edge.json"), false).unwrap();
         let mut paths: Vec<&str> = bundle.files.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
         assert_eq!(paths, ["edge.json", "edge.lock", "main.py", "pkg/edge.json", "pkg/edge.lock", "pkg/main.py"]);
@@ -591,7 +609,7 @@ mod tests {
         fs::write(project.join("edge.json"), r#"{ "imports": { "pkg": "./pkg/main.py" } }"#).unwrap();
         fs::write(project.join("pkg/main.py"), "import _slug").unwrap();
         fs::write(project.join("pkg/edge.json"), r#"{ "imports": { "_slug": "./slug.wasm" } }"#).unwrap();
-        let (bundle, _) = collect_bundle(&project.join("edge.json"), false).unwrap();
+        let bundle = collect_bundle(&project.join("edge.json"), false).unwrap();
         let mut paths: Vec<&str> = bundle.files.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
         assert_eq!(paths, ["edge.json", "main.py", "pkg/edge.json", "pkg/main.py"]);
@@ -607,12 +625,12 @@ mod tests {
         fs::write(project.join("docs/01-intro.mdx"), "---\ntitle: Intro\ndescription: Where to start.\n---\n\n# Intro\n").unwrap();
         let manifest = project.join("edge.json");
 
-        let (packed, _) = collect_bundle(&manifest, true).unwrap();
+        let packed = collect_bundle(&manifest, true).unwrap();
         let mut paths: Vec<&str> = packed.files.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
         assert_eq!(paths, ["@docs/01-intro.mdx", "edge.json", "main.py"]);
 
-        let (app, _) = collect_bundle(&manifest, false).unwrap();
+        let app = collect_bundle(&manifest, false).unwrap();
         assert!(app.files.iter().all(|f| !f.path.starts_with(docs::PREFIX)));
     }
 

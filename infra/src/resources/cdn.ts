@@ -34,8 +34,8 @@ export function frozen_prefix(release: string) {
   return Number(version.split('.')[0]) >= 1 ? `v${version}/` : ''
 }
 
-// The compiler and the JavaScript runtime are the large payloads, stored brotli encoded.
-const encoded = (key: string) => key === 'compiler.wasm' || key.startsWith('js-runtime/')
+// The compiler is the large payload, stored brotli encoded.
+const encoded = (key: string) => key === 'compiler.wasm'
 
 // Build inputs later CI jobs read from tmp, promote never ships them.
 export const INTERNAL = '_build/'

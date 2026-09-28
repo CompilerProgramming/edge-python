@@ -1,4 +1,4 @@
-use super::{cache_root, cdn, get, js, plugins, system, Instance, ORIGIN};
+use super::{cache_root, cdn, get, plugins, system, Instance, ORIGIN};
 use crate::lock::{self, Lock};
 use compiler::modules::{dir_of, join_relative, parse_integrity, parse_manifest, scan_imports, system_spec, walk_up_dirs, ImportSpec};
 use compiler::util::sha256::{hex_encode, sha256};
@@ -234,48 +234,12 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /* A JavaScript module and the files its relative imports reach, run by the JavaScript runtime. */
+    /* No host loads JavaScript but its own, so an import of one fails where it is written. */
     fn javascript(&mut self, spec: &str) {
-        let (name, via) = self.origins.get(spec).cloned().unwrap_or_else(|| (target(spec).to_string(), None));
-        let registered = match self.js_tree(spec, &name) {
-            Ok((entry, tree)) => self.inst.register_js(spec, &name, entry, tree),
-            Err(e) => Err(e),
-        };
-        if let Err(msg) = registered {
-            let via = via.map(|v| format!(" (via {v})")).unwrap_or_default();
-            if let Err(e) = self.inst.register_error(spec, &format!("{msg}{via}")) {
-                self.failures.push(e);
-            }
+        let name = self.origins.get(spec).map_or_else(|| target(spec).to_string(), |(name, _)| name.clone());
+        if let Err(e) = self.inst.register_error(spec, &format!("module '{name}' is JavaScript, ship a .py or a .wasm")) {
+            self.failures.push(e);
         }
-    }
-
-    /* The entry path inside the tree plus every file, each fetched beside the entry. */
-    fn js_tree(&mut self, spec: &str, name: &str) -> Result<(String, js::Tree), String> {
-        let url = target(spec);
-        let (base, entry) = match url.rsplit_once('/') {
-            Some((base, entry)) => (format!("{base}/"), entry.to_string()),
-            None => (String::new(), url.to_string()),
-        };
-        let first = self.fetch(spec)?.ok_or_else(|| format!("could not read module '{url}'"))?;
-        let mut queue = vec![(entry.clone(), Some(first))];
-        let mut seen = HashSet::new();
-        let mut tree = Vec::new();
-        while let Some((rel, bytes)) = queue.pop() {
-            if !seen.insert(rel.clone()) {
-                continue;
-            }
-            let bytes = match bytes {
-                Some(bytes) => bytes,
-                None => self.fetch(&format!("{base}{rel}"))?.ok_or_else(|| format!("could not read module '{base}{rel}'"))?,
-            };
-            for dep in js::imports(&String::from_utf8_lossy(&bytes)) {
-                let clean = dep.split(['?', '#']).next().unwrap_or(dep);
-                let file = js::join(&rel, clean).ok_or_else(|| format!("module '{name}' imports '{dep}' from outside its directory"))?;
-                queue.push((file, None));
-            }
-            tree.push((rel, bytes));
-        }
-        Ok((entry, tree))
     }
 
     /* Why a module cannot load here, raised at its import and named as its importer wrote it. */

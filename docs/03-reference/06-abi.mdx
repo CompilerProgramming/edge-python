@@ -5,7 +5,7 @@ description: "The wire contract a plugin module must follow to be importable by 
 
 # ABI
 
-> **Sealed contract, plugin ABI v1.** Every signature, op code, tag, and error kind here is the public contract for plugin modules, shipped as `.wasm` over CDN and loaded by the JS host or the CLI. System calls arrive as the `Sys` op, and `edge_call_id` is the one import added since, so a plugin that never waits on one still loads on any v1 host. A future wire-level break would ship as `env_v2.*` without removing v1. This contract is distinct from the `compiler<->host` interface embedders declare for [system capabilities](/docs/reference/modules#system-capability), which are not bound by the 7-import limit here.
+> **Sealed contract, plugin ABI v1.** Every signature, op code, tag, and error kind here is the public contract for plugin modules, shipped as `.wasm` over CDN and loaded by the JS host or the CLI. System calls arrive as the `Sys` op, and `edge_call_id` is the one import added since, so a plugin that never waits on one still loads on any v1 host. A future wire-level break would ship as `env_v2.*` without removing v1. This contract is distinct from the `compiler<->host` interface an [embedder](/docs/reference/embedding) implements, which is not bound by the 7-import limit here.
 
 A plugin module imported via `from "<url>" import <names>` follows the contract below, compiled to `.wasm` for the CDN, which the JS host and the CLI both load. The API is handle-based: the host owns all values, the guest sees only opaque `u32` handles, and one dispatch primitive (`edge_op`) covers every operation. New types, methods, and language features reach existing modules with no ABI change.
 

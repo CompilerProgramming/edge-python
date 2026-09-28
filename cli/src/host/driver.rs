@@ -82,10 +82,7 @@ pub fn run(file: Option<&Path>, code: Option<&str>, opts: &RunOpts) -> Result<i3
 pub fn run_bundle(payload: &[u8], opts: &RunOpts) -> Result<i32> {
     let bundle = crate::pack::Bundle::decode(payload).map_err(|e| anyhow!("corrupt bundle: {e}"))?;
     let entry = bundle.entry.clone();
-    let mut files = bundle.into_files();
-    if let Some(bytes) = files.remove(super::js::RUNTIME_KEY) {
-        super::js::use_packed(bytes);
-    }
+    let files = bundle.into_files();
     let src = files.get(&entry).map(|b| String::from_utf8_lossy(b).into_owned()).ok_or_else(|| anyhow!("bundle entry '{entry}' is missing"))?;
     let project = Project::bundle(files, &dir_of(&entry), false);
     let mut vm = host()?.vm(stdout_sink(), project, None, None)?;
@@ -136,16 +133,6 @@ pub fn drive(vm: &mut Vm, mut status: Status, opts: &RunOpts) -> i32 {
             Status::PendingEvent => {
                 if vm.drain_buffered() > 0 {
                     step(vm)
-                } else if vm.streams() > 0 {
-                    // An open stream may still push an event, wait for it instead of parking.
-                    match vm.wait(Some(STREAM_POLL)) {
-                        Ok(0) => Status::PendingEvent,
-                        Ok(_) => step(vm),
-                        Err(e) => {
-                            eprintln!("error: {e}");
-                            return 1;
-                        }
-                    }
                 } else if let Some(path) = &opts.events {
                     match next_event(&mut events, path) {
                         Some(line) => {
@@ -180,9 +167,6 @@ fn step(vm: &mut Vm) -> Status {
         Err(e) => Status::Error(format!("error: {e}")),
     }
 }
-
-// How long a run parked on receive() waits for a stream event before rechecking.
-const STREAM_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 pub(super) fn sleep_until(deadline: u64) {
     let now = now_ns();
@@ -277,10 +261,6 @@ impl Session {
                     step(&mut self.vm)
                 }
                 Status::PendingEvent if self.vm.drain_buffered() > 0 => step(&mut self.vm),
-                Status::PendingEvent if self.vm.streams() > 0 => match self.vm.wait(Some(STREAM_POLL))? {
-                    0 => Status::PendingEvent,
-                    _ => step(&mut self.vm),
-                },
                 Status::PendingEvent => return Ok(Outcome { err: Some(suspend_message("an event")), exit_code: None }),
             };
         }

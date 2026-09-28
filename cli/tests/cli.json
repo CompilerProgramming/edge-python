@@ -29,23 +29,9 @@
   {
     "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "given": { "edge.json": "{}\n" },
-    "run": ["add", "network"],
-    "stdout": ["+ network    https://cdn.edgepython.com/js/builtins/network/index.js"],
-    "contains": { "edge.json": "\"imports\": {\n    \"network\": \"https://cdn.edgepython.com/js/builtins/network/index.js\"" }
-  },
-  {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": { "edge.json": "{}\n" },
     "run": ["add", "test"],
     "stdout": ["+ test       https://cdn.edgepython.com/std/test.py"],
     "contains": { "edge.json": "cdn.edgepython.com/std/test.py" }
-  },
-  {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": { "edge.json": "{}\n" },
-    "run": ["add", "dom"],
-    "stdout": ["+ dom        https://cdn.edgepython.com/js/builtins/dom/entry.py"],
-    "contains": { "edge.json": "cdn.edgepython.com/js/builtins/dom/entry.py" }
   },
   {
     "given": { "edge.json": "{}\n" },
@@ -71,7 +57,7 @@
   },
   {
     "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": { "edge.json": "{ \"system\": { \"time\": \"https://cdn.edgepython.com/js/builtins/time/index.js\" } }\n" },
+    "given": { "edge.json": "{ \"system\": { \"time\": \"https://example.com/time.py\" } }\n" },
     "run": ["add", "math"],
     "fails": ["edge.json at 'edge.json': move the system entries into imports"],
     "contains": { "edge.json": "\"system\"" }
@@ -199,15 +185,6 @@
     "stderr": ["NameError"]
   },
   {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "run": ["repl"],
-    "stdin": "from time import sleep\nsleep(0.05)\nprint(\"done\")\n.exit\n",
-    "stdout": ["done"],
-    "given": {
-      "edge.json": "{ \"imports\": { \"time\": \"https://cdn.edgepython.com/js/builtins/time/index.js\" } }\n"
-    }
-  },
-  {
     "run": ["repl"],
     "stdin": "x = 1\nx = 2; 1 / 0\nprint(x)\n.exit\n",
     "stdout": ["2"],
@@ -227,8 +204,8 @@
   {
     "given": { "edge.json": "{}\n" },
     "run": ["add", "bar=https://example.com/bar.js"],
-    "stdout": ["+ bar        https://example.com/bar.js"],
-    "contains": { "edge.json": "\"imports\": {\n    \"bar\": \"https://example.com/bar.js\"" }
+    "fails": ["module 'bar' is JavaScript, ship a .py or a .wasm"],
+    "contains": { "edge.json": "{}\n" }
   },
   {
     "given": { "edge.json": "{}\n" },
@@ -239,7 +216,8 @@
   {
     "given": { "edge.json": "{}\n" },
     "run": ["add", "one=https://example.com/one.py", "two=https://example.com/two.js"],
-    "contains": { "edge.json": "\"imports\": {\n    \"one\": \"https://example.com/one.py\",\n    \"two\": \"https://example.com/two.js\"" }
+    "fails": ["module 'two' is JavaScript, ship a .py or a .wasm"],
+    "contains": { "edge.json": "{}\n" }
   },
   {
     "given": { "ask.py": "s = input()\nprint(len(s))\n" },
@@ -316,34 +294,6 @@
     "fails": ["--> late.py:3:1", "x = 1 / 0"]
   },
   {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": {
-      "edge.json": "{ \"imports\": { \"network\": \"https://cdn.edgepython.com/js/builtins/network/index.js\" } }\n",
-      "main.py": "from network import fetch_text\nprint(\"before\")\nbody = fetch_text(\"http://127.0.0.1:1/\")\nprint(\"after\")\n"
-    },
-    "run": ["run", "main.py"],
-    "stdout": ["before"],
-    "fails": ["RuntimeError", "--> main.py:3:1", "fetch_text("]
-  },
-  {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": {
-      "edge.json": "{ \"imports\": { \"dom\": \"https://cdn.edgepython.com/js/builtins/dom/entry.py\" } }\n",
-      "main.py": "import dom\ndom.body()\n"
-    },
-    "run": ["run", "main.py"],
-    "fails": ["module '_dom' needs 'document', missing in this runtime"]
-  },
-  {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": {
-      "edge.json": "{ \"imports\": { \"storage\": \"https://cdn.edgepython.com/js/builtins/storage/index.js\" } }\n",
-      "main.py": "import storage\nstorage.local_get('k')\n"
-    },
-    "run": ["run", "main.py"],
-    "fails": ["module 'storage' needs 'localStorage', missing in this runtime"]
-  },
-  {
     "given": {
       "edge.json": "{ \"imports\": { \"lib\": \"./lib.py\", \"widget\": \"./widget.js\" } }\n",
       "widget.js": "export default () => ({ name: () => 'widget' });\n",
@@ -351,7 +301,15 @@
       "main.py": "import lib\n"
     },
     "run": ["run", "main.py"],
-    "stdout": ["widget"]
+    "fails": ["module 'widget' is JavaScript, ship a .py or a .wasm"]
+  },
+  {
+    "given": {
+      "edge.json": "{ \"imports\": { \"widget\": \"./widget.js\" } }\n",
+      "widget.js": "export default () => ({});\n"
+    },
+    "run": ["lock"],
+    "fails": ["module 'widget' is JavaScript, ship a .py or a .wasm"]
   },
   {
     "given": {
@@ -365,7 +323,7 @@
   {
     "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "given": {
-      "edge.json": "{ \"system\": { \"time\": \"https://cdn.edgepython.com/js/builtins/time/index.js\" } }\n",
+      "edge.json": "{ \"system\": { \"time\": \"https://example.com/time.py\" } }\n",
       "main.py": "print(1)\n"
     },
     "run": ["run", "main.py"],
@@ -387,7 +345,7 @@
       "main.py": "import x\nprint(x.answer())\n"
     },
     "run": ["run", "main.py"],
-    "stdout": ["42"]
+    "fails": ["module 'x' is JavaScript, ship a .py or a .wasm"]
   },
   {
     "given": {
@@ -406,43 +364,13 @@
     "fails": ["module 'x' is not supported, ship a .wasm"]
   },
   {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": {
-      "edge.json": "{ \"imports\": { \"network\": \"https://cdn.edgepython.com/js/builtins/network/index.js\", \"dom\": \"https://cdn.edgepython.com/js/builtins/dom/entry.py\" } }\n",
-      "main.py": "print(\"ok\")\n"
-    },
-    "run": ["build", "--web"],
-    "creates": ["dist/vendor/network/index.js", "dist/vendor/network/http.js", "dist/vendor/network/ws.js", "dist/vendor/network/sse.js", "dist/vendor/network/state.js", "dist/vendor/dom/entry.py", "dist/vendor/dom/edge.json", "dist/vendor/dom/index.js", "dist/vendor/dom/tree.js", "dist/vendor/dom/state.js"],
-    "contains": { "dist/edge.json": "\"dom\": \"./vendor/dom/entry.py\",\n    \"network\": \"./vendor/network/index.js\"" }
-  },
-  {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": {
-      "edge.json": "{ \"imports\": { \"time\": \"https://cdn.edgepython.com/js/builtins/time/index.js\" } }\n",
-      "main.py": "from time import time\nprint(\"packed\", time() > 0)\n"
-    },
-    "run": ["build", "--app"],
-    "stdout": ["packed app"],
-    "creates": ["app"],
-    "then": {
-      "bin": "./app",
-      "env": { "EDGE_CDN_BASE": "http://127.0.0.1:1", "XDG_CACHE_HOME": "empty-cache" },
-      "stdout": ["packed True"]
-    }
-  },
-  {
     "given": {
       "edge.json": "{ \"imports\": { \"m\": \"./m.js\" } }\n",
       "m.js": "export default () => ({ hi: () => \"hello\" })\n",
       "main.py": "from m import hi\nprint(hi())\n"
     },
     "run": ["build", "--app"],
-    "creates": ["app"],
-    "then": {
-      "bin": "./app",
-      "env": { "EDGE_CDN_BASE": "http://127.0.0.1:1", "XDG_CACHE_HOME": "empty-cache" },
-      "stdout": ["hello"]
-    }
+    "fails": ["module 'm' is JavaScript, ship a .py or a .wasm"]
   },
   {
     "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",

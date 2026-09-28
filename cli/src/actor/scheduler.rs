@@ -244,13 +244,7 @@ impl Scheduler {
                 let leftover = g.actors.remove(key).leftover();
                 self.pending.extend(leftover);
             }
-            _ if g.actors[key].idle => {
-                // An open stream can still wake the actor, so it is polled like a blocked one.
-                if g.actors[key].streams() > 0 {
-                    g.waiting.push(key);
-                }
-                g.idle_free.push(key);
-            }
+            _ if g.actors[key].idle => g.idle_free.push(key),
             _ => g.ready.push_back(key),
         }
     }
@@ -377,8 +371,8 @@ impl GroupState {
                 actor.wake_at = None;
                 actor.runnable = true;
                 self.ready.push_back(key);
-            } else if !(actor.idle && actor.streams() == 0) {
-                // An idle actor whose streams closed waits on its mailbox alone.
+            } else if !actor.idle {
+                // An idle actor waits on its mailbox alone.
                 self.waiting.push(key);
             }
         }
