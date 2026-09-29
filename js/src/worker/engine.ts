@@ -124,7 +124,7 @@ async function execute({ src, payload, start, entry = '', onLine, incremental = 
         exports = await makeInstance(wasmModule, onLine, rt);
     }
 
-    // The engine resolves the walk and the program's relative imports from the script it runs.
+    // The engine resolves the walk and every relative import from the script it runs.
     const entryBytes = TE.encode(entry);
     const entryPtr = writeBytes(exports, entryBytes);
     exports.set_entry(entryPtr, entryBytes.length);

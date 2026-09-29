@@ -265,7 +265,7 @@ pub unsafe extern "C" fn reset_modules() {
     bridge::reset();
 }
 
-/* The script the next run starts from, its directory roots the walk and the program's relative imports. */
+/* The script the next run starts from, its directory roots the walk and the relative imports of the program. */
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn set_entry(ptr: *const u8, len: u32) {
     let entry = unsafe { safe_str_owned(ptr, len) };

@@ -26,7 +26,7 @@ const TYPES = {
 
 /* The official origin answers from BASE, decoded bytes and the CDN's own headers, CORS included. */
 async function cdn(route, url) {
-    // A staged CDN carries only this build, the registry's packages stay on the real one.
+    // A staged CDN carries only this build, registry packages stay on the real one.
     const from = url.pathname.startsWith("/pkg/") ? url.origin : BASE;
     const res = await fetch(from + url.pathname + url.search);
     const headers = Object.fromEntries([...res.headers].filter(([k]) => k !== "content-encoding" && k !== "content-length"));

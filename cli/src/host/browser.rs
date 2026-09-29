@@ -92,7 +92,7 @@ pub fn run(src: &str, entry: &str, manifest: Option<&Path>) -> Result<i32> {
     Host::open(manifest)?.run(src, entry)
 }
 
-/* One run's harness, filled in once so no program text is read as a placeholder. */
+/* The harness for one run, filled in once so no program text is read as a placeholder. */
 fn page(src: &str, entry: &str) -> Result<String> {
     Ok(HARNESS.replace("__EDGE_RUN__", &embed(&serde_json::json!({ "src": src, "entry": entry }))?))
 }
