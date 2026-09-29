@@ -261,7 +261,6 @@ Import failures and syntax errors are compile-time diagnostics and can never be 
 
 Every import resolves at compile time through a host resolver. The compiler flattens each module into the bytecode and the VM fetches nothing at run time.
 
-<!-- 010100101010 THIS CELL IMPORTS A PACKAGE EDGE-PYTHON-STD HAS NOT PUBLISHED YET, TURN ITS txt FENCE BACK INTO text TO RUN IT AGAIN. -->
 ```python
 import math
 from json import dumps, loads
@@ -271,7 +270,7 @@ from re import *
 print(root(16.0), loads(dumps({"ok": True}))["ok"])
 ```
 
-```txt Output
+```text Output
 4.0 True
 ```
 
@@ -609,7 +608,6 @@ Five official packages, each declared with `edge add <name>` then `edge lock` an
 
 `loads(s)` with optional `object_hook`, `object_pairs_hook`, `parse_float`, `parse_int` and `parse_constant`. `dumps(obj)` with `indent`, `sort_keys`, `ensure_ascii`, `check_circular`, `allow_nan`, `skipkeys`, `default`, `separators` and `cls`. Parse failures raise `ValueError`, non-serializable values raise `TypeError` unless `default` handles them. Integers round-trip at 128-bit and non-finite floats map to `NaN` and `Infinity`.
 
-<!-- 010100101010 THIS CELL IMPORTS A PACKAGE EDGE-PYTHON-STD HAS NOT PUBLISHED YET, TURN ITS txt FENCE BACK INTO text TO RUN IT AGAIN. -->
 ```python
 import json
 
@@ -618,16 +616,15 @@ print(json.dumps(data, sort_keys=True))
 print(json.dumps({"bad": object()}, default=str))
 ```
 
-```txt Output
+```text Output
 {"n": 21, "xs": [1, 2]}
 {"bad": "<object instance>"}
 ```
 
 ### math
 
-Constants `pi`, `e`, `tau`, `inf`, `nan`. Functions `sqrt`, `cbrt`, `exp`, `exp2`, `expm1`, `pow`, `log`, `log2`, `log10`, `log1p`, the trig and hyperbolic families, `atan2`, `hypot`, `dist`, `degrees`, `radians`, `erf`, `erfc`, `gamma`, `lgamma`, `fabs`, `fmod`, `remainder`, `copysign`, `ldexp`, `modf`, `frexp`, `floor`, `ceil`, `trunc`, `isnan`, `isinf`, `isfinite`, `fsum`, `prod`, and the integer functions `factorial`, `gcd`, `lcm`, `isqrt`, `comb`, `perm` at 128-bit. Domain errors raise `ValueError`. A batch family (`sqrt_all`, `add_all`, `dot_all`, `matvec` and friends) operates on `bytes` buffers of little-endian f64, pair it with `struct.pack`.
+Constants `pi`, `e`, `tau`, `inf`, `nan`. Functions `sqrt`, `cbrt`, `exp`, `exp2`, `expm1`, `pow`, `log`, `log2`, `log10`, `log1p`, the trig and hyperbolic families, `atan2`, `hypot`, `dist`, `degrees`, `radians`, `erf`, `erfc`, `gamma`, `lgamma`, `fabs`, `fmod`, `remainder`, `copysign`, `ldexp`, `modf`, `frexp`, `floor`, `ceil`, `trunc`, `isnan`, `isinf`, `isfinite`, `isclose`, `fsum`, `prod`, and the integer functions `factorial`, `gcd`, `lcm`, `isqrt`, `comb`, `perm` at 128-bit. Domain errors raise `ValueError`, and a result too large for a float or a 128-bit int raises `OverflowError`. `nextafter`, `ulp` and `sumprod` are not supported.
 
-<!-- 010100101010 THIS CELL IMPORTS A PACKAGE EDGE-PYTHON-STD HAS NOT PUBLISHED YET, TURN ITS txt FENCE BACK INTO text TO RUN IT AGAIN. -->
 ```python
 import math
 
@@ -635,45 +632,46 @@ print(math.gcd(12, 18), math.factorial(10), math.isqrt(17))
 print(math.floor(math.pi), math.isfinite(math.inf))
 ```
 
-```txt Output
+```text Output
 6 3628800 4
 3 False
 ```
 
 ### re
 
-Backtracking engine with a step budget that raises `RuntimeError` against catastrophic backtracking. Module functions take `(pattern, string)` and `compile(pattern)` returns a pattern object with the same operations as methods. There are no Match objects, matchers return the matched string or `None`.
+`re` works as in Python, on a backtracking engine with a step budget that raises `RuntimeError` against catastrophic backtracking. `compile(pattern, flags)` returns a `Pattern` with the same methods as the module, the flags are `re.I`, `re.M` and `re.S`, and a bad pattern raises `re.error`, which is `ValueError`.
 
 | Function | Returns |
 |---|---|
-| `match`, `search`, `fullmatch` | Matched string or `None` |
-| `findall` | List of strings, grouped matches become lists |
-| `groups` | List of captures or `None` |
-| `span` | `[start, end]` codepoint offsets or `None` |
-| `sub` | Substituted string, `\\1` and `\\g<name>` expand groups |
+| `match`, `search`, `fullmatch` | A `Match` or `None` |
+| `findall` | The text of every match, or its groups when the pattern has them |
+| `finditer` | Each `Match` in turn |
+| `sub`, `subn` | Substituted string, `\\1` and `\\g<name>` expand groups, `subn` also counts |
+| `split` | The pieces between matches |
+| `escape` | The text quoted to match as written |
 
-Supported syntax covers classes, anchors, quantifiers with lazy forms, capturing, non-capturing and named groups, backreferences, alternation, lookahead and fixed-width lookbehind, plus inline flags `(?i)`, `(?s)` and `(?m)`. Not supported, `\p{...}`, atomic groups, possessive quantifiers, conditionals and scoped flags.
+A `Match` answers `group`, `groups`, `groupdict`, `span`, `start`, `end` and `m[n]`, and a group that took no part reads as `None`.
 
-<!-- 010100101010 THIS CELL IMPORTS A PACKAGE EDGE-PYTHON-STD HAS NOT PUBLISHED YET, TURN ITS txt FENCE BACK INTO text TO RUN IT AGAIN. -->
+Supported syntax covers classes, anchors, quantifiers with lazy forms, capturing, non-capturing and named groups, backreferences, alternation, lookahead and fixed-width lookbehind, plus inline flags `(?i)`, `(?s)` and `(?m)`. Not supported, `\p{...}`, atomic groups, possessive quantifiers, conditionals, scoped flags and `bytes` patterns.
+
 ```python
 import re
 
 print(re.findall(r"\d+", "a1b22"))
 print(re.sub(r"(\w+)@(\w+)", r"\2@\1", "user@host"))
-print(re.groups(r"(\d+)-(\d+)", "12-34"))
+print(re.search(r"(\d+)-(\d+)", "12-34").groups())
 ```
 
-```txt Output
+```text Output
 ['1', '22']
 host@user
-['12', '34']
+('12', '34')
 ```
 
 ### struct
 
-`pack(fmt, *values)` returns `bytes`, `unpack(fmt, data)` returns a list, `calcsize(fmt)` returns an int. Codes are `x b B ? h H i I q Q f d` with repeat counts, prefixes `<` (default), `=`, `>` and `!`. String codes `s` and `p`, half-float `e`, native-size `n` and `N`, and the `pack_into` family are not implemented.
+`pack(fmt, *values)` returns `bytes`, `unpack(fmt, data)` returns a tuple, `calcsize(fmt)` returns an int, all with the codes and repeat counts of Python. A format with no prefix or `@` aligns each item the way C does, and `<`, `>`, `!` and `=` pick a byte order with standard sizes and no padding. A `Struct` keeps a format, with `unpack_from` and `iter_unpack`. A bad value raises `struct.error`, which is `ValueError`, and `pack_into` is not supported.
 
-<!-- 010100101010 THIS CELL IMPORTS A PACKAGE EDGE-PYTHON-STD HAS NOT PUBLISHED YET, TURN ITS txt FENCE BACK INTO text TO RUN IT AGAIN. -->
 ```python
 import struct
 
@@ -681,8 +679,8 @@ buf = struct.pack("<hh", 258, -1)
 print(buf.hex(), struct.unpack("<hh", buf), struct.calcsize("<hh"))
 ```
 
-```txt Output
-0201ffff [258, -1] 4
+```text Output
+0201ffff (258, -1) 4
 ```
 
 ### test
@@ -695,7 +693,6 @@ The test framework, imported by bare name and driven by `edge test` discovery. T
 - Assertions are plain `assert`.
 - `run()` executes everything registered, prints verdicts and raises `SystemExit(0)` or `SystemExit(1)`.
 
-<!-- 010100101010 THIS CELL IMPORTS A PACKAGE EDGE-PYTHON-STD HAS NOT PUBLISHED YET, TURN ITS txt FENCE BACK INTO text TO RUN IT AGAIN. -->
 ```python
 from test import fixture, test, raises, run
 
@@ -715,7 +712,7 @@ def div():
 run()
 ```
 
-```txt Output
+```text Output
 pass. sum adds up
 pass. division by zero raises
 2 passed, 0 failed

@@ -44,21 +44,20 @@ fn spawn(mut cmd: Command, stdin_data: &str, timeout: Duration) -> Result<Outcom
     Ok(Outcome { stdout, stderr, ok: status.success() })
 }
 
-/* The manifest every cell runs under, each official name at the URL it answers, so no cell needs a lock. */
-// 010100101010 THESE URLS STOP RESOLVING ONCE THE CDN DROPS THE STD, POINT THEM AT THE REGISTRY WHEN EDGE-PYTHON-STD PUBLISHES.
+/* The manifest every cell runs under, each official name at the release its lock pins. */
 pub const MANIFEST: &str = r#"{
   "imports": {
-    "json": "https://cdn.edgepython.com/std/json.wasm",
-    "re": "https://cdn.edgepython.com/std/re.wasm",
-    "math": "https://cdn.edgepython.com/std/math.wasm",
-    "struct": "https://cdn.edgepython.com/std/struct.wasm",
-    "test": "https://cdn.edgepython.com/std/test.py"
+    "json": "0.1.0",
+    "re": "0.1.0",
+    "math": "0.1.0",
+    "struct": "0.1.0",
+    "test": "0.1.0"
   }
 }
 "#;
 
-// A fresh scratch dir holding the manifest, one per cell so runs never share files.
-fn scratch() -> Result<std::path::PathBuf, String> {
+// A fresh scratch dir, one per cell so runs never share files.
+fn fresh() -> Result<std::path::PathBuf, String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!("skill-cell-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
@@ -67,8 +66,32 @@ fn scratch() -> Result<std::path::PathBuf, String> {
     Ok(dir)
 }
 
+/* The lock `edge lock` writes for the manifest, resolved once and copied into every cell. */
+fn lock(edge: &str) -> Result<&'static str, String> {
+    static LOCK: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| {
+        let dir = fresh()?;
+        let out = Command::new(edge).arg("lock").current_dir(&dir).stdin(Stdio::null()).output().map_err(|e| format!("spawn failed: {e}"))?;
+        let text = std::fs::read_to_string(dir.join("edge.lock"));
+        let _ = std::fs::remove_dir_all(&dir);
+        match (out.status.success(), text) {
+            (true, Ok(text)) => Ok(text),
+            _ => Err(format!("edge lock failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
+        }
+    })
+    .as_deref()
+    .map_err(Clone::clone)
+}
+
+// The dir of one cell, the manifest beside the lock that resolves it.
+fn scratch(edge: &str) -> Result<std::path::PathBuf, String> {
+    let dir = fresh()?;
+    std::fs::write(dir.join("edge.lock"), lock(edge)?).map_err(|e| format!("write edge.lock failed: {e}"))?;
+    Ok(dir)
+}
+
 pub fn run_script(edge: &str, src: &str, timeout: Duration) -> Result<Outcome, String> {
-    let dir = scratch()?;
+    let dir = scratch(edge)?;
     let mut cmd = Command::new(edge);
     cmd.arg("run").arg("--manifest").arg(dir.join("edge.json"));
     let outcome = spawn(cmd, src, timeout);
@@ -77,7 +100,7 @@ pub fn run_script(edge: &str, src: &str, timeout: Duration) -> Result<Outcome, S
 }
 
 pub fn run_actor(edge: &str, yml: &str, timeout: Duration) -> Result<Outcome, String> {
-    let dir = scratch()?;
+    let dir = scratch(edge)?;
     let path = dir.join("actor.yml");
     std::fs::write(&path, yml).map_err(|e| format!("write actor.yml failed: {e}"))?;
     let mut cmd = Command::new(edge);
