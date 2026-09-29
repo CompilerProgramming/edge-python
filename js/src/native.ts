@@ -18,7 +18,7 @@ export interface WasmPdkFn extends NativeFnBase {
 }
 
 /* A system call of one package, answering with a value or a promise the host settles later. */
-export interface SystemFn extends NativeFnBase {
+interface SystemFn extends NativeFnBase {
     __edge_kind: 'system'
     __edge_name: string
     __edge_module: string
@@ -27,7 +27,7 @@ export interface SystemFn extends NativeFnBase {
 
 export type NativeFn = WasmPdkFn | SystemFn;
 
-export interface NativeModuleResult {
+interface NativeModuleResult {
     names: string[]
     fns: NativeFn[]
 }
@@ -50,7 +50,7 @@ export function resetNativeTable(): void {
 }
 
 /* Build the 7 `env.edge_*` imports for wasm-pdk plugins, bridging guest and compiler memory. */
-export function makeGuestEnv(compilerExports: CompilerExports) {
+function makeGuestEnv(compilerExports: CompilerExports) {
     const compMem = () => new Uint8Array(compilerExports.memory.buffer);
     const compView = () => new DataView(compilerExports.memory.buffer);
 

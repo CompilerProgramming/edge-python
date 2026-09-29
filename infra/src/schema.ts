@@ -38,7 +38,7 @@ function checks(sql: string) {
 }
 
 /* Every fact SQLite reports about a database, one line each, so two databases compare line by line. Columns come from pragmas because SQLite rewrites the stored text on every alter, and checks from their parsed shape because no pragma holds them. */
-export function facts(db: DatabaseSync) {
+function facts(db: DatabaseSync) {
   const out = new Map<string, string>()
   const all = <T>(sql: string, ...args: string[]) => db.prepare(sql).all(...args) as T[]
 

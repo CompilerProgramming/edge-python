@@ -7,7 +7,7 @@ const PREFIX = 'edge_pat_'
 const BEARER = 'Bearer '
 
 // A replaced token keeps working for a day, long enough for a deploy to pick the new one up.
-export const GRACE = 86_400_000
+const GRACE = 86_400_000
 
 export const MAX_NAME = 40
 export const MAX_TOKENS = 20

@@ -9,7 +9,7 @@ import { errMsg, writeBytes } from './util.ts';
 const TD = new TextDecoder();
 const TE = new TextEncoder();
 
-export interface PrefetchCtx {
+interface PrefetchCtx {
     fetchedSources: Map<string, Uint8Array>
     knownMissing: Set<string>
     importsMap?: Record<string, string> | null

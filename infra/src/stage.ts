@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { REPO_DIR } from './constants'
 
-export const PARTS = ['compiler', 'js', 'cli'] as const
+const PARTS = ['compiler', 'js', 'cli'] as const
 export type Part = (typeof PARTS)[number]
 
 function need(path: string, hint: string) {

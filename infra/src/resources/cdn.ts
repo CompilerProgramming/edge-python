@@ -128,7 +128,7 @@ export function cdn_objects(tree: string): CdnObject[] {
 }
 
 // The bytes an object stores, a runtime of tens of megabytes compresses at a quicker level.
-export function object_bytes(object: CdnObject) {
+function object_bytes(object: CdnObject) {
   const bytes = readFileSync(object.file)
   const quality = bytes.length > 8 << 20 ? 9 : 11
   return object.encoding === 'br' ? brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: quality } }) : bytes

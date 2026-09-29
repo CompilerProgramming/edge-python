@@ -117,7 +117,7 @@ const dedentCommon = (text: string) => {
 
 const unwrapFence = (text: string) => text.match(/^```python\n([\s\S]*?)\n```\s*$/)?.[1] ?? text
 
-export const transitions = {
+const transitions = {
   character(text: string, caret: number, key: string, language: Language): Edit | null {
     if (Object.values(language.pairs).includes(key) && text[caret] === key) {
       return { from: caret, to: caret, insert: '', caret: caret + 1 }

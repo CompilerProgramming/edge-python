@@ -1,4 +1,4 @@
-export interface FetchCtx {
+interface FetchCtx {
     baseUrl?: string | null
     // How the engine reaches a url, a room reads the program's own files through its page.
     read?: (url: string) => Promise<Response>
@@ -6,7 +6,7 @@ export interface FetchCtx {
 }
 
 // Specs are root-relative, the URL join clamps escapes at the origin.
-export const requestUrl = (target: string, baseUrl?: string | null): string =>
+const requestUrl = (target: string, baseUrl?: string | null): string =>
     target.includes('://') ? target : new URL(target, baseUrl ?? self.location.href).toString();
 
 /* Fetches a module, whose #sha256- pin the engine checks. Null on a failed fetch or a non-ok status. */

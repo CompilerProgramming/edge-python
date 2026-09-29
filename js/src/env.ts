@@ -14,7 +14,7 @@ export interface DeferredHostCall {
     pending: Promise<unknown>
 }
 
-export interface CompilerEnv {
+interface CompilerEnv {
     host_print(ptr: number, len: number): void
     host_call_native(id: number, call_id: number, argv_ptr: number, argc: number, out_ptr: number): number
     host_now_ns(): bigint
@@ -22,7 +22,7 @@ export interface CompilerEnv {
     host_send(groupPtr: number, groupLen: number, bodyPtr: number, bodyLen: number): number
 }
 
-export interface MakeCompilerEnvOpts {
+interface MakeCompilerEnvOpts {
     getExports: () => CompilerExports
     onLine: (text: string) => void
     fetchedSources: Map<string, Uint8Array>

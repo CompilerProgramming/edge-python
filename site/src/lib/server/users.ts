@@ -21,14 +21,14 @@ export type User = {
 export type Holder = User & { email: string | null }
 
 // A handle someone gives up goes back in the pool, so it cannot be traded away and reclaimed at will.
-export const HANDLE_WAIT = 7 * 86_400_000
+const HANDLE_WAIT = 7 * 86_400_000
 
 /* How long is left on the wait, or zero when the handle is free to change. */
 export const handleWait = (changedAt: number | null) =>
   changedAt === null ? 0 : Math.max(0, changedAt + HANDLE_WAIT - Date.now())
 
 // A name others already link to is held after its owner moves, so nobody takes it to stand in for them.
-export const VACATED_WAIT = 90 * 86_400_000
+const VACATED_WAIT = 90 * 86_400_000
 
 // Who left this handle while it is still held, so that person alone can take it back.
 export async function vacatedBy(db: D1Database, handle: string) {
@@ -43,7 +43,7 @@ export async function vacatedBy(db: D1Database, handle: string) {
 export type Identity = { provider: 'github' | 'google' | 'email'; providerId: string; email: string; name?: string | null }
 
 /* The user a credential belongs to, the one lookup every way in shares. */
-export const byCredential = (db: D1Database, provider: string, providerId: string) =>
+const byCredential = (db: D1Database, provider: string, providerId: string) =>
   db
     .prepare('select user.* from account join user on user.id = account.user_id where account.provider = ? and account.provider_id = ?')
     .bind(provider, providerId)
@@ -109,10 +109,6 @@ export const userById = (db: D1Database, id: string) => db.prepare('select * fro
 
 export const userByHandle = (db: D1Database, handle: string) => db.prepare('select * from user where handle = ?').bind(handle).first<User>()
 
-/* The address a user's codes go to, which lives in account like any other credential. */
-export const addressOf = async (db: D1Database, userId: string) =>
-  (await db.prepare("select provider_id from account where user_id = ? and provider = 'email'").bind(userId).first<{ provider_id: string }>())?.provider_id ?? null
-
 export const addressTaken = async (db: D1Database, email: string) =>
   Boolean(await db.prepare("select 1 from account where provider = 'email' and provider_id = ?").bind(email).first())
 
@@ -172,4 +168,4 @@ export async function deleteUser(db: D1Database, id: string) {
 }
 
 // The account that holds a package whose author is gone, seeded and never sign-in-able.
-export const UNCLAIMED = 'u_unclaimed'
+const UNCLAIMED = 'u_unclaimed'

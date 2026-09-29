@@ -16,8 +16,8 @@ export type Release = {
 
 export const MAX_ARTIFACT = 10 << 20
 export const MAX_NOTICE = 64 << 10
-export const MAX_PAGES = 64
-export const MAX_PAGE = 128 << 10
+const MAX_PAGES = 64
+const MAX_PAGE = 128 << 10
 export const MAX_LOCK = 256 << 10
 
 // A rate limiter can only count seconds, so the day's worth is counted here instead.

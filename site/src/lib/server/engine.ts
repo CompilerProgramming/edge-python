@@ -45,7 +45,7 @@ function call(buffers: Uint8Array[], run: (e: Exports, at: number[]) => number):
 }
 
 /* Why the manifest a package carries is turned away, held with the lock beside it to the rules the CLI packs under, null when it holds. */
-export function checkPackage(manifest: string, lock: string | undefined): string | null {
+function checkPackage(manifest: string, lock: string | undefined): string | null {
   const [m, l, s] = [manifest, lock ?? '', MODULES.join('\n')].map((text) => encode.encode(text))
   const problem = call([m!, l!, s!], (e, [mp, lp, sp]) => e.manifest_check(mp!, m!.length, lp!, l!.length, sp!, s!.length))
   return problem || null

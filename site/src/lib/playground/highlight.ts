@@ -2,7 +2,7 @@ import { ALIAS, PLAIN, THEMES } from '../docs/shiki'
 
 const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;' }
 
-export const escapeHtml = (text: string) => text.replace(/[&<>]/g, (char) => HTML_ESCAPES[char]!)
+const escapeHtml = (text: string) => text.replace(/[&<>]/g, (char) => HTML_ESCAPES[char]!)
 
 export type Highlight = {
   (code: string, lang?: string): string
