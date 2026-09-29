@@ -72,7 +72,6 @@ fn holders_of(value: Value) -> Result<Vec<(String, Vec<String>)>, String> {
 
 /* Yield the directory of `start` and every parent, in order. Each ends in '/' or is "" (topmost). */
 pub fn walk_up_dirs(start: &str) -> impl Iterator<Item = String> + '_ {
-    let _ = start;
     let mut current = Some(start.to_string());
     core::iter::from_fn(move || {
         let dir = current.take()?;

@@ -150,7 +150,7 @@ enum Cmd {
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
     // A standalone binary carries its project, run that instead of parsing subcommands.
     if let Some(payload) = cmd::build::embedded_payload() {
         let result = run_embedded(&payload);
@@ -158,18 +158,18 @@ fn main() -> Result<()> {
             ui::error(&e);
             std::process::exit(1);
         }
-        return Ok(());
+        return;
     }
 
     // Only the top-level help is intercepted, `edge run -h` still falls through to clap.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || matches!(args.first().map(String::as_str), Some("-h" | "--help")) {
         println!("{HELP}");
-        return Ok(());
+        return;
     }
     if matches!(args.first().map(String::as_str), Some("-v" | "--version")) {
         println!("edge {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+        return;
     }
 
     let cli = Cli::parse();
@@ -238,7 +238,6 @@ fn main() -> Result<()> {
         ui::error(&e);
         std::process::exit(1);
     }
-    Ok(())
 }
 
 /* Runs a script on the browser host, from a file, from `-c`, or from stdin the way `edge run` reads it. */

@@ -124,25 +124,25 @@ fn call_native(caller: &mut Caller<'_, State>, id: i32, call_id: i32, argv_ptr: 
                 super::system::Called::Value(value) => Some(value),
                 super::system::Called::Pending => None,
             });
-            answered(caller, &ex, out_ptr, call_id, answer)
+            Ok(answered(caller, &ex, out_ptr, call_id, answer))
         }
     }
 }
 
 /* Hands a call's answer to the compiler, a value now, a park for one that settles later, or an error. */
-fn answered(caller: &mut Caller<'_, State>, ex: &Exports, out_ptr: i32, call_id: i32, answer: Result<Option<WireValue>, String>) -> wasmtime::Result<i32> {
+fn answered(caller: &mut Caller<'_, State>, ex: &Exports, out_ptr: i32, call_id: i32, answer: Result<Option<WireValue>, String>) -> i32 {
     match answer.and_then(|value| value.map(|v| rt::encode(caller, ex, &v)).transpose()) {
         Ok(Some(handle)) => {
             write_u32(caller, ex.memory, out_ptr, handle);
-            Ok(0)
+            0
         }
         Ok(None) => {
             caller.data_mut().deferred.push(call_id as u32);
-            Ok(2)
+            2
         }
         Err(e) => {
             throw(caller, ex, e.as_str());
-            Ok(1)
+            1
         }
     }
 }

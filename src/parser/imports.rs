@@ -236,7 +236,6 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 let import_idx = self.register_import(&canonical, ImportKind::Code(sub));
                 for (name, alias) in &names {
                     if !exports.iter().any(|e| e == name) {
-                        let _ = url;
                         self.error_at(span.0, span.1,
                             &s!("module '", str &canonical, "' has no export '", str name, "'"));
                         continue;

@@ -719,7 +719,6 @@ impl<'a> VM<'a> {
                 });
             }
             OpCode::WithEnter => {
-                let _ = operand;
                 let cm = self.pop()?;
                 // Both dunders resolve up front, like Python.
                 let (enter_fn, class) = self.with_dunder(cm, "__enter__")?;
@@ -733,7 +732,6 @@ impl<'a> VM<'a> {
             OpCode::BeginFinally => self.unwind_stack.push(Unwind::Normal),
             // Stages `__exit__` for the plain Call behind it, parking-safe.
             OpCode::WithExit => {
-                let _ = operand;
                 let cm = self.with_stack.pop().ok_or(cold_runtime("WithExit without matching WithEnter"))?;
                 let (exit_fn, class) = self.with_dunder(cm, "__exit__")?;
                 // Reraise selects `__exit__(type, exc, None)`, other exits pass three Nones.

@@ -291,7 +291,7 @@ impl Program {
     }
 
     /* Pairs a result value with the output written past `from`, which skips whatever was reported already. */
-    fn outcome(&self, vm: &VM<'_>, v: Val, from: usize) -> Output {
+    fn outcome(vm: &VM<'_>, v: Val, from: usize) -> Output {
         let value = Value::read(v, vm.heap(), |v| vm.display(v));
         let full = vm.output_text();
         let text = full.get(from..).unwrap_or("").into();
@@ -302,7 +302,7 @@ impl Program {
     pub fn run(&self) -> Result<Output, Error> {
         let mut vm = self.boot()?;
         match vm.run() {
-            Ok(v) => Ok(self.outcome(&vm, v, 0)),
+            Ok(v) => Ok(Self::outcome(&vm, v, 0)),
             Err(e) => Err(self.trace(&vm, e)),
         }
     }
@@ -349,7 +349,7 @@ impl Instance<'_> {
             }
         }
         let out = match self.vm.call_export(name, &argv) {
-            Ok(v) => self.program.outcome(&self.vm, v, self.emitted),
+            Ok(v) => Program::outcome(&self.vm, v, self.emitted),
             Err(e) => return Err(self.program.trace(&self.vm, e)),
         };
         self.emitted += out.text.len();

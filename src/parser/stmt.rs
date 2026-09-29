@@ -659,12 +659,12 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                             self.expr();
                             self.chunk.emit(OpCode::StoreItem, 0);
                             return false;
-                        } else if let Some(op) = self.peek().and_then(|t| Self::augmented_op(&t)) {
+                        }
+                        if let Some(op) = self.peek().and_then(|t| Self::augmented_op(&t)) {
                             self.emit_augmented_subscript(op);
                             return false;
-                        } else {
-                            self.chunk.emit(OpCode::GetItem, 0);
                         }
+                        self.chunk.emit(OpCode::GetItem, 0);
                     }
                     self.expr_tails(start);
                     if matches!(self.peek(), Some(TokenType::Comma)) {

@@ -387,7 +387,7 @@ impl<'a> VM<'a> {
             }
             if !alive { return Ok(()); }
             if let Some(i) = next_ready {
-                self.scheduler_step(i)?;
+                self.scheduler_step(i);
                 // Coro stays Ready, re-entering resumes it.
                 if core::mem::take(&mut self.pending.preempt_request) {
                     return Err(VmErr::HostYield(SchedulerStatus::Preempted));
@@ -452,11 +452,11 @@ impl<'a> VM<'a> {
         }
     }
 
-    fn scheduler_step(&mut self, idx: usize) -> Result<(), VmErr> {
+    fn scheduler_step(&mut self, idx: usize) {
         let coro = self.scheduler[idx].coro;
         if matches!(self.scheduler[idx].state, CoroState::CancelPending) {
             self.scheduler[idx].state = self.run_cancellation(coro);
-            return Ok(());
+            return;
         }
         // Snapshot before resume so a yield during sleep / receive / run can read it.
         self.pending.sleep_until_ns = None;
@@ -475,7 +475,7 @@ impl<'a> VM<'a> {
         self.yielded = false;
         let new_state = match result {
             Err(e) => CoroState::Errored(e),
-            Ok(v) if yielded => {
+            Ok(_) if yielded => {
                 // Suspension precedence order, sleep > receive > host-call > children > bare yield.
                 if let Some(until) = self.pending.sleep_until_ns.take() {
                     CoroState::Sleeping(until)
@@ -487,14 +487,12 @@ impl<'a> VM<'a> {
                     self.waiting_for_children_count += 1;
                     CoroState::WaitingForChildren { tasks, kind }
                 } else {
-                    let _ = v;
                     CoroState::Ready
                 }
             }
             Ok(v) => CoroState::Done(v),
         };
         self.scheduler[idx].state = new_state;
-        Ok(())
     }
 
     /* Suspend until `s` real seconds elapse. */

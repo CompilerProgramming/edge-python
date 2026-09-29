@@ -158,7 +158,7 @@ impl<'a> VM<'a> {
             let mut width = String::new();
             if i < chars.len() && chars[i] == '*' {
                 i += 1;
-                let w = self.star_arg_int(&args, &mut ai)?;
+                let w = Self::star_arg_int(&args, &mut ai)?;
                 if w < 0 { left = true; } // negative `*` width left-aligns, like Python
                 width = crate::s!(int w.unsigned_abs());
             } else {
@@ -170,7 +170,7 @@ impl<'a> VM<'a> {
                 i += 1;
                 if i < chars.len() && chars[i] == '*' {
                     i += 1;
-                    let p = self.star_arg_int(&args, &mut ai)?;
+                    let p = Self::star_arg_int(&args, &mut ai)?;
                     // Negative `.*` precision is ignored, matching Python.
                     if p >= 0 { has_prec = true; prec = crate::s!(int p); }
                 } else {
@@ -219,7 +219,7 @@ impl<'a> VM<'a> {
     }
 
     /* Reads a `*` width/precision argument as an i64, non-integers raise TypeError like Python. */
-    fn star_arg_int(&self, args: &[Val], ai: &mut usize) -> Result<i64, VmErr> {
+    fn star_arg_int(args: &[Val], ai: &mut usize) -> Result<i64, VmErr> {
         let v = *args.get(*ai).ok_or(cold_type("not enough arguments for format string"))?;
         *ai += 1;
         if v.is_bool() { return Ok(v.as_bool() as i64); }

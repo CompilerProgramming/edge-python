@@ -105,7 +105,7 @@ impl Resolver for TestResolver {
         Box::new(TestResolver {
             state: Rc::clone(&self.state),
             in_flight_marker: Some(canon),
-            dir: dir_of(spec).to_string(),
+            dir: dir_of(spec),
         })
     }
 }
