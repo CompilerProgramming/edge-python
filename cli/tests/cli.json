@@ -20,20 +20,6 @@
     "creates": ["main.py", "edge.json", "index.html"]
   },
   {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": { "edge.json": "{}\n" },
-    "run": ["add", "math"],
-    "stdout": ["+ math       https://cdn.edgepython.com/std/math.wasm"],
-    "contains": { "edge.json": "cdn.edgepython.com/std/math.wasm" }
-  },
-  {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
-    "given": { "edge.json": "{}\n" },
-    "run": ["add", "test"],
-    "stdout": ["+ test       https://cdn.edgepython.com/std/test.py"],
-    "contains": { "edge.json": "cdn.edgepython.com/std/test.py" }
-  },
-  {
     "given": { "edge.json": "{}\n" },
     "run": ["add", "foo=https://example.com/foo.wasm"],
     "contains": { "edge.json": "example.com/foo.wasm" }
@@ -44,27 +30,19 @@
     "fails": ["unknown package 'mystery'"]
   },
   {
-    "pending": "010100101010 WAITS ON A PUBLISHED json IN THE REGISTRY, RESTORE THEN",
-    "given": { "edge.json": "{}\n" },
-    "run": ["add", "json@0.1.0"],
-    "contains": { "edge.json": "\"json\": \"0.1.0\"" }
-  },
-  {
     "given": { "app.edge": "EDGEPKG\u0001" },
     "env": { "EDGE_TOKEN": "not-a-token" },
     "run": ["publish", "app.edge"],
     "fails": ["That token is not valid."]
   },
   {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "given": { "edge.json": "{ \"extends\": \"..\", \"imports\": {} }\n" },
-    "run": ["add", "math"],
+    "run": ["add", "foo=https://example.com/foo.py"],
     "contains": { "edge.json": "\"extends\": \"..\"" }
   },
   {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "given": { "edge.json": "{}\n" },
-    "run": ["add", "math", "mystery"],
+    "run": ["add", "foo=https://example.com/foo.py", "mystery"],
     "fails": ["unknown package 'mystery'"],
     "contains": { "edge.json": "{}\n" }
   },
@@ -93,10 +71,9 @@
     "fails": ["nothing to remove"]
   },
   {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "given": { "custom.json": "{}\n" },
-    "run": ["--manifest", "custom.json", "add", "math"],
-    "contains": { "custom.json": "cdn.edgepython.com/std/math.wasm" }
+    "run": ["--manifest", "custom.json", "add", "foo=https://example.com/foo.py"],
+    "contains": { "custom.json": "example.com/foo.py" }
   },
   {
     "run": ["run", "no_such.py"],

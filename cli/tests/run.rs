@@ -165,24 +165,28 @@ fn spawn_registry(bundle: Vec<u8>, version: &str) -> u16 {
     );
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let port = listener.local_addr().expect("tcp addr").port();
+    let version = version.to_string();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let (answer, key, bundle) = (answer.clone(), key.clone(), bundle.clone());
-            std::thread::spawn(move || answer_registry(stream, &answer, &key, &bundle));
+            let (answer, key, bundle, version) = (answer.clone(), key.clone(), bundle.clone(), version.clone());
+            std::thread::spawn(move || answer_registry(stream, &answer, &key, &bundle, &version));
         }
     });
     port
 }
 
-fn answer_registry(mut stream: std::net::TcpStream, answer: &str, key: &str, bundle: &[u8]) {
+fn answer_registry(mut stream: std::net::TcpStream, answer: &str, key: &str, bundle: &[u8], version: &str) {
     use std::io::{BufRead, Write};
     let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
     let mut line = String::new();
     let _ = reader.read_line(&mut line);
     let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+    let (route, query) = path.split_once('?').unwrap_or((path.as_str(), ""));
+    // A release other than the one this registry holds is not there.
+    let other = query.split('&').filter_map(|pair| pair.strip_prefix("v=")).any(|asked| asked != version);
     let head = |kind: &str, len: usize| format!("HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n");
-    let body = match path.split('?').next().unwrap_or("") {
-        "/api/packages/greet" => Some((head("application/json", answer.len()), answer.as_bytes().to_vec())),
+    let body = match route {
+        "/api/packages/greet" if !other => Some((head("application/json", answer.len()), answer.as_bytes().to_vec())),
         p if p == key => Some((head("application/octet-stream", bundle.len()), bundle.to_vec())),
         _ => None,
     };
@@ -257,6 +261,29 @@ fn a_declared_version_is_locked_once_and_then_runs() {
 
     let (out, err, code) = run_env(&app, &["run", "main.py"], &env, None);
     assert_eq!((out.as_str(), code), ("HI EDGE\n", 0), "stderr was: {err}");
+}
+
+/* add keeps the version it is given, and a release the registry lacks writes nothing. */
+#[test]
+fn add_keeps_the_version_it_was_given() {
+    let lib = scratch("pindep");
+    std::fs::write(lib.join("main.py"), "def shout(word):\n    return word.upper()\n").unwrap();
+    let (_, err, code) = run_in(&lib, &["build", "--out", "dep.edge"], None);
+    assert_eq!(code, 0, "build failed: {err}");
+    let port = spawn_registry(std::fs::read(lib.join("dep.edge")).unwrap(), "0.1.0");
+    let site = format!("http://127.0.0.1:{port}");
+    let env = [("EDGE_SITE_BASE", site.as_str()), ("EDGE_CDN_BASE", site.as_str())];
+
+    let app = scratch("pinapp");
+    std::fs::write(app.join("edge.json"), "{}\n").unwrap();
+    let (_, err, code) = run_env(&app, &["add", "greet@9.9.9"], &env, None);
+    assert!(err.contains("'greet' has no version 9.9.9"), "stderr was: {err}");
+    assert_eq!((code, std::fs::read_to_string(app.join("edge.json")).unwrap().as_str()), (1, "{}\n"));
+
+    let (_, err, code) = run_env(&app, &["add", "greet@0.1.0"], &env, None);
+    assert_eq!(code, 0, "add failed: {err}");
+    let declared = std::fs::read_to_string(app.join("edge.json")).unwrap();
+    assert!(declared.contains("\"greet\": \"0.1.0\""), "the manifest keeps the version it was given: {declared}");
 }
 
 /* add shows what a package asks, and lock writes nothing until the root grants it. */
