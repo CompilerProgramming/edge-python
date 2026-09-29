@@ -18,6 +18,15 @@
   },
   {
     "given": {
+      "edge.json": "{}\n",
+      "sub/util.py": "def add(a, b):\n    return a + b\n",
+      "sub/main.py": "from .util import add\nprint(add(2, 3))\n"
+    },
+    "run": ["run", "sub/main.py"],
+    "stdout": ["5"]
+  },
+  {
+    "given": {
       "edge.json": "{ \"imports\": { \"later\": \"./later/main.py\" } }\n",
       "later/edge.json": "{ \"edge\": \"99.0.0\" }\n",
       "later/main.py": "value = 1\n",
@@ -100,7 +109,7 @@
     "fails": ["edge.json does not grant what these packages ask for", "  clock 0.2.0              time:wall\n", "  trace, via clock 0.2.0   time:wall, net\n", "help: grant them under \"permissions\" in edge.json"]
   },
   {
-    "pending": "010100101010 WAITS ON TEST 0.1.1 RE-EXPORTING _TESTS, AND ON THE BROWSER HOST PASSING ITS ENTRY DIR, RESTORE THEN",
+    "pending": "010100101010 WAITS ON TEST 0.1.1 RE-EXPORTING _TESTS FOR THE RUNNER, RESTORE THEN",
     "given": {
       "sub/util.py": "def add(a, b):\n    return a + b\n",
       "sub/s_test.py": "from .util import add\nfrom test import test\n\n@test(\"adds\")\ndef t_add():\n    assert add(2, 3) == 5\n",

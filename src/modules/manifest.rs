@@ -93,6 +93,12 @@ pub fn dir_of(spec: &str) -> String {
     }
 }
 
+/* Where a run resolves from, `entry` a script path, a directory ending in '/', or empty. */
+pub fn entry_dir(entry: &str) -> String {
+    // A leading ./ would fork the spec-space with phantom dirs.
+    dir_of(entry.trim_start_matches("./"))
+}
+
 /* The spec a host registers a system module under for the package whose manifest sits in `dir`. */
 pub fn system_spec(name: &str, dir: &str) -> String {
     s!("system:", str name, "@", str dir)
@@ -180,5 +186,14 @@ mod tests {
         assert_eq!(parent_dir("lib/test/"), Some("lib/".into()));
         assert_eq!(parent_dir("lib/"), Some("".into()));
         assert_eq!(parent_dir(""), None);
+    }
+
+    #[test]
+    fn a_run_resolves_from_its_entry_directory() {
+        assert_eq!(entry_dir("sub/main.py"), "sub/");
+        assert_eq!(entry_dir("././sub/a_test.py"), "sub/");
+        assert_eq!(entry_dir("actors/"), "actors/");
+        assert_eq!(entry_dir("main.py"), "");
+        assert_eq!(entry_dir(""), "");
     }
 }

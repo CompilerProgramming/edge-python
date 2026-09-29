@@ -69,10 +69,10 @@ impl Host {
         Ok(Host { _browser: browser, tab, port, pages, next: AtomicUsize::new(0) })
     }
 
-    /// Run one source on the browser host and return the code it exited with.
-    pub fn run(&self, src: &str) -> Result<i32> {
+    /// Run one source as the script `entry` on the browser host, returning its exit code.
+    pub fn run(&self, src: &str, entry: &str) -> Result<i32> {
         let key = self.next.fetch_add(1, Ordering::Relaxed).to_string();
-        let page = HARNESS.replace("__EDGE_SRC__", &embed(src)?);
+        let page = page(src, entry)?;
         self.pages.lock().map_err(|e| anyhow!("staging the page: {e}"))?.insert(key.clone(), page);
 
         self.tab
@@ -88,13 +88,18 @@ impl Host {
 }
 
 /// Run one source on the browser host, for a caller with nothing else to run.
-pub fn run(src: &str, manifest: Option<&Path>) -> Result<i32> {
-    Host::open(manifest)?.run(src)
+pub fn run(src: &str, entry: &str, manifest: Option<&Path>) -> Result<i32> {
+    Host::open(manifest)?.run(src, entry)
 }
 
-/* The source as a JS string literal. JSON leaves `<` alone, so a script carrying a closing script tag would end the harness block and run as markup, and escaping it keeps the program's own text intact. */
-fn embed(src: &str) -> Result<String> {
-    Ok(serde_json::to_string(src)?.replace('<', "\\u003c"))
+/* One run's harness, filled in once so no program text is read as a placeholder. */
+fn page(src: &str, entry: &str) -> Result<String> {
+    Ok(HARNESS.replace("__EDGE_RUN__", &embed(&serde_json::json!({ "src": src, "entry": entry }))?))
+}
+
+/* A value as a JS literal. JSON leaves `<` alone, so a script carrying a closing script tag would end the harness block and run as markup, and escaping it keeps the program's own text intact. */
+fn embed(value: &serde_json::Value) -> Result<String> {
+    Ok(serde_json::to_string(value)?.replace('<', "\\u003c"))
 }
 
 /// Where a browser edge downloaded lives, which `edge uninstall` offers to remove.
@@ -271,12 +276,13 @@ mod tests {
     #[test]
     fn the_harness_cannot_be_escaped_by_a_script() {
         let hostile = "print('</script><script>alert(1)</script>')";
-        let page = HARNESS.replace("__EDGE_SRC__", &embed(hostile).unwrap());
+        let page = page(hostile, "sub/main.py").unwrap();
 
         assert!(!page.contains("<script>alert(1)"));
         assert!(page.contains("\\u003c/script"));
-        // The program still reads as it was written once the page decodes the literal.
-        assert_eq!(serde_json::from_str::<String>(&embed(hostile).unwrap()).unwrap(), hostile);
+        // The program and its entry still read as written once the page decodes the literal.
+        let run = serde_json::json!({ "src": hostile, "entry": "sub/main.py" });
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&embed(&run).unwrap()).unwrap(), run);
     }
 
     #[test]

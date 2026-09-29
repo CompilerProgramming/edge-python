@@ -110,9 +110,8 @@ export async function run(opts: RunOpts, onLine?: (text: string) => void): Promi
 }
 
 /* Shared run/restore core, instance, host imports, prefetch, then drive `start`. */
-async function execute({ src, payload, start, entryDir = '', onLine, incremental = false, input }: ExecuteOpts): Promise<ExecResult> {
+async function execute({ src, payload, start, entry = '', onLine, incremental = false, input }: ExecuteOpts): Promise<ExecResult> {
     if (!wasmModule) throw new Error('engine.load() must be called first');
-    entryDir = entryDir.replace(/^(\.\/)+/, ''); // specs never carry ./
 
     /* rt built first (lazy getter) so makeCompilerEnv can decode handles during deferred host calls. */
     const rt = makeRt(requireExports);
@@ -125,10 +124,15 @@ async function execute({ src, payload, start, entryDir = '', onLine, incremental
         exports = await makeInstance(wasmModule, onLine, rt);
     }
 
+    // The engine resolves the walk and the program's relative imports from the script it runs.
+    const entryBytes = TE.encode(entry);
+    const entryPtr = writeBytes(exports, entryBytes);
+    exports.set_entry(entryPtr, entryBytes.length);
+    exports.wasm_free(entryPtr, Math.max(1, entryBytes.length));
+
     await bfsPrefetch(src, exports, {
         baseUrl: programBase,
         read,
-        entryDir,
         knownMissing,
         importsMap,
         permissions: permissionsMap,
@@ -136,14 +140,6 @@ async function execute({ src, payload, start, entryDir = '', onLine, incremental
         compilerExports: exports,
         rt,
     }, (packages) => serveSystem(exports, packages));
-
-    // Compiler roots the entry's quoted imports at this directory.
-    if (exports.set_entry_dir) {
-        const dirBytes = TE.encode(entryDir);
-        const dirPtr = writeBytes(exports, dirBytes);
-        exports.set_entry_dir(dirPtr, dirBytes.length);
-        exports.wasm_free(dirPtr, Math.max(1, dirBytes.length));
-    }
 
     // Host-fed stdin, one input() call per line.
     if (input && exports.set_input) {

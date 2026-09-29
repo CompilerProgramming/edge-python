@@ -87,7 +87,7 @@ pub(super) struct Slot {
     pub wall_clock: bool,
     /* Entry frame name in tracebacks, empty renders the anonymous marker. */
     pub source_name: String,
-    /* Entry dir rooting the source's quoted imports. */
+    /* Directory of the entry `set_entry` named, rooting the walk and the source's quoted imports. */
     pub entry_dir: String,
     /* Chunks the VMs above borrow, declared after them so a dropped slot frees the VMs first. */
     pub chunks: Vec<Rc<SSAChunk>>,

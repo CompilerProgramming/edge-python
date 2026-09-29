@@ -22,7 +22,7 @@ const readFile = (url: string): Promise<Response> => new Promise((resolve, rejec
 function dispatch(req: WorkerRequest): unknown {
     switch (req.type) {
         case 'load': return engine.load(req.opts, readFile);
-        case 'run': return engine.run({ src: req.src, repl: req.repl, entryDir: req.entryDir, incremental: req.incremental, input: req.input }, onLine);
+        case 'run': return engine.run({ src: req.src, repl: req.repl, entry: req.entry, incremental: req.incremental, input: req.input }, onLine);
         case 'set-preempt-interval': return engine.setPreemptInterval(req.interval);
         case 'pause': return engine.pause();
         case 'resume': return engine.resume();

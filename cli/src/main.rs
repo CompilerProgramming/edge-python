@@ -254,7 +254,8 @@ fn web_run(file: Option<&Path>, code: Option<&str>, manifest: Option<&Path>) -> 
     };
 
     let default = PathBuf::from("edge.json");
-    let code = host::browser::run(&src, Some(manifest.unwrap_or(default.as_path())))?;
+    let entry = file.map(host::driver::path_spec).unwrap_or_default();
+    let code = host::browser::run(&src, &entry, Some(manifest.unwrap_or(default.as_path())))?;
     if code != 0 {
         std::process::exit(code);
     }

@@ -24,7 +24,8 @@ export interface LoadOpts {
 export interface RunOpts {
     src: string
     repl?: boolean
-    entryDir?: string
+    // The script `src` came from, its relative imports resolve beside it, the project root when absent.
+    entry?: string
     incremental?: boolean
     input?: string
 }

@@ -151,18 +151,18 @@ impl Instance {
         read(&mut self.store, self.ex.memory, ptr, len)
     }
 
-    // Registers the modules a source reaches once per instance, then roots the entry dir and feeds stdin.
+    // Names the entry the walk and parse resolve from, registers its modules once, feeds stdin.
     fn prepare(&mut self, src: &str, input: Option<&str>) -> Result<Option<Status>> {
-        let key = (self.project.entry_dir.clone(), src.to_string());
+        let entry = self.project.entry.clone();
+        let raw = self.with_bytes(entry.as_bytes(), |store, ex, ptr, len| ex.set_entry.call(store, (ptr, len)))?;
+        self.checked(raw)?;
+        let key = (entry, src.to_string());
         if self.prepared.as_ref() != Some(&key) {
             if let Err(e) = resolver::prefetch(self, src) {
                 return Ok(Some(Status::Error(e)));
             }
             self.prepared = Some(key);
         }
-        let dir = self.project.entry_dir.clone();
-        let raw = self.with_bytes(dir.as_bytes(), |store, ex, ptr, len| ex.set_entry_dir.call(store, (ptr, len)))?;
-        self.checked(raw)?;
         if let Some(text) = input {
             let raw = self.with_bytes(text.as_bytes(), |store, ex, ptr, len| ex.set_input.call(store, (ptr, len)))?;
             self.checked(raw)?;
@@ -218,8 +218,8 @@ impl Instance {
     }
 
     /* Starts the engine's resolution walk, returning the first step it asks this host, as JSON. */
-    pub(super) fn walk_start(&mut self, src: &str, dir: &str, system: &str) -> Result<Vec<u8>, String> {
-        self.walk_call(&[src.as_bytes(), dir.as_bytes(), system.as_bytes()], |store, ex, s| ex.walk_start.call(store, (s[0].0, s[0].1, s[1].0, s[1].1, s[2].0, s[2].1)))
+    pub(super) fn walk_start(&mut self, src: &str, system: &str) -> Result<Vec<u8>, String> {
+        self.walk_call(&[src.as_bytes(), system.as_bytes()], |store, ex, s| ex.walk_start.call(store, (s[0].0, s[0].1, s[1].0, s[1].1)))
     }
 
     /* Answers a fetch, `kind` 0 with the bytes, 1 missing, 2 failed with why. */
@@ -370,9 +370,9 @@ impl Vm {
         self.stepped(status)
     }
 
-    /* Roots the next input's relative imports at `dir`. */
-    pub fn set_base(&mut self, dir: &str) {
-        self.inst.borrow_mut().project.entry_dir = dir.to_string();
+    /* Runs the next input as `entry`, whose directory resolves its relative imports. */
+    pub fn set_entry(&mut self, entry: &str) {
+        self.inst.borrow_mut().project.entry = entry.to_string();
     }
 
     /* Wakes a parked receive(), or queues the message until the run parks on one. */

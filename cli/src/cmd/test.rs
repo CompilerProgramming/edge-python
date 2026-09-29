@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::host::browser;
-use crate::host::driver::{base_dir, Session};
+use crate::host::driver::{path_spec, Session};
 use crate::manifest::Manifest;
 use crate::ui;
 
@@ -46,7 +46,7 @@ pub fn run(manifest_path: &Path, manifest: Option<&Path>, path: Option<&Path>, w
             .with_context(|| format!("reading {}", file.display()))
             .and_then(|src| match &mut engine {
                 Engine::Native(session) => run_file(session, &src, file),
-                Engine::Web(host) => web_file(host, &src),
+                Engine::Web(host) => web_file(host, &src, file),
             });
         let (ok, reason) = match result {
             Ok(v) => v,
@@ -111,8 +111,8 @@ fn open_or_die(open: &dyn Fn() -> Result<Session>) -> Session {
 }
 
 /* The file and the driver as one source, since a page has no session to eval into twice. A file that drove `run()` itself raises before the appended driver is reached, so the two shapes still read apart. */
-fn web_file(host: &browser::Host, src: &str) -> Result<(bool, Option<&'static str>)> {
-    Ok(match host.run(&format!("{src}\n{TEST_DRIVER}"))? {
+fn web_file(host: &browser::Host, src: &str, file: &Path) -> Result<(bool, Option<&'static str>)> {
+    Ok(match host.run(&format!("{src}\n{TEST_DRIVER}"), &path_spec(file))? {
         0 => (true, None),
         3 => (false, Some("no tests registered")),
         _ => (false, None),
@@ -121,8 +121,7 @@ fn web_file(host: &browser::Host, src: &str) -> Result<(bool, Option<&'static st
 
 /// Eval the file, then the driver when it didn't exit itself.
 fn run_file(session: &mut Session, src: &str, file: &Path) -> Result<(bool, Option<&'static str>)> {
-    let base = base_dir(file);
-    let outcome = session.eval(src, base.as_deref(), None)?;
+    let outcome = session.eval(src, Some(&path_spec(file)), None)?;
     let outcome = match (outcome.err, outcome.exit_code) {
         (Some(err), _) => {
             ui::traceback(&err);

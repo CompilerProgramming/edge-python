@@ -170,7 +170,7 @@ A page runs a program with `createWorker`, which boots the engine in a Web Worke
 </script>
 ```
 
-A worker runs one program. `baseUrl` is where its files live, and the page reads for it the `edge.json` there, its imports and what it grants, and each file a run imports, never outside that directory and never with the page's cookies. `createWorker` finds `compiler.wasm` beside the host, `wasmUrl` points it elsewhere, and `imports` with `permissions` stand in for an `edge.json` a page does not have. It needs a page and throws `createWorker needs a page, missing in this runtime` without one. How the frame keeps the program apart from the page is in [System](/docs/reference/system#embedding).
+A worker runs one program. `baseUrl` is where its files live, and the page reads for it the `edge.json` there, its imports and what it grants, and each file a run imports, never outside that directory and never with the page's cookies. A script in a subdirectory passes its path as `entry`, `worker.run(src, { entry: "sub/main.py" })`, so its relative imports resolve beside it. `createWorker` finds `compiler.wasm` beside the host, `wasmUrl` points it elsewhere, and `imports` with `permissions` stand in for an `edge.json` a page does not have. It needs a page and throws `createWorker needs a page, missing in this runtime` without one. How the frame keeps the program apart from the page is in [System](/docs/reference/system#embedding).
 
 ## Writing your own modules
 

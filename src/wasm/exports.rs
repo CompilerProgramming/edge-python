@@ -1,4 +1,5 @@
 use crate::lexer::lex;
+use crate::modules::entry_dir;
 use crate::parser::{Parser, Diagnostic, SSAChunk};
 use crate::vm::{VM, Limits};
 use crate::vm::types::{HeapObj, SchedulerStatus, VmErr};
@@ -264,11 +265,11 @@ pub unsafe extern "C" fn reset_modules() {
     bridge::reset();
 }
 
-/* Entry dir for the next parse. */
+/* The script the next run starts from, its directory roots the walk and the program's relative imports. */
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn set_entry_dir(ptr: *const u8, len: u32) {
-    let dir = unsafe { safe_str_owned(ptr, len) };
-    with_slot(|s| s.entry_dir = dir);
+pub unsafe extern "C" fn set_entry(ptr: *const u8, len: u32) {
+    let entry = unsafe { safe_str_owned(ptr, len) };
+    with_slot(|s| s.entry_dir = entry_dir(&entry));
 }
 
 /* Entry frame name for the next boot, empty restores `<input>`. */

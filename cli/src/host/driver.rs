@@ -1,6 +1,5 @@
 use super::{now_ns, Host, Project, Runtime, Sink, Status, Vm};
 use anyhow::{anyhow, bail, Result};
-use compiler::modules::dir_of;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::Path;
 use std::rc::Rc;
@@ -34,7 +33,7 @@ fn host() -> Result<Rc<Host>> {
 }
 
 /* Forward-slash spec of a path, the shape the resolver walks. */
-fn path_spec(p: &Path) -> String {
+pub fn path_spec(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
@@ -70,7 +69,7 @@ pub fn run(file: Option<&Path>, code: Option<&str>, opts: &RunOpts) -> Result<i3
             input = Some(buf);
         }
     }
-    let project = Project::disk(&dir_of(&name), opts.manifest.as_deref());
+    let project = Project::disk(&name, opts.manifest.as_deref());
     let mut vm = host()?.vm(stdout_sink(), project, None, None)?;
     vm.set_preempt_interval(opts.preempt)?;
     vm.set_source_name(&name)?;
@@ -84,7 +83,7 @@ pub fn run_bundle(payload: &[u8], opts: &RunOpts) -> Result<i32> {
     let entry = bundle.entry.clone();
     let files = crate::pack::into_files(bundle);
     let src = files.get(&entry).map(|b| String::from_utf8_lossy(b).into_owned()).ok_or_else(|| anyhow!("bundle entry '{entry}' is missing"))?;
-    let project = Project::bundle(files, &dir_of(&entry), false);
+    let project = Project::bundle(files, &entry, false);
     let mut vm = host()?.vm(stdout_sink(), project, None, None)?;
     vm.set_preempt_interval(opts.preempt)?;
     vm.set_source_name(&entry)?;
@@ -238,9 +237,9 @@ impl Session {
         Ok(Session { vm })
     }
 
-    /* Runs one input, `base` repositions relative imports, None means the project root. */
-    pub fn eval(&mut self, src: &str, base: Option<&str>, input: Option<&str>) -> Result<Outcome> {
-        self.vm.set_base(base.unwrap_or(""));
+    /* Runs one input as the script `entry`, None means the project root. */
+    pub fn eval(&mut self, src: &str, entry: Option<&str>, input: Option<&str>) -> Result<Outcome> {
+        self.vm.set_entry(entry.unwrap_or(""));
         let mut status = self.vm.repl_eval(src, input)?;
         loop {
             status = match status {
@@ -269,29 +268,5 @@ impl Session {
     /* Wipes modules and state, the next input starts in a fresh namespace. */
     pub fn reset(&mut self) -> Result<()> {
         self.vm.reset()
-    }
-}
-
-/* Directory of `file` as an eval base, when inside the project. */
-pub fn base_dir(file: &Path) -> Option<String> {
-    let parent = file.parent()?.to_str()?;
-    // A leading ./ would fork the spec-space with phantom dirs.
-    let parent = parent.trim_start_matches("./");
-    if parent.is_empty() || parent == "." || parent.starts_with("..") || parent.starts_with('/') {
-        return None;
-    }
-    Some(format!("{parent}/"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn base_dir_maps_nested_files_only() {
-        assert_eq!(base_dir(Path::new("tests/a_test.py")), Some("tests/".into()));
-        assert_eq!(base_dir(Path::new("./sub/a_test.py")), Some("sub/".into()));
-        assert_eq!(base_dir(Path::new("a_test.py")), None);
-        assert_eq!(base_dir(Path::new("../x_test.py")), None);
     }
 }

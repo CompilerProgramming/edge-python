@@ -14,7 +14,6 @@ export interface PrefetchCtx {
     knownMissing: Set<string>
     importsMap?: Record<string, string> | null
     permissions?: Permissions | null
-    entryDir: string
     baseUrl?: string | null
     read?: (url: string) => Promise<Response>
     compilerExports: CompilerExports
@@ -51,7 +50,7 @@ function schemeHint(spec: string): string | null {
 
 /* The engine walks what a program imports, this host fetches what it asks for, loads the plugins it names and serves the system modules through `serve`. */
 export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, ctx: PrefetchCtx, serve: (packages: Packages) => string[]): Promise<void> {
-    const { fetchedSources, knownMissing, importsMap, permissions, entryDir } = ctx;
+    const { fetchedSources, knownMissing, importsMap, permissions } = ctx;
 
     // What the embedder declared stands in for the root edge.json, resolved like any manifest.
     if ((importsMap && Object.keys(importsMap).length > 0) || permissions) {
@@ -67,8 +66,8 @@ export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, ctx
         return JSON.parse(TD.decode(new Uint8Array(exports.memory.buffer, exports.out_ptr(), len))) as Step;
     };
 
-    const [src, dir, system] = [TE.encode(rootSrc), TE.encode(entryDir), TE.encode(MODULES.join('\n'))];
-    let step = call([src, dir, system], ([s, d, m]) => exports.walk_start(s!, src.length, d!, dir.length, m!, system.length));
+    const [src, system] = [TE.encode(rootSrc), TE.encode(MODULES.join('\n'))];
+    let step = call([src, system], ([s, m]) => exports.walk_start(s!, src.length, m!, system.length));
 
     for (;;) {
         if ('fetch' in step) {

@@ -10,7 +10,7 @@ pub mod lock;
 pub mod manifest;
 pub mod rules;
 pub mod walk;
-pub use manifest::{Manifest, parse_manifest, parent_dir, walk_up_dirs, dir_of, join_relative, system_spec};
+pub use manifest::{Manifest, parse_manifest, parent_dir, walk_up_dirs, dir_of, entry_dir, join_relative, system_spec};
 
 /* Plain fn-pointer alias for hand-written Rust natives, the `Arc<dyn Fn ...>` form lives in `ExternFnPtr` below. Third arg is the kwargs slot, `None` for plain positional calls, `Some(dict_val)` when the caller used `name=value`, natives that don't accept kwargs ignore it. */
 pub type ExternFnPlain = fn(&mut HeapPool, &[Val], Option<Val>) -> Result<Val, VmErr>;

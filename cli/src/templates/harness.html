@@ -13,7 +13,9 @@
       // The page reads the project's edge.json from this server for the worker, its imports already locked.
       const worker = await createWorker({ baseUrl: `${location.origin}/` });
       worker.onOutput((text) => { st.out += text });
-      const res = await worker.run(__EDGE_SRC__);
+      // The program and the script it came from, whose directory its relative imports resolve from.
+      const { src, entry } = __EDGE_RUN__;
+      const res = await worker.run(src, { entry });
       st.code = res && res.exitCode ? res.exitCode : 0;
       if (res && res.out) st.err = res.out;
       else st.ok = true;

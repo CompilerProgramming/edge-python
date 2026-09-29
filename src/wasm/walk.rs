@@ -6,14 +6,14 @@ use crate::modules::json::quote;
 use crate::modules::walk::{Fetched, Loaded, Packages, Step, Walk};
 use crate::s;
 
-use super::{ModuleEntry, with_runtime, write_out, write_out_bytes};
+use super::{ModuleEntry, with_runtime, with_slot, write_out, write_out_bytes};
 
-/* Starts the resolution walk over `src`, `system` the newline-joined modules this host serves. Every walk export returns the next step's JSON length in the out buffer. */
+/* Starts the resolution walk over `src` from the entry `set_entry` named, `system` the newline-joined modules this host serves. Every walk export returns the next step's JSON length in the out buffer. */
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn walk_start(src_ptr: *const u8, src_len: u32, dir_ptr: *const u8, dir_len: u32, system_ptr: *const u8, system_len: u32) -> u32 {
+pub unsafe extern "C" fn walk_start(src_ptr: *const u8, src_len: u32, system_ptr: *const u8, system_len: u32) -> u32 {
     let src = unsafe { safe_str_owned(src_ptr, src_len) };
-    let dir = unsafe { safe_str_owned(dir_ptr, dir_len) };
     let system = split(unsafe { safe_bytes(system_ptr, system_len) }, '\n');
+    let dir = with_slot(|s| s.entry_dir.clone());
     with_runtime(|rt| rt.walk = Some(Walk::new(&src, &dir, system)));
     drive()
 }

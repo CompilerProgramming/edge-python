@@ -16,7 +16,8 @@ const MAX_FETCH_BYTES: u64 = 64 << 20;
 /* Where a run's files come from and which bare names it may resolve. */
 #[derive(Clone, Default)]
 pub struct Project {
-    pub entry_dir: String,
+    // The script a run starts from, a directory ending in '/', or empty for the root.
+    pub entry: String,
     pub manifest: Option<String>,
     // An in-memory tree replaces the disk, untrusted runs always carry one.
     pub bundle: Option<Rc<HashMap<String, Vec<u8>>>>,
@@ -24,12 +25,12 @@ pub struct Project {
 }
 
 impl Project {
-    pub fn disk(entry_dir: &str, manifest: Option<&str>) -> Project {
-        Project { entry_dir: entry_dir.to_string(), manifest: manifest.map(String::from), bundle: None, untrusted: false }
+    pub fn disk(entry: &str, manifest: Option<&str>) -> Project {
+        Project { entry: entry.to_string(), manifest: manifest.map(String::from), bundle: None, untrusted: false }
     }
 
-    pub fn bundle(files: HashMap<String, Vec<u8>>, entry_dir: &str, untrusted: bool) -> Project {
-        Project { entry_dir: entry_dir.to_string(), manifest: None, bundle: Some(Rc::new(files)), untrusted }
+    pub fn bundle(files: HashMap<String, Vec<u8>>, entry: &str, untrusted: bool) -> Project {
+        Project { entry: entry.to_string(), manifest: None, bundle: Some(Rc::new(files)), untrusted }
     }
 }
 
@@ -50,7 +51,7 @@ enum Answer {
 /* Registers every module `root_src` reaches, the engine deciding and this host reading what it asks for. */
 pub fn prefetch(inst: &mut Instance, root_src: &str) -> Result<(), String> {
     let project = inst.project.clone();
-    let mut out = inst.walk_start(root_src, &project.entry_dir, &SYSTEM_MODULES.join("\n"))?;
+    let mut out = inst.walk_start(root_src, &SYSTEM_MODULES.join("\n"))?;
     loop {
         out = match step(&out)? {
             Step::Fetch(spec) => match fetch(&project, &spec) {
