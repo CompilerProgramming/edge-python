@@ -478,6 +478,16 @@ test.describe('publishing', () => {
     }
   })
 
+  // A grant names a system module and a scope it has, the same check a run makes of the root.
+  test('takes grants the system modules know and refuses one they do not', async ({ request }) => {
+    await signIn(request)
+    const token = await mintToken(request)
+
+    expect((await send(request, token, release(naming(), '0.1.0', { permissions: { main: ['fs:/'] } }))).status()).toBe(400)
+    expect((await send(request, token, release(naming(), '0.1.0', { permissions: { main: ['time:century'] } }))).status()).toBe(400)
+    expect((await send(request, token, release(naming(), '0.1.0', { permissions: { main: ['net:api.example.com', 'time:wall'] } }))).status()).toBe(201)
+  })
+
   /* Room is refused before the bytes are stored, since nothing reclaims it afterwards, and the cap on one artifact is what keeps a single publish from filling a shelf. */
   test('refuses an artifact past the cap and says what room is left', async ({ request }) => {
     await signIn(request)

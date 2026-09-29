@@ -9,7 +9,8 @@ import { bytes as sized } from '../../lib/format'
 import type { Packed } from '../../lib/server/bundle'
 import { packed } from '../../lib/server/bundle'
 import type { Page } from '../../lib/server/packages'
-import { MAX_ARTIFACT, MAX_NEW_NAMES, MAX_NEW_VERSIONS, MAX_NOTICE, OWNER_SCALE, checkManifests, checkPages, claimedToday, keyOf, noticed, packageByName, publish, publishedToday, storedBytes, versionExists } from '../../lib/server/packages'
+import { checkManifests } from '../../lib/server/engine'
+import { MAX_ARTIFACT, MAX_NEW_NAMES, MAX_NEW_VERSIONS, MAX_NOTICE, OWNER_SCALE, checkPages, claimedToday, keyOf, noticed, packageByName, publish, publishedToday, storedBytes, versionExists } from '../../lib/server/packages'
 
 /* The artifact is the only thing sent. Everything a listing shows is read out of it here, so a publisher declares nothing twice and cannot declare it differently from what they shipped. */
 export const POST: APIRoute = async ({ request }) => {

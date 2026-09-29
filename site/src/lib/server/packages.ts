@@ -1,6 +1,5 @@
 import { check } from '../docs/convention'
 import { parts } from '../docs/sections'
-import { checkPackage } from './engine'
 import { identify } from './license'
 
 export type Package = { name: string; user_id: string; downloads: number; created_at: number }
@@ -52,17 +51,6 @@ export function checkPages(raw: unknown): Page[] {
     const read = check(path, body)
     return { path, title: read.keys.get('title') ?? path, body: read.body }
   })
-}
-
-/* Holds every manifest a bundle carries, a nested package included, to the rules the CLI packs under and to the lock beside it, since both run the same engine. */
-export function checkManifests(manifests: Record<string, string>, locks: Record<string, string>) {
-  for (const [dir, source] of Object.entries(manifests)) {
-    const beside = locks[dir]
-    if (beside !== undefined && beside.length > MAX_LOCK) throw new Error(`A lock is ${MAX_LOCK} bytes at most.`)
-
-    const problem = checkPackage(source, beside)
-    if (problem) throw new Error(`edge.json at '${dir}edge.json': ${problem}`)
-  }
 }
 
 /* Where a published artifact lives, the same path a consumer's imports entry points at. */

@@ -1,5 +1,7 @@
 import compiler from '../../../../target/wasm32-unknown-unknown/release/compiler.wasm?module'
+import { check } from '../../../../js/src/system/grants'
 import { MODULES } from '../../../../js/src/system/names'
+import { MAX_LOCK } from './packages'
 
 const encode = new TextEncoder()
 const decode = new TextDecoder()
@@ -54,4 +56,20 @@ export function unpack(artifact: Uint8Array): Map<string, Uint8Array> {
   const answer = JSON.parse(call([artifact], (e, [at]) => e.bundle_index(at!, artifact.length))) as { error?: string; files?: [string, number, number][] }
   if (answer.error !== undefined) throw new Error(answer.error)
   return new Map((answer.files ?? []).map(([path, at, len]) => [path, artifact.subarray(at, at + len)]))
+}
+
+/* Holds each manifest a bundle carries to the engine's rules, its lock and its grants, here since Node cannot load the compiler. */
+export function checkManifests(manifests: Record<string, string>, locks: Record<string, string>) {
+  for (const [dir, source] of Object.entries(manifests)) {
+    const at = `edge.json at '${dir}edge.json'`
+    const beside = locks[dir]
+    if (beside !== undefined && beside.length > MAX_LOCK) throw new Error(`A lock is ${MAX_LOCK} bytes at most.`)
+
+    const problem = checkPackage(source, beside)
+    if (problem) throw new Error(`${at}: ${problem}`)
+
+    // The engine read the shape of the grants, the system modules say which entries exist.
+    const grants = check((JSON.parse(source) as { permissions?: unknown }).permissions)
+    if (grants) throw new Error(`${at}: ${grants}`)
+  }
 }
