@@ -6,19 +6,29 @@ export type Permissions = Record<string, string[]>;
 // The holders beside package names, so no package may be named either.
 export const RESERVED = ['all', 'main'];
 
-// A host as a net scope names it and a url reaches it, a dotted name or a bracketed ip6.
-export const HOST = /[a-z0-9.-]+|\[[0-9a-f:.]+\]/;
+// A host as a net scope names it and a url reaches it, a dotted lowercase name.
+export const HOST = /[a-z0-9.-]+/;
+
+// An ip4 in the one spelling every parser reads alike, four decimal parts with no leading zero.
+const OCTET = '(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
+const IP4 = new RegExp(`^${OCTET}(?:\\.${OCTET}){3}$`);
+
+/* Whether a host reads as one address everywhere, since a browser takes any host ending in a number for an ip4. */
+export function plainHost(host: string): boolean {
+    const last = host.split('.').filter(Boolean).pop() ?? '';
+    return !/^(?:\d+|0x[0-9a-f]*)$/i.test(last) || IP4.test(host);
+}
 
 // A whole scope for net, one lowercase host and the path prefix it may bound the reach to.
-const NET_SCOPE = new RegExp(`^(?:${HOST.source})((?:/[A-Za-z0-9\\-._~!$&'()*+,;=:@]+)*/?)$`);
-
-// A path a server may still decode into another one, which no path prefix can vouch for.
-const ESCAPED_STEP = /%(?:2f|5c|2e)/i;
+const NET_SCOPE = new RegExp(`^(${HOST.source})((?:/[A-Za-z0-9\\-._~!$&'()*+,=:@]+)*/?)$`);
 
 // What a scope of each system module may be, a host for net and a clock for time.
 const SCOPES: Record<string, (scope: string) => boolean> = {
     // A prefix names plain segments, since a dot segment or an escape never matches a resolved path.
-    net: (scope) => NET_SCOPE.exec(scope)?.[1]?.split('/').every((segment) => segment !== '.' && segment !== '..') ?? false,
+    net: (scope) => {
+        const [, host, prefix] = NET_SCOPE.exec(scope) ?? [];
+        return host !== undefined && plainHost(host) && prefix!.split('/').every((segment) => segment !== '.' && segment !== '..');
+    },
     time: (clock) => clock === 'wall' || clock === 'monotonic' || clock === 'zone',
 };
 
@@ -75,11 +85,39 @@ export function need(pkg: string, module: string, held: string[], scope: string)
     throw new SystemError('PermissionError', `'${pkg}' has no ${module}:${scope}, edge.json grants it ${granted}`);
 }
 
+// A segment standing for this directory or the one above it, spelled plainly or escaped.
+const HERE = /^(?:\.|%2e)$/i;
+const ABOVE = /^(?:\.|%2e){2}$/i;
+
+/* A path with its dot segments applied however they are spelled, never above the root. */
+export function resolve(path: string): string {
+    const out: string[] = [];
+    const segments = path.replace(/^\//, '').split('/');
+    for (const [i, segment] of segments.entries()) {
+        const above = ABOVE.test(segment);
+        if (above) out.pop();
+        if (!above && !HERE.test(segment)) out.push(segment);
+        else if (i === segments.length - 1) out.push('');
+    }
+    return `/${out.join('/')}`;
+}
+
+// An escape a server may undo before it routes, the unreserved ones every server decodes.
+const ESCAPE = /%([0-9a-f]{2})/gi;
+const UNRESERVED = /[A-Za-z0-9\-._~]/;
+const byte = (hex: string) => String.fromCharCode(parseInt(hex, 16));
+const decode = (text: string, only = /[^]/) => text.replace(ESCAPE, (escape, hex: string) => (only.test(byte(hex)) ? byte(hex) : escape));
+
+/* Every path a server might route `path` to, a backslash taken for a slash and a parameter dropped, decoded as far as twice. */
+const readings = (path: string): string[] =>
+    [decode(path, UNRESERVED), decode(path), decode(decode(path))].map((read) => resolve(read.replace(/\\/g, '/').replace(/;[^/]*/g, '')));
+
 /* Raises PermissionError unless a held scope reaches `host` at `path`, a scope with a path prefix reaching only under it. */
 export function reach(pkg: string, held: string[], host: string, path: string): void {
     const bounded = held.filter((scope) => scope.split('/')[0] === host);
-    const under = (prefix: string) => !ESCAPED_STEP.test(path) && (path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`));
-    if (bounded.some((scope) => scope === host || under(scope.slice(host.length)))) return;
+    // A prefix holds only when every reading a server might take of the path stays under it.
+    const under = (prefix: string) => readings(path).every((read) => read === prefix || read.startsWith(`${prefix}/`));
+    if (bounded.some((scope) => scope === host || under(scope.slice(host.length).replace(/\/$/, '')))) return;
     // Naming the path only once the host is held keeps a refused host reading as the host alone.
     need(pkg, 'net', held, bounded.length > 0 ? `${host}${path}` : host);
 }

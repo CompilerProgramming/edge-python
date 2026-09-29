@@ -35,7 +35,7 @@ Deno.test("system: a package asks under main and all, and only the root's grant 
 });
 
 Deno.test("system: a malformed permissions section says what it needs", () => {
-    const valid = { all: ["time:monotonic"], main: ["net:api.example.com", "net", "net:[::1]", "net:api.example.com/v2/items", "net:a.test/", "net:a.test/v1.2/@dylan"] };
+    const valid = { all: ["time:monotonic"], main: ["net:api.example.com", "net", "net:10.0.0.255", "net:api.example.com/v2/items", "net:a.test/", "net:a.test/v1.2/@dylan"] };
     if (check(undefined) !== null || check(valid) !== null) throw new Error(`a valid section, ${check(valid)}`);
     const cases = [
         [{ main: "net:api.example.com" }, "permissions for 'main' must be a list of entries such as \"net:api.example.com\""],
@@ -48,6 +48,7 @@ Deno.test("system: a malformed permissions section says what it needs", () => {
         [{ main: ["net:a.test/api/.."] }, "permissions for 'main' give net the scope 'a.test/api/..', which it does not have"],
         [{ main: ["net:a.test/caf%C3%A9"] }, "permissions for 'main' give net the scope 'a.test/caf%C3%A9', which it does not have"],
         [{ main: ["net:a.test//api"] }, "permissions for 'main' give net the scope 'a.test//api', which it does not have"],
+        ...["net:[::1]", "net:0177.0.0.1", "net:2130706433", "net:0x7f.1"].map((e) => [{ main: [e] }, `permissions for 'main' give net the scope '${e.slice(4)}', which it does not have`]),
         [["net"], "permissions must map each package to a list of entries"],
     ];
     for (const [section, want] of cases) {
@@ -115,7 +116,7 @@ Deno.test("system: net reads a url as every parser does, and an @ after the host
     const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, (req) => new Response(new URL(req.url).pathname));
     const at = `http://127.0.0.1:${server.addr.port}`;
     const main = net("main", ["127.0.0.1"]);
-    for (const url of ["http://evil.test\\@127.0.0.1/", "http://user@127.0.0.1/", `${at}@evil.test/`, `${at}/a b`, "http://12%37.0.0.1/", "127.0.0.1/"]) {
+    for (const url of ["http://evil.test\\@127.0.0.1/", "http://user@127.0.0.1/", `${at}@evil.test/`, `${at}/a b`, "http://12%37.0.0.1/", "127.0.0.1/", "http://[::1]/", "http://0x7f.1/", "http://2130706433/"]) {
         raises(() => main.calls.request("GET", url), "ValueError", `'${url}' is not a plain url, net takes scheme://host/path with no user, backslash or space`);
     }
     const id = main.calls.request("GET", `${at}/@dylan`, [["accept", "text/plain"]]);
@@ -163,12 +164,13 @@ Deno.test("system: a path scope reaches only under its prefix", () => {
     for (const path of ["/api/../secret", "/api/%2e%2e/secret", "/api/.%2e/secret", "/api/./../secret"]) {
         denied(() => api.request("GET", `http://a.test${path}`), `'main' has no net:a.test/secret, ${held}`);
     }
-    // An escaped slash, backslash or dot is a step a server may still take, so no prefix vouches for it.
-    for (const path of ["/api/..%2fsecret", "/api/%2E%2E%2Fsecret", "/api/a%5cb", "/api/x%2e"]) {
+    // A step a server may still take, by decoding once or twice or dropping a parameter, is refused.
+    for (const path of ["/api/..%2fsecret", "/api/%2E%2E%2Fsecret", "/api/..;/secret", "/api/%252e%252e/secret"]) {
         denied(() => api.request("GET", `http://a.test${path}`), `'main' has no net:a.test${path}, ${held}`);
     }
-    // A whole host has no path left to climb out of, so the same escapes reach it.
-    api.request("GET", "http://b.test/files/a%2Fb");
+    // An escape that stays under the prefix in every reading reaches it.
+    for (const path of ["/api/a%5cb", "/api/x%2e", "/api/group%2Fproject", "/%61pi/x"]) api.request("GET", `http://a.test${path}`);
+    net("main", ["a.test/api/"]).calls.request("GET", "http://a.test/api");
 });
 
 Deno.test("system: both hosts send one reading of a path", async () => {

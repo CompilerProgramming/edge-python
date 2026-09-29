@@ -730,7 +730,7 @@ import time
 'main' imports time, which edge.json does not grant it
 ```
 
-`permissions` maps each holder to a list of `module:scope` entries. The holder is `main` for the program's own code, `all` for every package, or a package name for that package alone. `net:<host>` allows exactly that host, a lowercase name or a bracketed IPv6 with no scheme or port, `net:<host>/<prefix>` bounds it to that path prefix and what sits under it, and `time:wall`, `time:monotonic` and `time:zone` allow one clock call each. An entry without a scope, like `"net"`, lets the package import the module and reach nothing.
+`permissions` maps each holder to a list of `module:scope` entries. The holder is `main` for the program's own code, `all` for every package, or a package name for that package alone. `net:<host>` allows exactly that host, a lowercase name or an IPv4 as `a.b.c.d` with no scheme or port and no IPv6, `net:<host>/<prefix>` bounds it to that path prefix and what sits under it however a server decodes the path, and `time:wall`, `time:monotonic` and `time:zone` allow one clock call each. An entry without a scope, like `"net"`, lets the package import the module and reach nothing.
 
 ```json
 {

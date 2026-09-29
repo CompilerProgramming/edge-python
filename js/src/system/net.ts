@@ -1,7 +1,7 @@
 import type { EdgeValue } from '../rt.ts';
 import { batched } from './batch.ts';
 import { SystemError } from './error.ts';
-import { HOST, reach } from './grants.ts';
+import { HOST, plainHost, reach, resolve } from './grants.ts';
 
 type Message = Uint8Array | string | null;
 
@@ -45,63 +45,29 @@ const pairs = (value: EdgeValue): [string, string][] => {
 // A url every parser reads alike, a scheme, the host right after it, a port, then the rest.
 const PLAIN = new RegExp(`^((?:https?|wss?)://)(${HOST.source})((?::\\d{1,5})?)([/?#].*)?$`, 'i');
 
-// A segment standing for this directory or the one above it, spelled plainly or escaped.
-const HERE = /^(?:\.|%2e)$/i;
-const ABOVE = /^(?:\.|%2e){2}$/i;
-
 // What a path may carry as written, everything else crosses as its UTF-8 bytes escaped.
 const KEPT = /^[a-z0-9\-._~!$&'()*+,;=:@/%]$/i;
 
-/* A path as every host sends it, its dot segments resolved and its text escaped, so one reading of it cannot hide another. */
-const clean = (path: string): string => {
-    const out: string[] = [];
-    // The root is no segment, so no count of dot segments climbs above it into the host.
-    const segments = path.replace(/^\//, '').split('/');
-    for (const [i, segment] of segments.entries()) {
-        const last = i === segments.length - 1;
-        if (ABOVE.test(segment)) {
-            out.pop();
-            if (last) out.push('');
-        } else if (HERE.test(segment)) {
-            if (last) out.push('');
-        } else {
-            out.push([...segment].map((c) => (KEPT.test(c) ? c : escaped(c))).join(''));
-        }
-    }
-    return `/${out.join('/')}`;
-};
+const notPlain = (url: string) => new SystemError('ValueError', `'${url}' is not a plain url, net takes scheme://host/path with no user, backslash or space`);
 
-/* One character as the percent escapes of its UTF-8 bytes, spelled out since not every host has TextEncoder. */
-const escaped = (c: string): string => {
-    const cp = c.codePointAt(0) ?? 0;
-    const bytes = cp < 0x80 ? [cp]
-        : cp < 0x800 ? [0xc0 | (cp >> 6), 0x80 | (cp & 0x3f)]
-        : cp < 0x10000 ? [0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f)]
-        : [0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f)];
-    return bytes.map((b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join('');
-};
+// A space, a control character or a backslash lets a parser move the host, and a lone surrogate has no bytes to send.
+const sendable = (c: string) => c > ' ' && c !== '\\' && c !== '\x7f' && (c.length > 1 || c < '\ud800' || c > '\udfff');
 
-/* The host a plain url names, null when it is not one. */
-const hostIn = (url: string): string | null => {
-    const parts = [...url].every((c) => c > ' ' && c !== '\\' && c !== '\x7f') ? PLAIN.exec(url) : null;
-    return parts ? parts[2]!.toLowerCase() : null;
-};
+/* The parts of a url, none when a character could let a parser read another host. */
+const parts = (url: string) => ([...url].every(sendable) ? PLAIN.exec(url) : null);
 
-/* A url as both hosts send it, refused when anything could let a parser read another host or path. */
+/* A url as both hosts send it, its dot segments resolved and its text escaped, so the check and the request read one host and one path. */
 const plain = (url: string): { host: string, path: string, url: string } => {
-    const refused = () => new SystemError('ValueError', `'${url}' is not a plain url, net takes scheme://host/path with no user, backslash or space`);
-    const parts = hostIn(url) === null ? null : PLAIN.exec(url);
-    if (!parts) throw refused();
-    const [, scheme, name, port, rest = '/'] = parts;
+    const [, scheme, name, port, rest = '/'] = parts(url) ?? [];
+    const host = name?.toLowerCase();
+    if (host === undefined || !plainHost(host)) throw notPlain(url);
     // A fragment never leaves the host, so it is no part of what a grant reaches.
     const [addressed] = rest.split('#') as [string];
     const at = addressed.indexOf('?');
-    const path = clean(at === -1 ? addressed : addressed.slice(0, at));
-    const query = at === -1 ? '' : addressed.slice(at);
-    const host = name!.toLowerCase();
-    const sent = `${scheme!.toLowerCase()}${host}${port}${path}${query}`;
-    // The url is rebuilt, so it must still name the host that was checked, whatever the path became.
-    if (hostIn(sent) !== host) throw refused();
+    const path = [...resolve(at === -1 ? addressed : addressed.slice(0, at))].map((c) => (KEPT.test(c) ? c : encodeURIComponent(c))).join('');
+    const sent = `${scheme!.toLowerCase()}${host}${port}${path}${at === -1 ? '' : addressed.slice(at)}`;
+    // Rebuilt, the url must still name the host that was checked, whatever the path became.
+    if (parts(sent)?.[2]?.toLowerCase() !== host) throw notPlain(url);
     return { host, path, url: sent };
 };
 
