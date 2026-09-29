@@ -10,11 +10,15 @@ export const RESERVED = ['all', 'main'];
 export const HOST = /[a-z0-9.-]+|\[[0-9a-f:.]+\]/;
 
 // A whole scope for net, one lowercase host and the path prefix it may bound the reach to.
-const NET_SCOPE = new RegExp(`^(?:${HOST.source})(?:/[A-Za-z0-9\\-._~!$&'()*+,;=:@/%]*)?$`);
+const NET_SCOPE = new RegExp(`^(?:${HOST.source})((?:/[A-Za-z0-9\\-._~!$&'()*+,;=:@]+)*/?)$`);
+
+// A path a server may still decode into another one, which no path prefix can vouch for.
+const ESCAPED_STEP = /%(?:2f|5c|2e)/i;
 
 // What a scope of each system module may be, a host for net and a clock for time.
 const SCOPES: Record<string, (scope: string) => boolean> = {
-    net: (host) => NET_SCOPE.test(host),
+    // A prefix names plain segments, since a dot segment or an escape never matches a resolved path.
+    net: (scope) => NET_SCOPE.exec(scope)?.[1]?.split('/').every((segment) => segment !== '.' && segment !== '..') ?? false,
     time: (clock) => clock === 'wall' || clock === 'monotonic' || clock === 'zone',
 };
 
@@ -74,7 +78,7 @@ export function need(pkg: string, module: string, held: string[], scope: string)
 /* Raises PermissionError unless a held scope reaches `host` at `path`, a scope with a path prefix reaching only under it. */
 export function reach(pkg: string, held: string[], host: string, path: string): void {
     const bounded = held.filter((scope) => scope.split('/')[0] === host);
-    const under = (prefix: string) => path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`);
+    const under = (prefix: string) => !ESCAPED_STEP.test(path) && (path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`));
     if (bounded.some((scope) => scope === host || under(scope.slice(host.length)))) return;
     // Naming the path only once the host is held keeps a refused host reading as the host alone.
     need(pkg, 'net', held, bounded.length > 0 ? `${host}${path}` : host);
