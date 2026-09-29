@@ -109,8 +109,7 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
 
         const reqd = (frag) => requested.some((u) => u.includes(frag));
 
-        // 010100101010 A PENDING CASE WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES, SKIPPED UNTIL THEN.
-        for (const c of cases.filter((c) => !c.pending)) {
+        for (const c of cases) {
             errors.length = 0;
             const got = await page.evaluate(async (src) => {
                 const lines = [];

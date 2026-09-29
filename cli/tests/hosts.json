@@ -109,7 +109,6 @@
     "fails": ["edge.json does not grant what these packages ask for", "  clock 0.2.0              time:wall\n", "  trace, via clock 0.2.0   time:wall, net\n", "help: grant them under \"permissions\" in edge.json"]
   },
   {
-    "pending": "010100101010 WAITS ON TEST 0.1.1 RE-EXPORTING _TESTS FOR THE RUNNER, RESTORE THEN",
     "given": {
       "sub/util.py": "def add(a, b):\n    return a + b\n",
       "sub/s_test.py": "from .util import add\nfrom test import test\n\n@test(\"adds\")\ndef t_add():\n    assert add(2, 3) == 5\n",
@@ -117,10 +116,9 @@
     },
     "before": [["lock"]],
     "run": ["test"],
-    "stdout": ["PASS - adds", "(successful) sub/s_test.py", "1/1 files passed"]
+    "stdout": ["pass. adds", "(successful) sub/s_test.py", "1/1 files passed"]
   },
   {
-    "pending": "010100101010 WAITS ON TEST 0.1.1 RE-EXPORTING _TESTS FOR THE RUNNER, RESTORE THEN",
     "given": {
       "f_test.py": "from test import test\n\n@test(\"breaks\")\ndef t():\n    assert 1 == 2\n",
       "edge.json": "{ \"imports\": { \"test\": \"0.1.1\" } }\n"
@@ -128,10 +126,9 @@
     "before": [["lock"]],
     "run": ["test"],
     "fails": [],
-    "stdout": ["FAIL - breaks", "(unsuccessful) f_test.py", "0/1 files passed"]
+    "stdout": ["fail. breaks", "(unsuccessful) f_test.py", "0/1 files passed"]
   },
   {
-    "pending": "010100101010 WAITS ON TEST 0.1.1 RE-EXPORTING _TESTS FOR THE RUNNER, RESTORE THEN",
     "given": {
       "e_test.py": "x = 1\n",
       "edge.json": "{ \"imports\": { \"test\": \"0.1.1\" } }\n"
