@@ -77,12 +77,11 @@
     "steps": [{ "run": ["actor", "pool.yml"], "lines": { "ok ": 20000 } }]
   },
   {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "name": "thousands of actors share the std packages",
     "given": {
-      "edge.json": "{ \"imports\": { \"json\": \"https://cdn.edgepython.com/std/json.wasm\", \"re\": \"https://cdn.edgepython.com/std/re.wasm\", \"math\": \"https://cdn.edgepython.com/std/math.wasm\", \"struct\": \"https://cdn.edgepython.com/std/struct.wasm\" } }\n",
+      "edge.json": "{ \"imports\": { \"json\": \"0.1.0\", \"re\": \"0.1.0\", \"math\": \"0.1.0\", \"struct\": \"0.1.0\" } }\n",
       "pool.yml": "runtime:\n  max_actors: 1000000\ngroups:\n  dispatcher:\n    seed: [\"go\"]\n    code: |\n      receive()\n      i = 0\n      while i < 3000:\n          send(\"workers\", str(i))\n          i = i + 1\n  workers:\n    replicas: 1000000\n    code: |\n      import json, re, math, struct\n      m = receive()\n      print(\"ok\", json.dumps([m]), math.floor(2.5), struct.calcsize(\"i\"))\n"
     },
-    "steps": [{ "run": ["actor", "pool.yml"], "lines": { "ok [\"": 3000 } }]
+    "steps": [{ "run": ["lock"] }, { "run": ["actor", "pool.yml"], "lines": { "ok [\"": 3000 } }]
   }
 ]
