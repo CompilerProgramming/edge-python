@@ -90,6 +90,22 @@
   },
   {
     "given": {
+      "edge.json": "{\"permissions\": {\"main\": [\"net:127.0.0.1/api\"]}}\n",
+      "main.py": "import net\nfor path in ['/api/items', '/api/../secret', '/api/%2e%2e/secret', '/other']:\n    try:\n        net.request('GET', 'http://127.0.0.1:1' + path)\n        print('reached', path)\n    except PermissionError as e:\n        print(e)\n"
+    },
+    "run": ["run", "main.py"],
+    "stdout": ["reached /api/items", "'main' has no net:127.0.0.1/secret, edge.json grants it net:127.0.0.1/api", "'main' has no net:127.0.0.1/other, edge.json grants it net:127.0.0.1/api"]
+  },
+  {
+    "given": {
+      "edge.json": "{\"permissions\": {\"main\": [\"net:127.0.0.1\"]}}\n",
+      "main.py": "import net\ntry:\n    net.request('GET', 'http://cañón.example/')\nexcept ValueError as e:\n    print(e)\nprint('日本語 ok')\n"
+    },
+    "run": ["run", "main.py"],
+    "stdout": ["'http://cañón.example/' is not a plain url", "日本語 ok"]
+  },
+  {
+    "given": {
       "edge.json": "{\"permissions\": {\"main\": [\"net:127.0.0.1\"]}}\n",
       "main.py": "import net\ntry:\n    net.request('GET', 'http://evil.test\\\\@127.0.0.1/')\nexcept ValueError as e:\n    print(e)\n"
     },

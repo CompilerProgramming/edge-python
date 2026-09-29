@@ -1,7 +1,7 @@
 import type { EdgeValue } from '../rt.ts';
 import { batched } from './batch.ts';
 import { SystemError } from './error.ts';
-import { HOST, need } from './grants.ts';
+import { HOST, reach } from './grants.ts';
 
 type Message = Uint8Array | string | null;
 
@@ -43,13 +43,55 @@ const pairs = (value: EdgeValue): [string, string][] => {
 };
 
 // A url every parser reads alike, a scheme, the host right after it, a port, then the rest.
-const PLAIN = new RegExp(`^(?:https?|wss?)://(${HOST.source})(?::\\d{1,5})?(?:[/?#].*)?$`, 'i');
+const PLAIN = new RegExp(`^((?:https?|wss?)://)(${HOST.source})((?::\\d{1,5})?)([/?#].*)?$`, 'i');
 
-/* The host a net scope names, refused when anything could let a parser read another one. */
-const hostOf = (url: string): string => {
-    const plain = [...url].every((c) => c > ' ' && c !== '\\' && c !== '\x7f') ? PLAIN.exec(url) : null;
-    if (!plain) throw new SystemError('ValueError', `'${url}' is not a plain url, net takes scheme://host/path with no user, backslash or space`);
-    return plain[1]!.toLowerCase();
+// A segment standing for this directory or the one above it, spelled plainly or escaped.
+const HERE = /^(?:\.|%2e)$/i;
+const ABOVE = /^(?:\.|%2e){2}$/i;
+
+// What a path may carry as written, everything else crosses as its UTF-8 bytes escaped.
+const KEPT = /^[a-z0-9\-._~!$&'()*+,;=:@/%]$/i;
+
+/* A path as every host sends it, its dot segments resolved and its text escaped, so one reading of it cannot hide another. */
+const clean = (path: string): string => {
+    const out: string[] = [];
+    const segments = path.split('/');
+    for (const [i, segment] of segments.entries()) {
+        const last = i === segments.length - 1;
+        if (ABOVE.test(segment)) {
+            out.pop();
+            if (last) out.push('');
+        } else if (HERE.test(segment)) {
+            if (last) out.push('');
+        } else {
+            out.push([...segment].map((c) => (KEPT.test(c) ? c : escaped(c))).join(''));
+        }
+    }
+    return out.join('/') || '/';
+};
+
+/* One character as the percent escapes of its UTF-8 bytes, spelled out since not every host has TextEncoder. */
+const escaped = (c: string): string => {
+    const cp = c.codePointAt(0) ?? 0;
+    const bytes = cp < 0x80 ? [cp]
+        : cp < 0x800 ? [0xc0 | (cp >> 6), 0x80 | (cp & 0x3f)]
+        : cp < 0x10000 ? [0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f)]
+        : [0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f)];
+    return bytes.map((b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join('');
+};
+
+/* A url as both hosts send it, refused when anything could let a parser read another host or path. */
+const plain = (url: string): { host: string, path: string, url: string } => {
+    const parts = [...url].every((c) => c > ' ' && c !== '\\' && c !== '\x7f') ? PLAIN.exec(url) : null;
+    if (!parts) throw new SystemError('ValueError', `'${url}' is not a plain url, net takes scheme://host/path with no user, backslash or space`);
+    const [, scheme, name, port, rest = '/'] = parts;
+    // A fragment never leaves the host, so it is no part of what a grant reaches.
+    const [addressed] = rest.split('#') as [string];
+    const at = addressed.indexOf('?');
+    const path = clean(at === -1 ? addressed : addressed.slice(0, at));
+    const query = at === -1 ? '' : addressed.slice(at);
+    const host = name!.toLowerCase();
+    return { host, path, url: `${scheme!.toLowerCase()}${host}${port}${path}${query}` };
 };
 
 const failed = (what: string, e: unknown) => new SystemError('OSError', `${what} failed, ${e instanceof Error ? e.message : String(e)}`);
@@ -81,8 +123,8 @@ export default function net(pkg: string, held: string[]) {
 
     /* Starts a request and returns its id at once, the head and the body arrive through response and read. */
     function request(method: EdgeValue, url: EdgeValue, headers: EdgeValue = null, content: EdgeValue = null): number {
-        const target = text(url, 'a url');
-        need(pkg, 'net', held, hostOf(target));
+        const { host, path, url: target } = plain(text(url, 'a url'));
+        reach(pkg, held, host, path);
         const controller = new AbortController();
         const answer = fetch(target, { method: text(method ?? 'GET', 'a method'), headers: pairs(headers), body: body(content), signal: controller.signal, redirect: 'manual' });
         const head = answer.then((res): [number, [string, string][]] => {
@@ -118,8 +160,8 @@ export default function net(pkg: string, held: string[]) {
 
     /* Opens a WebSocket and returns its id once it is open, its messages arrive through read. */
     function connect(url: EdgeValue): Promise<number> {
-        const target = text(url, 'a url');
-        need(pkg, 'net', held, hostOf(target));
+        const { host, path, url: target } = plain(text(url, 'a url'));
+        reach(pkg, held, host, path);
         const socket = new WebSocket(target);
         socket.binaryType = 'arraybuffer';
         const found: Stream = { kind: 'socket', abort: () => socket.close(), socket, messages: [], waiting: [] };

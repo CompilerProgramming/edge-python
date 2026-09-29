@@ -35,7 +35,8 @@ Deno.test("system: a package asks under main and all, and only the root's grant 
 });
 
 Deno.test("system: a malformed permissions section says what it needs", () => {
-    if (check(undefined) !== null || check({ all: ["time:monotonic"], main: ["net:api.example.com", "net", "net:[::1]"] }) !== null) throw new Error("a valid section");
+    const valid = { all: ["time:monotonic"], main: ["net:api.example.com", "net", "net:[::1]", "net:api.example.com/v2/items", "net:a.test/"] };
+    if (check(undefined) !== null || check(valid) !== null) throw new Error(`a valid section, ${check(valid)}`);
     const cases = [
         [{ main: "net:api.example.com" }, "permissions for 'main' must be a list of entries such as \"net:api.example.com\""],
         [{ main: ["fs:/tmp"] }, "permissions for 'main' name 'fs', which is not a system module (net, time)"],
@@ -143,4 +144,52 @@ Deno.test("system: the headers fetch keeps for the host are refused", () => {
         raises(() => main.calls.request("GET", "http://127.0.0.1:1/", [[name, "x"]]), "ValueError", `the header '${name}' belongs to the host, a program cannot set it`);
     }
     main.close();
+});
+
+Deno.test("system: a path scope reaches only under its prefix", () => {
+    const api = net("main", ["a.test/api", "b.test"]).calls;
+    const held = "edge.json grants it net:a.test/api, net:b.test";
+    for (const path of ["/api", "/api/", "/api/items", "/api/v2/items?q=1"]) api.request("GET", `http://a.test${path}`);
+    api.request("GET", "http://b.test/anything");
+    denied(() => api.request("GET", "http://a.test/"), `'main' has no net:a.test/, ${held}`);
+    denied(() => api.request("GET", "http://a.test/apixyz"), `'main' has no net:a.test/apixyz, ${held}`);
+    denied(() => api.request("GET", "http://a.test/other/api"), `'main' has no net:a.test/other/api, ${held}`);
+    // A host no scope names reads as the host alone, whatever path was asked for.
+    denied(() => api.request("GET", "http://c.test/api"), `'main' has no net:c.test, ${held}`);
+    // A prefix is climbed out of by no spelling of the segment above.
+    for (const path of ["/api/../secret", "/api/%2e%2e/secret", "/api/.%2e/secret", "/api/./../secret"]) {
+        denied(() => api.request("GET", `http://a.test${path}`), `'main' has no net:a.test/secret, ${held}`);
+    }
+});
+
+Deno.test("system: both hosts send one reading of a path", async () => {
+    const seen = [];
+    const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, (req) => {
+        seen.push(new URL(req.url).pathname + new URL(req.url).search);
+        return new Response("ok");
+    });
+    const at = `http://127.0.0.1:${server.addr.port}`;
+    const main = net("main", ["127.0.0.1"]);
+    const sent = async (url) => {
+        const id = main.calls.request("GET", at + url);
+        await main.calls.response(id);
+        return seen.pop();
+    };
+    const cases = [
+        ["/a/b/../c", "/a/c"],
+        ["/a/./b", "/a/b"],
+        ["/a/b/..", "/a/"],
+        ["/..", "/"],
+        ["/a/%2e%2e/b", "/b"],
+        ["/Español", "/Espa%C3%B1ol"],
+        ["/@dylan", "/@dylan"],
+        ["/items?q=a/../b", "/items?q=a/../b"],
+        ["/keep#gone", "/keep"],
+    ];
+    for (const [asked, want] of cases) {
+        const got = await sent(asked);
+        if (got !== want) throw new Error(`${asked} reached ${got}, want ${want}`);
+    }
+    main.close();
+    await server.shutdown();
 });

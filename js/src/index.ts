@@ -200,7 +200,8 @@ function originOf(spec: string): string[] {
 async function roomPolicy({ specs, permissions }: { specs: string[], permissions: Permissions }): Promise<string> {
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(roomScript)));
     const hosts = Object.values(permissions).flat().flatMap((entry) => {
-        const name = String(entry).startsWith('net:') ? String(entry).slice(4) : '';
+        // A path prefix bounds the reach inside net, the policy only ever names a whole host.
+        const name = String(entry).startsWith('net:') ? String(entry).slice(4).split('/')[0]! : '';
         return PLAIN_HOST.test(name) ? ['https', 'http', 'wss', 'ws'].map((scheme) => `${scheme}://${name}:*`) : [];
     });
     const reach = [...new Set([...specs.flatMap(originOf), ...hosts])];

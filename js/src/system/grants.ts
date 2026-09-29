@@ -9,8 +9,8 @@ export const RESERVED = ['all', 'main'];
 // A host as a net scope names it and a url reaches it, a dotted name or a bracketed ip6.
 export const HOST = /[a-z0-9.-]+|\[[0-9a-f:.]+\]/;
 
-// A whole scope for net, one lowercase host with nothing before or after it.
-const NET_SCOPE = new RegExp(`^(?:${HOST.source})$`);
+// A whole scope for net, one lowercase host and the path prefix it may bound the reach to.
+const NET_SCOPE = new RegExp(`^(?:${HOST.source})(?:/[A-Za-z0-9\\-._~!$&'()*+,;=:@/%]*)?$`);
 
 // What a scope of each system module may be, a host for net and a clock for time.
 const SCOPES: Record<string, (scope: string) => boolean> = {
@@ -69,4 +69,13 @@ export function need(pkg: string, module: string, held: string[], scope: string)
     if (held.includes(scope)) return;
     const granted = held.length > 0 ? held.map((s) => `${module}:${s}`).join(', ') : 'nothing';
     throw new SystemError('PermissionError', `'${pkg}' has no ${module}:${scope}, edge.json grants it ${granted}`);
+}
+
+/* Raises PermissionError unless a held scope reaches `host` at `path`, a scope with a path prefix reaching only under it. */
+export function reach(pkg: string, held: string[], host: string, path: string): void {
+    const bounded = held.filter((scope) => scope.split('/')[0] === host);
+    const under = (prefix: string) => path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`);
+    if (bounded.some((scope) => scope === host || under(scope.slice(host.length)))) return;
+    // Naming the path only once the host is held keeps a refused host reading as the host alone.
+    need(pkg, 'net', held, bounded.length > 0 ? `${host}${path}` : host);
 }

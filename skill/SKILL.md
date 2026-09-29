@@ -730,7 +730,7 @@ import time
 'main' imports time, which edge.json does not grant it
 ```
 
-`permissions` maps each holder to a list of `module:scope` entries. The holder is `main` for the program's own code, `all` for every package, or a package name for that package alone. `net:<host>` allows exactly that host, a lowercase name or a bracketed IPv6 with no scheme, port or path, and `time:wall`, `time:monotonic` and `time:zone` allow one clock call each. An entry without a scope, like `"net"`, lets the package import the module and reach nothing.
+`permissions` maps each holder to a list of `module:scope` entries. The holder is `main` for the program's own code, `all` for every package, or a package name for that package alone. `net:<host>` allows exactly that host, a lowercase name or a bracketed IPv6 with no scheme or port, `net:<host>/<prefix>` bounds it to that path prefix and what sits under it, and `time:wall`, `time:monotonic` and `time:zone` allow one clock call each. An entry without a scope, like `"net"`, lets the package import the module and reach nothing.
 
 ```json
 {
@@ -758,7 +758,7 @@ an hour, at once
 
 ### net
 
-`request(method, url, headers, body)` returns an id at once, `response(id)` waits for `[status, headers]`, and `read(id)` returns the next body chunk as `bytes` or `None` at the end. `connect(url)` opens a WebSocket whose messages come through `read`, `send(id, data)` writes to it and `close(id)` aborts either. Headers are `[name, value]` pairs or a dict and a body is `bytes`, a `str` or `None`. A failed connection raises `OSError` from the call that meets it, and in a browser CORS applies on top of the grant. A url names its host right after the scheme, with no user before it and no backslash, space or control character, else `ValueError`, while an `@` in the path stays. No host follows a redirect, a 301, 302, 303, 307 or 308 raises `OSError` and the new address needs its own `request`. Headers fetch keeps for the host, like `Host`, `Cookie`, `Origin` or any `Sec-` or `Proxy-` one, raise `ValueError`.
+`request(method, url, headers, body)` returns an id at once, `response(id)` waits for `[status, headers]`, and `read(id)` returns the next body chunk as `bytes` or `None` at the end. `connect(url)` opens a WebSocket whose messages come through `read`, `send(id, data)` writes to it and `close(id)` aborts either. Headers are `[name, value]` pairs or a dict and a body is `bytes`, a `str` or `None`. A failed connection raises `OSError` from the call that meets it, and in a browser CORS applies on top of the grant. A url names its host right after the scheme, with no user before it and no backslash, space or control character, else `ValueError`, while an `@` in the path stays. A non-ASCII host raises, pass its punycode. The path is resolved before the check and sent as resolved, so a `.` or `..` segment applies however it is spelled and text outside the unreserved set crosses as escaped UTF-8, and a fragment is dropped. No host follows a redirect, a 301, 302, 303, 307 or 308 raises `OSError` and the new address needs its own `request`. Headers fetch keeps for the host, like `Host`, `Cookie`, `Origin` or any `Sec-` or `Proxy-` one, raise `ValueError`.
 
 ```python
 import net

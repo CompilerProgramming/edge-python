@@ -111,7 +111,9 @@ unsafe fn text(cx: &mut JSContext, v: Handle<Value>) -> String {
 }
 
 unsafe fn string(cx: &mut JSContext, s: &str) -> *mut jsapi::JSString {
-    unsafe { JS_NewStringCopyN(cx, s.as_ptr() as *const std::ffi::c_char, s.len()) }
+    // Read as UTF-8, since the plain copy takes every byte for a Latin-1 character.
+    let chars = mozjs::conversions::Utf8Chars::from(s);
+    unsafe { JS_NewStringCopyUTF8N(cx, &*chars as *const _) }
 }
 
 /* Calls a bridge function of `web.js` with one JSON string, its JSON answer back. */
