@@ -37,9 +37,7 @@ runs:
       shell: bash
       run: cargo build --locked --release --target wasm32-unknown-unknown -p slugify-mod
 
-    # The Deno suite proves the host runs with no browser, the Playwright one drives Chromium.
+    # Every JS host suite, the Deno ones with no browser and the Playwright ones in Chromium.
     - name: JS host
       shell: bash
-      run: |
-        deno test --allow-all js/tests/deno.test.js
-        deno test --allow-all js/tests/js.test.js
+      run: deno test --allow-all js/tests/
