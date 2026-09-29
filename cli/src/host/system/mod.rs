@@ -44,11 +44,6 @@ pub fn run_id() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/* The system modules, as `js/src/system/index.ts` lists them. */
-pub fn modules() -> Vec<String> {
-    serde_json::from_value(bridge(c"__edge_modules", Value::Null, None)).unwrap_or_default()
-}
-
 /* Why a permissions section is malformed, None when every entry is one a system module has. */
 pub fn check(permissions: &Value) -> Option<String> {
     bridge(c"__edge_check", permissions.clone(), None)["error"].as_str().map(str::to_string)
@@ -194,7 +189,7 @@ mod tests {
 
     #[test]
     fn the_modules_and_their_grants_come_from_the_system_calls() {
-        assert_eq!(modules(), ["net", "time"]);
+        assert_eq!(crate::web::SYSTEM_MODULES, ["net", "time"]);
         let permissions = json!({ "all": ["time:wall"], "main": ["net:api.example.com"], "http": ["net"] });
         assert_eq!(scopes(&permissions, "main", "time"), Some(vec!["wall".to_string()]));
         assert_eq!(scopes(&permissions, "http", "net"), Some(vec![]));

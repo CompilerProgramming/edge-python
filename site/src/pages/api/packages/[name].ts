@@ -1,7 +1,7 @@
 import type { APIRoute } from 'astro'
 import { env } from 'cloudflare:workers'
 import { cached, json, tooMany } from '../../../lib/server/http'
-import { downloaded, keyOf, named, packageByName, versionsOf } from '../../../lib/server/packages'
+import { downloaded, keyOf, packageByName, versionsOf } from '../../../lib/server/packages'
 
 // How long an answer that counts nothing may be reused, since it changes only when a version is published.
 const CACHE_SECONDS = 60
@@ -11,8 +11,6 @@ export const GET: APIRoute = async ({ params, url, request }) => {
   if (await tooMany(env.READ_IP, request)) return json({ error: 'Too many requests. Try again later.' }, 429)
 
   const name = String(params.name ?? '').toLowerCase()
-  if (!named(name)) return json({ error: 'No such package.' }, 404)
-
   const held = await packageByName(env.DB, name)
   if (!held) return json({ error: 'No such package.' }, 404)
 

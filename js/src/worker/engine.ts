@@ -6,7 +6,7 @@ import { makeRt } from '../rt.ts';
 import type { Rt, EdgeValue } from '../rt.ts';
 import { nativeTable, resetNativeTable, waiting } from '../native.ts';
 import { SYSTEM } from '../system/index.ts';
-import { scopes } from '../system/grants.ts';
+import { check, scopes } from '../system/grants.ts';
 import type { Permissions } from '../system/grants.ts';
 import type { CompilerExports } from '../wasm.ts';
 import type { Limits, LoadOpts, RunOpts, ExecResult } from '../protocol.ts';
@@ -125,7 +125,7 @@ async function execute({ src, payload, start, entryDir = '', onLine, incremental
         exports = await makeInstance(wasmModule, onLine, rt);
     }
 
-    const packages = await bfsPrefetch(src, exports, {
+    await bfsPrefetch(src, exports, {
         baseUrl: programBase,
         read,
         entryDir,
@@ -135,8 +135,7 @@ async function execute({ src, payload, start, entryDir = '', onLine, incremental
         fetchedSources,
         compilerExports: exports,
         rt,
-    });
-    serveSystem(exports, packages);
+    }, (packages) => serveSystem(exports, packages));
 
     // Compiler roots the entry's quoted imports at this directory.
     if (exports.set_entry_dir) {
@@ -177,14 +176,15 @@ async function execute({ src, payload, start, entryDir = '', onLine, incremental
 }
 
 /* Serves net and time to every package the walk met, each opened with its own scopes, or refused when the root grants it none. */
-function serveSystem(exports: CompilerExports, packages: Packages): void {
-    for (const dir of packages.dirs) {
+function serveSystem(exports: CompilerExports, packages: Packages): string[] {
+    const problem = check(packages.permissions);
+    if (problem) return [`edge.json at '${packages.root}edge.json': ${problem}`];
+    for (const [dir, pkg] of packages.dirs) {
         if (servedDirs.has(dir)) continue;
         servedDirs.add(dir);
-        const pkg = packages.packageOf(dir);
         for (const [module, open] of Object.entries(SYSTEM)) {
             const spec = TE.encode(`system:${module}@${dir}`);
-            const held = scopes(packages.grants, pkg, module);
+            const held = scopes(packages.permissions, pkg, module);
             if (held === null) {
                 const msg = TE.encode(`'${pkg}' imports ${module}, which edge.json does not grant it`);
                 exports.register_module_error(writeBytes(exports, spec), spec.length, writeBytes(exports, msg), msg.length);
@@ -202,8 +202,9 @@ function serveSystem(exports: CompilerExports, packages: Packages): void {
         }
     }
     // A run no package was granted a clock sleeps on the virtual one, so what it prints never depends on when it runs.
-    const clock = Object.values(packages.grants).some((entries) => entries.some((entry) => entry.startsWith('time:')));
+    const clock = Object.values(packages.permissions).some((entries) => entries.some((entry) => entry.startsWith('time:')));
     exports.set_wall_clock?.(clock ? 1 : 0);
+    return [];
 }
 
 /* Aborts every request and socket the system modules left open. */

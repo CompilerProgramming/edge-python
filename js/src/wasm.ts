@@ -5,14 +5,16 @@ export interface CompilerExports {
     out_len(): number
     wasm_alloc(size: number): number
     wasm_free(ptr: number, size: number): void
-    sha256_hex(ptr: number, len: number): number
-    register_code_module(spec_ptr: number, spec_len: number, src_ptr: number, src_len: number): void
     register_native_module(spec_ptr: number, spec_len: number, names_ptr: number, names_len: number, base_id: number): void
     register_module_error(spec_ptr: number, spec_len: number, msg_ptr: number, msg_len: number): void
     reset_modules(): void
+    walk_start(src_ptr: number, src_len: number, dir_ptr: number, dir_len: number, system_ptr: number, system_len: number): number
+    walk_fetched(ptr: number, len: number, kind: number): number
+    walk_plugin_bytes(): number
+    walk_plugin(kind: number, ptr: number, len: number): number
+    walk_served(ptr: number, len: number): number
     set_entry_dir?(ptr: number, len: number): void
     set_input?(ptr: number, len: number): void
-    extract_imports?(ptr: number, len: number): number
     repl_eval(ptr: number, len: number): number
     run_start(ptr: number, len: number): number
     run_resume(): number

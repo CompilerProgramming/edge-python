@@ -379,7 +379,7 @@ fn file_deps(rel: &str, bytes: &[u8]) -> Result<Vec<(String, bool)>> {
             imports
                 .filter_map(|(_, target)| target.as_str())
                 // A version names no file here, the lock beside this manifest is what points it at one.
-                .filter(|target| !target.contains("://") && !target.starts_with('/') && lock::version_of(target).is_none())
+                .filter(|target| !target.contains("://") && !target.starts_with('/') && !compiler::modules::rules::shaped_like_version(target))
                 .map(|target| (target.to_string(), true))
                 .chain([(lock::FILE.to_string(), false)])
                 .collect()

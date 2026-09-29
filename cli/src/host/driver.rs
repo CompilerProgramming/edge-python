@@ -82,7 +82,7 @@ pub fn run(file: Option<&Path>, code: Option<&str>, opts: &RunOpts) -> Result<i3
 pub fn run_bundle(payload: &[u8], opts: &RunOpts) -> Result<i32> {
     let bundle = crate::pack::Bundle::decode(payload).map_err(|e| anyhow!("corrupt bundle: {e}"))?;
     let entry = bundle.entry.clone();
-    let files = bundle.into_files();
+    let files = crate::pack::into_files(bundle);
     let src = files.get(&entry).map(|b| String::from_utf8_lossy(b).into_owned()).ok_or_else(|| anyhow!("bundle entry '{entry}' is missing"))?;
     let project = Project::bundle(files, &dir_of(&entry), false);
     let mut vm = host()?.vm(stdout_sink(), project, None, None)?;

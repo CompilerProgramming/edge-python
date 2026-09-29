@@ -1,22 +1,13 @@
-import { decodeBundle } from './bundle.ts';
 import { fetchModule } from './fetch.ts';
 import { loadNativeModule, nativeTable } from './native.ts';
-import { dirOf, isVersion, joinRel, lockedSpec, parentDir } from './specs.ts';
-import type { Locked } from './specs.ts';
 import type { CompilerExports } from './wasm.ts';
 import type { Rt } from './rt.ts';
-import { check, RESERVED } from './system/grants.ts';
+import { MODULES } from './system/names.ts';
 import type { Permissions } from './system/grants.ts';
 import { errMsg, writeBytes } from './util.ts';
 
 const TD = new TextDecoder();
 const TE = new TextEncoder();
-
-// Import kinds emitted by the compiler, bare / importer-relative / root-relative.
-interface ImportRecord {
-    kind: 'b' | 'r' | 'R'
-    spec: string
-}
 
 export interface PrefetchCtx {
     fetchedSources: Map<string, Uint8Array>
@@ -30,25 +21,17 @@ export interface PrefetchCtx {
     rt: Rt
 }
 
-/* Who a run's modules belong to, each manifest dir to its package, and what the root grants. */
+/* Who a run's modules belong to, each manifest dir with its package, and what the root grants. */
 export interface Packages {
-    dirs: string[]
-    grants: Permissions
-    packageOf: (dir: string) => string
+    dirs: [string, string][]
+    root: string
+    permissions: Permissions
+    // Whether anything can reach a system module, a name no manifest declared or a plugin.
+    needed: boolean
 }
 
-// A dir as one spelling, since `./lib/` and `lib/` are the same place under the root.
-const norm = (dir: string): string => dir.replace(/^(\.\/)+/, '');
-
-/* The last segment's extension without query or fragment, it picks how the artifact loads. */
-const extOf = (spec: string): string => {
-    const path = spec.replace(/[?#].*$/, '');
-    const dot = path.lastIndexOf('.');
-    return dot > path.lastIndexOf('/') ? path.slice(dot) : '';
-};
-
-// Every wasm binary opens with these four bytes.
-const isWasm = (b: Uint8Array): boolean => b[0] === 0x00 && b[1] === 0x61 && b[2] === 0x73 && b[3] === 0x6d;
+// What the engine's walk asks of this host next, as it writes it into the out buffer.
+type Step = { fetch: string } | { plugin: string, name: string } | { system: Packages } | { done: string[] };
 
 /* Hint when a module spec likely can't load, insecure scheme or schemeless URL. Null when it looks fine. */
 function schemeHint(spec: string): string | null {
@@ -66,246 +49,63 @@ function schemeHint(spec: string): string | null {
     return null;
 }
 
-/* Imports of `src`, classified, via the compiler (single source of truth). Returns [{ kind, spec }] with kind b/r/R. */
-function scanImports(src: string, exports: CompilerExports): ImportRecord[] {
-    if (typeof exports.extract_imports !== 'function') {
-        throw new Error('compiler is missing extract_imports; runtime and wasm are out of sync');
-    }
-    const bytes = TE.encode(src);
-    const ptr = writeBytes(exports, bytes);
-    const outLen = exports.extract_imports(ptr, bytes.length);
-    exports.wasm_free(ptr, Math.max(1, bytes.length));
-    if (!outLen) return [];
-    const text = TD.decode(new Uint8Array(exports.memory.buffer, exports.out_ptr(), outLen));
-    return text.split('\n').filter(Boolean).map((line) => ({
-        kind: line[0] as ImportRecord['kind'],
-        spec: line.slice(line.indexOf('\t') + 1),
-    }));
-}
+/* The engine walks what a program imports, this host fetches what it asks for, loads the plugins it names and serves the system modules through `serve`. */
+export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, ctx: PrefetchCtx, serve: (packages: Packages) => string[]): Promise<void> {
+    const { fetchedSources, knownMissing, importsMap, permissions, entryDir } = ctx;
 
-/* Lazy BFS prefetch, bare names resolve through programmatic imports then edge.json, only used imports get fetched. */
-export async function bfsPrefetch(rootSrc: string, exports: CompilerExports, ctx: PrefetchCtx): Promise<Packages> {
-    const { fetchedSources, knownMissing, importsMap, entryDir } = ctx;
-    const visited = new Set<string>();
-    const queue: string[] = [];
-    // Module specs that never registered, thrown together at the end so the user sees a clear cause.
-    const failures: string[] = [];
-    // Bare name to canonical spec, programmatic imports join the synthetic root, manifest entries their own dir.
-    const table: Record<string, string> = Object.fromEntries(Object.entries(importsMap || {}).map(([name, target]) => [name, joinRel('', target)]));
-    // Bare names scanned before a manifest declared them, retried after each manifest merge.
-    const pendingBare = new Set<string>();
-    // Root-relative imports waiting on their importer's manifest chain to finish probing.
-    const pendingRoot: { spec: string, dir: string }[] = []; // { spec, dir }
-    const manifestDirs = new Set<string>(); // dirs whose edge.json fetched successfully
-    const names = new Map<string, string>(); // manifest dir -> the package name it declares
-    const labels = new Map<string, string>(); // spec -> the name its first importer wrote, refusals show it
-    const push = (spec: string, label: string): void => {
-        if (!labels.has(spec)) labels.set(spec, label);
-        queue.push(spec);
-    };
-
-    /* The lock beside one manifest, read once a run and only when a version needs it, so a project that declares none probes for nothing. A packed package carries its own, already in memory beside its manifest. */
-    const locks = new Map<string, Record<string, Locked> | null>();
-    const lockFor = async (dir: string): Promise<Record<string, Locked> | null> => {
-        if (locks.has(dir)) return locks.get(dir) ?? null;
-        const at = dir + 'edge.lock';
-        const bytes = fetchedSources.get(at) ?? await fetchModule(at, ctx);
-        const held = bytes ? JSON.parse(TD.decode(bytes)) as Record<string, Locked> : null;
-        locks.set(dir, held);
-        return held;
-    };
-
-    /* Each declared target as the lock resolved it, awaited here because the name it frees is queued on the next line. */
-    const lockImports = async (imports: Record<string, string>, dir: string): Promise<Record<string, string>> => {
-        const entries = Object.entries(imports);
-        if (!entries.some(([, target]) => isVersion(target))) return imports;
-        const held = await lockFor(dir);
-        return Object.fromEntries(entries.map(([name, target]) => [name, lockedSpec(name, target, held)]));
-    };
-
-    // Probe every ancestor manifest, mirroring the compiler walk-up.
-    const enqueueManifestChain = (dir: string | null): void => {
-        for (; dir != null; dir = parentDir(dir)) {
-            const m = dir + 'edge.json';
-            if (!knownMissing.has(m)) queue.push(m);
-        }
-    };
-
-    /* Nearest dir at or above `dir` with a fetched manifest, undefined while probes are pending, null once fully probed bare. */
-    const rootFor = (dir: string | null): string | null | undefined => {
-        for (let d = dir; d != null; d = parentDir(d)) {
-            const m = d + 'edge.json';
-            if (manifestDirs.has(d)) return d;
-            if (!visited.has(m) && !knownMissing.has(m)) return undefined;
-        }
-        return null;
-    };
-    const enqueueRoot = (spec: string, dir: string): void => {
-        const root = rootFor(dir);
-        if (root === undefined) { pendingRoot.push({ spec, dir }); return; }
-        if (root !== null) push(joinRel(root, spec), spec); // null means no manifest anywhere, the compiler reports it
-    };
-    const retryRoot = (): void => {
-        for (let i = pendingRoot.length - 1; i >= 0; i--) {
-            const item = pendingRoot[i];
-            if (!item || rootFor(item.dir) === undefined) continue;
-            pendingRoot.splice(i, 1);
-            enqueueRoot(item.spec, item.dir);
-        }
-    };
-
-    /* A scanned import contributes at most one fetch target, paths queue directly, bare resolves via the table. */
-    const enqueueImport = (imp: ImportRecord, dir: string): void => {
-        if (imp.kind === 'r') { push(joinRel(dir, imp.spec), imp.spec); return; }
-        if (imp.kind === 'R') { enqueueRoot(imp.spec, dir); return; }
-        const target = table[imp.spec];
-        if (target !== undefined) push(target, imp.spec);
-        else pendingBare.add(imp.spec); // a later manifest may declare it
-    };
-    const retryPending = (): void => {
-        for (const name of [...pendingBare]) {
-            const target = table[name];
-            if (target !== undefined) { push(target, name); pendingBare.delete(name); }
-        }
-    };
-
-    // Synthetic root edge.json so the COMPILER resolves bare names at parse time the same way, with what the embedder grants.
-    if (Object.keys(table).length > 0 || ctx.permissions) {
-        fetchedSources.set('edge.json', TE.encode(JSON.stringify({ imports: table, ...(ctx.permissions && { permissions: ctx.permissions }) })));
+    // What the embedder declared stands in for the root edge.json, resolved like any manifest.
+    if ((importsMap && Object.keys(importsMap).length > 0) || permissions) {
+        fetchedSources.set('edge.json', TE.encode(JSON.stringify({ imports: importsMap ?? {}, ...(permissions && { permissions }) })));
         knownMissing.delete('edge.json');
     }
 
-    // Root imports resolve from the entry's directory, like any module.
-    for (const imp of scanImports(rootSrc, exports)) enqueueImport(imp, entryDir);
-    enqueueManifestChain(entryDir);
-
-    while (queue.length) {
-        const spec = queue.shift();
-        if (spec === undefined) break;
-        if (visited.has(spec)) continue;
-        visited.add(spec);
-
-        // No JavaScript loads besides the host's own, so a .js import fails where it is written.
-        const ext = extOf(spec);
-        if (ext === '.js' || ext === '.mjs') {
-            const specBytes = TE.encode(spec);
-            const msg = TE.encode(`module '${labels.get(spec) ?? spec}' is JavaScript, ship a .py or a .wasm`);
-            exports.register_module_error(writeBytes(exports, specBytes), specBytes.length, writeBytes(exports, msg), msg.length);
-            continue;
-        }
-
-        let bytes = fetchedSources.get(spec);
-        if (bytes === undefined) {
-            const fetched = await fetchModule(spec, ctx);
-            if (!fetched) {
-                // edge.json probes are opportunistic 404s, only a real module import is worth flagging.
-                if (!spec.endsWith('edge.json')) failures.push(schemeHint(spec) ?? `could not fetch module '${spec}'`);
-                retryRoot(); // a settled probe may unblock a root-relative import
-                continue;
-            }
-            bytes = fetched;
-            fetchedSources.set(spec, bytes);
-        }
-
-        // A published package is verified whole, its files answer from inside it and its entry runs as the module.
-        if (ext === '.edge') {
-            let bundle;
-            try { bundle = decodeBundle(bytes); }
-            catch (e) { failures.push(`'${spec}' is not a packed .edge: ${errMsg(e)}`); continue; }
-            const base = dirOf(spec);
-            for (const [path, file] of bundle.files) fetchedSources.set(base + path, file);
-            const entry = bundle.files.get(bundle.entry);
-            if (!entry) { failures.push(`'${spec}' names an entry it does not carry`); continue; }
-            bytes = entry;
-        }
-
-        if (spec.endsWith('edge.json')) {
-            let parsed: { name?: unknown, imports?: Record<string, string>, extends?: string };
-            try { parsed = JSON.parse(TD.decode(bytes)); }
-            catch { retryRoot(); continue; }
-            const dir = dirOf(spec);
-            manifestDirs.add(dir);
-            // A package named all or main answers to its dir, so it never takes their grants.
-            if (typeof parsed.name === 'string' && !RESERVED.includes(parsed.name)) names.set(norm(dir), parsed.name);
-            // Every version it declares becomes the url the lock beside it holds, before a name or the compiler sees one.
-            let resolved: Record<string, string>;
-            try { resolved = await lockImports(parsed.imports || {}, dir); }
-            catch (e) { failures.push(`edge.json at '${spec}': ${errMsg(e)}`); continue; }
-            if (Object.values(parsed.imports || {}).some(isVersion)) {
-                fetchedSources.set(spec, TE.encode(JSON.stringify({ ...parsed, imports: resolved })));
-            }
-            // Merge as a resolution table (nearer manifests already in `table` win), then resolve any deferred names.
-            for (const [name, target] of Object.entries(resolved)) {
-                if (!(name in table)) table[name] = joinRel(dir, target);
-            }
-            retryPending();
-            retryRoot();
-            if (parsed.extends) {
-                const extDir = joinRel(dir, parsed.extends);
-                queue.push((extDir.endsWith('/') ? extDir : extDir + '/') + 'edge.json');
-            }
-            continue;
-        }
-
-        // Unless the spec ends in .py, the wasm magic marks a native module, the rest is Python.
-        if (ext === '.wasm' || (ext !== '.py' && isWasm(bytes))) {
-            let names: string[], fns;
-            try {
-                ({ names, fns } = await loadNativeModule(bytes, ctx.compilerExports));
-            } catch (e) {
-                // Bytes fetched but the module won't load (bad ABI / corrupt wasm), a scheme issue would have failed at fetch.
-                failures.push(`'${spec}' failed to load as a wasm module: ${errMsg(e)}`);
-                continue;
-            }
-            const baseId = nativeTable.length;
-            for (const fn of fns) nativeTable.push(fn);
-
-            const specBytes = TE.encode(spec);
-            const namesBytes = TE.encode(names.join('\n'));
-            exports.register_native_module(
-                writeBytes(exports, specBytes), specBytes.length,
-                writeBytes(exports, namesBytes), namesBytes.length,
-                baseId,
-            );
-            enqueueManifestChain(dirOf(spec));
-            continue;
-        }
-
-        // Python source, register, then scan ITS imports (bare + path) so transitive deps stay lazy too.
-        const specBytes = TE.encode(spec);
-        exports.register_code_module(writeBytes(exports, specBytes), specBytes.length, writeBytes(exports, bytes), bytes.length);
-
-        const dir = dirOf(spec);
-        for (const imp of scanImports(TD.decode(bytes), exports)) enqueueImport(imp, dir);
-        enqueueManifestChain(dir);
-    }
-
-    // The root always has a manifest, so the program's own code is the package `main` even with none on disk.
-    let root = rootFor(entryDir);
-    if (root == null) {
-        root = '';
-        manifestDirs.add(root);
-        if (!fetchedSources.has('edge.json')) fetchedSources.set('edge.json', TE.encode('{}'));
-    }
-    let permissions: unknown;
-    try { permissions = JSON.parse(TD.decode(fetchedSources.get(root + 'edge.json') ?? TE.encode('{}'))).permissions; }
-    catch { /* a manifest that is not JSON is the compiler's to report */ }
-    const problem = check(permissions);
-    if (problem) failures.push(`edge.json at '${root}edge.json': ${problem}`);
-
-    if (failures.length) {
-        throw new Error(`could not pre-fetch every imported module:\n  ${failures.join('\n  ')}`);
-    }
-    // Unresolved bare names are left to the compiler's parse-time resolver, which emits the precise error.
-    const main = norm(root);
-    return {
-        dirs: [...manifestDirs],
-        grants: (permissions ?? {}) as Permissions,
-        packageOf: (dir: string): string => {
-            for (let d: string | null = dir; d != null; d = parentDir(d)) {
-                if (manifestDirs.has(d)) return norm(d) === main ? 'main' : names.get(norm(d)) ?? norm(d);
-            }
-            return '';
-        },
+    // A walk export takes staged buffers, freed after, and leaves the next step in the out buffer.
+    const call = (buffers: Uint8Array[], run: (at: number[]) => number): Step => {
+        const at = buffers.map((bytes) => writeBytes(exports, bytes));
+        let len: number;
+        try { len = run(at); } finally { buffers.forEach((bytes, i) => exports.wasm_free(at[i]!, Math.max(1, bytes.length))); }
+        return JSON.parse(TD.decode(new Uint8Array(exports.memory.buffer, exports.out_ptr(), len))) as Step;
     };
+
+    const [src, dir, system] = [TE.encode(rootSrc), TE.encode(entryDir), TE.encode(MODULES.join('\n'))];
+    let step = call([src, dir, system], ([s, d, m]) => exports.walk_start(s!, src.length, d!, dir.length, m!, system.length));
+
+    for (;;) {
+        if ('fetch' in step) {
+            const spec = step.fetch;
+            let bytes = fetchedSources.get(spec);
+            if (bytes === undefined && !knownMissing.has(spec)) {
+                bytes = (await fetchModule(spec, ctx)) ?? undefined;
+                if (bytes) fetchedSources.set(spec, bytes);
+            }
+            // A manifest or lock is only probed, so only a missing module earns a hint.
+            const probe = spec.endsWith('edge.json') || spec.endsWith('edge.lock');
+            const [answer, kind] = bytes ? [bytes, 0] : [TE.encode(probe ? '' : schemeHint(spec) ?? ''), 1];
+            step = call([answer], ([at]) => exports.walk_fetched(at!, answer.length, kind));
+        } else if ('plugin' in step) {
+            const len = exports.walk_plugin_bytes();
+            const bytes = new Uint8Array(exports.memory.buffer, exports.out_ptr(), len).slice();
+            let failed = '';
+            try {
+                const { names, fns } = await loadNativeModule(bytes, exports);
+                const baseId = nativeTable.length;
+                for (const fn of fns) nativeTable.push(fn);
+                const [spec, listed] = [TE.encode(step.plugin), TE.encode(names.join('\n'))];
+                const [s, n] = [writeBytes(exports, spec), writeBytes(exports, listed)];
+                exports.register_native_module(s, spec.length, n, listed.length, baseId);
+                exports.wasm_free(s, Math.max(1, spec.length));
+                exports.wasm_free(n, Math.max(1, listed.length));
+            } catch (e) {
+                failed = `'${step.plugin}' failed to load as a wasm module: ${errMsg(e)}`;
+            }
+            const why = TE.encode(failed);
+            step = call([why], ([at]) => exports.walk_plugin(failed ? 1 : 0, at!, why.length));
+        } else if ('system' in step) {
+            const failures = TE.encode(serve(step.system).join('\0'));
+            step = call([failures], ([at]) => exports.walk_served(at!, failures.length));
+        } else {
+            if (step.done.length) throw new Error(`could not pre-fetch every imported module:\n  ${step.done.join('\n  ')}`);
+            return;
+        }
+    }
 }

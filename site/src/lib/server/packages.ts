@@ -1,5 +1,6 @@
 import { check } from '../docs/convention'
 import { parts } from '../docs/sections'
+import { checkPackage } from './engine'
 import { identify } from './license'
 
 export type Package = { name: string; user_id: string; downloads: number; created_at: number }
@@ -14,13 +15,7 @@ export type Release = {
   pages: Page[]
 }
 
-const NAME = /^[a-z][a-z0-9-]*$/
-const VERSION = /^\d{1,9}\.\d{1,9}\.\d{1,9}$/
-
-export const MAX_NAME = 40
 export const MAX_ARTIFACT = 10 << 20
-export const MAX_DESCRIPTION = 200
-export const MAX_REPOSITORY = 256
 export const MAX_NOTICE = 64 << 10
 export const MAX_PAGES = 64
 export const MAX_PAGE = 128 << 10
@@ -37,22 +32,6 @@ export const MAX_STORAGE = 1 << 30
 // The owner publishes the whole standard library at once, so its day and its room hold five times as much.
 export const OWNER_SCALE = 5
 const DAY = 86_400_000
-
-/* A name that reads the same in a url, an import and a listing. */
-export const named = (name: string) => name.length <= MAX_NAME && NAME.test(name) && !name.endsWith('-') && !name.includes('--')
-
-// The holders a permissions section names beside packages, so no package may take either name.
-export const RESERVED = new Set(['all', 'main'])
-
-export const versioned = (version: string) => VERSION.test(version)
-
-export const described = (text: unknown) => text == null || (typeof text === 'string' && text.length <= MAX_DESCRIPTION)
-
-export const linked = (url: unknown) =>
-  url == null || (typeof url === 'string' && url.startsWith('https://') && url.length <= MAX_REPOSITORY && !/\s/.test(url))
-
-// The lowest engine a release runs on, absent when it names none.
-export const floored = (version: unknown) => version == null || (typeof version === 'string' && versioned(version))
 
 // A LICENSE of any length is a notice, and the Apache one is eleven thousand characters.
 export const noticed = (text: unknown) => text == null || (typeof text === 'string' && text.length <= MAX_NOTICE)
@@ -75,40 +54,14 @@ export function checkPages(raw: unknown): Page[] {
   })
 }
 
-/* Holds every manifest a bundle carried to the rule its own CLI packs under, that a name declared by version resolves through the lock beside it. A version says nothing about where its bytes are, so one that nothing resolved would reach a consumer as a module they cannot fetch. */
-export function checkLocks(manifests: Record<string, string>, locks: Record<string, string>) {
+/* Holds every manifest a bundle carries, a nested package included, to the rules the CLI packs under and to the lock beside it, since both run the same engine. */
+export function checkManifests(manifests: Record<string, string>, locks: Record<string, string>) {
   for (const [dir, source] of Object.entries(manifests)) {
-    const at = `${dir}edge.json`
-
-    let declared: unknown
-    try {
-      declared = JSON.parse(source)
-    } catch {
-      throw new Error(`The ${at} inside that package is not JSON.`)
-    }
-
-    const imports = (declared as { imports?: unknown } | null)?.imports
-    if (imports == null || typeof imports !== 'object' || Array.isArray(imports)) continue
-
-    const versions = Object.entries(imports as Record<string, unknown>).filter(([, target]) => typeof target === 'string' && VERSION.test(target))
-    if (!versions.length) continue
-
     const beside = locks[dir]
-    if (beside === undefined) throw new Error(`${at} declares a version and carries no edge.lock, so nothing says where it points.`)
-    if (beside.length > MAX_LOCK) throw new Error(`A lock is ${MAX_LOCK} bytes at most.`)
+    if (beside !== undefined && beside.length > MAX_LOCK) throw new Error(`A lock is ${MAX_LOCK} bytes at most.`)
 
-    let held: unknown
-    try {
-      held = JSON.parse(beside)
-    } catch {
-      throw new Error(`The ${dir}edge.lock inside that package is not JSON.`)
-    }
-
-    for (const [name, target] of versions) {
-      const entry = (held as Record<string, { version?: unknown } | undefined> | null)?.[name]
-      if (entry == null || typeof entry !== 'object') throw new Error(`${at} declares ${name} ${target} and its edge.lock does not hold it.`)
-      if (entry.version !== target) throw new Error(`${at} declares ${name} ${target} and its edge.lock holds another release.`)
-    }
+    const problem = checkPackage(source, beside)
+    if (problem) throw new Error(`edge.json at '${dir}edge.json': ${problem}`)
   }
 }
 

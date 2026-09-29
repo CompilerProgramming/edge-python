@@ -66,7 +66,7 @@ impl TestResolver {
     pub fn with_alias(self, name: &str, target: &str) -> Self {
         {
             let mut s = self.state.borrow_mut();
-            let m = s.manifests.entry(String::new()).or_insert_with(|| Manifest {imports: Vec::new(), extends: None});
+            let m = s.manifests.entry(String::new()).or_default();
             m.imports.push((name.to_string(), target.to_string()));
         }
         self
@@ -75,7 +75,7 @@ impl TestResolver {
     /* Register a manifest at `dir`, nearer manifests win for bare-name resolution. */
     pub fn with_manifest(self, dir: &str, imports: &[(&str, &str)], extends: Option<&str>) -> Self {
         let imp = imports.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let m = Manifest { imports: imp, extends: extends.map(|s| s.to_string()) };
+        let m = Manifest { imports: imp, extends: extends.map(|s| s.to_string()), ..Manifest::default() };
         self.state.borrow_mut().manifests.insert(dir.to_string(), m);
         self
     }

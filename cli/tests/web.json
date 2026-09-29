@@ -18,12 +18,22 @@
   },
   {
     "given": {
-      "edge.json": "{ \"imports\": { \"greet\": \"./greet.py#sha256-2eee58b9a692a7707eb962ef3f297fbac73daed26c205595b5ad71f7913471dd\" } }\n",
-      "greet.py": "def hi():\n    return 'hi'\n",
-      "main.py": "from greet import hi\nprint(hi())\n"
+      "edge.json": "{ \"imports\": { \"test\": \"0.1.0\" } }\n",
+      "edge.lock": "{\n  \"test\": {\n    \"version\": \"0.1.0\",\n    \"url\": \"https://cdn.edgepython.com/pkg/test/0.1.0/app.edge\",\n    \"digest\": \"sha256-a2101fa8d40862c187b67251c6ba97a650db7dfadb7da2276f23efc6dd4feda9\"\n  }\n}\n",
+      "main.py": "from test import test\nprint(callable(test))\n"
     },
     "run": ["run", "--web", "main.py"],
-    "stdout": ["hi"]
+    "stdout": ["True"]
+  },
+  {
+    "given": {
+      "edge.json": "{ \"imports\": { \"later\": \"./later/main.py\" } }\n",
+      "later/edge.json": "{ \"edge\": \"99.0.0\" }\n",
+      "later/main.py": "value = 1\n",
+      "main.py": "from later import value\nprint(value)\n"
+    },
+    "run": ["run", "--web", "main.py"],
+    "fails": ["edge.json at './later/edge.json': needs edge 99.0.0"]
   },
   {
     "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",

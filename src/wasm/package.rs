@@ -1,0 +1,59 @@
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use crate::bridge::safe_bytes;
+use crate::modules::bundle::Bundle;
+use crate::modules::json::quote;
+use crate::modules::{parse_manifest, rules};
+
+use super::walk::split;
+use super::write_out;
+
+/* Why this engine cannot run the manifest at `ptr`, in the out buffer, zero length when it can. */
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn floor_error(ptr: *const u8, len: u32) -> u32 {
+    let manifest = parse_manifest(unsafe { safe_bytes(ptr, len) });
+    write_out(&manifest.ok().and_then(|m| rules::floor_error(&m)).unwrap_or_default()) as u32
+}
+
+/* Why a registry turns away the manifest a package carries, with the lock beside it when it has one, zero length when it holds. */
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn manifest_check(m_ptr: *const u8, m_len: u32, l_ptr: *const u8, l_len: u32, system_ptr: *const u8, system_len: u32) -> u32 {
+    let lock = unsafe { safe_bytes(l_ptr, l_len) };
+    let system = split(unsafe { safe_bytes(system_ptr, system_len) }, '\n');
+    let system: Vec<&str> = system.iter().map(String::as_str).collect();
+    let checked = rules::check_package(unsafe { safe_bytes(m_ptr, m_len) }, (!lock.is_empty()).then_some(lock), &system);
+    write_out(&checked.err().unwrap_or_default()) as u32
+}
+
+/* Where each file of the bundle at `ptr` sits inside it, as JSON, or why it is not a bundle. */
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bundle_index(ptr: *const u8, len: u32) -> u32 {
+    let mut out = String::new();
+    match Bundle::index(unsafe { safe_bytes(ptr, len) }) {
+        Err(e) => {
+            out.push_str("{\"error\":");
+            quote(&mut out, &e);
+        }
+        Ok(index) => {
+            out.push_str("{\"entry\":");
+            quote(&mut out, &index.entry);
+            out.push_str(",\"files\":[");
+            for (i, (path, at, size)) in index.files.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push('[');
+                quote(&mut out, path);
+                out.push(',');
+                out.push_str(itoa::Buffer::new().format(*at));
+                out.push(',');
+                out.push_str(itoa::Buffer::new().format(*size));
+                out.push(']');
+            }
+            out.push(']');
+        }
+    }
+    out.push('}');
+    write_out(&out) as u32
+}

@@ -1,13 +1,10 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use compiler::modules::{parse_manifest, rules};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-// A short description reads as one line in a listing, past this it is a readme.
-const MAX_DESCRIPTION: usize = 60;
-
-// The holders beside package names, so no package may be named either.
-pub const RESERVED: [&str; 2] = ["all", "main"];
+use crate::web::SYSTEM_MODULES;
 
 /* The manifest as `edge add` edits it, the registry fields, `imports`, and every other key kept as written. */
 #[derive(Default, Serialize, Deserialize)]
@@ -40,58 +37,18 @@ impl Manifest {
         }
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let manifest: Self = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        manifest.check(path)?;
-        Ok(manifest)
-    }
-
-    /* The registry fields, refused here so a build never writes what a registry would turn away. */
-    fn check(&self, path: &Path) -> Result<()> {
+        // The engine's rules, the ones the registry runs, so a build never packs what it refuses.
         let at = path.display();
-        if let Some(name) = &self.name
-            && !named(name)
-        {
-            bail!("edge.json at '{at}': name '{name}' must be lowercase letters, digits and single hyphens, starting with a letter");
-        }
-        if let Some(name) = &self.name
-            && RESERVED.contains(&name.as_str())
-        {
-            bail!("edge.json at '{at}': name '{name}' is reserved for permissions");
-        }
-        if let Some(version) = &self.version
-            && !versioned(version)
-        {
-            bail!("edge.json at '{at}': version '{version}' must be major.minor.patch, digits only");
-        }
-        if let Some(description) = &self.description {
-            let len = description.chars().count();
-            if description.trim().is_empty() {
-                bail!("edge.json at '{at}': description is empty");
-            }
-            if description.contains('\n') {
-                bail!("edge.json at '{at}': description must be one line");
-            }
-            if len > MAX_DESCRIPTION {
-                bail!("edge.json at '{at}': description is {len} characters, the cap is {MAX_DESCRIPTION}");
-            }
-        }
-        if let Some(repository) = &self.repository
-            && !linked(repository)
-        {
-            bail!("edge.json at '{at}': repository '{repository}' must be an https url a listing can link");
-        }
-        if let Some(edge) = &self.edge
-            && !versioned(edge)
-        {
-            bail!("edge.json at '{at}': edge '{edge}' must be major.minor.patch, digits only");
-        }
-        Ok(())
+        let parsed = parse_manifest(text.as_bytes()).map_err(|e| anyhow!("edge.json at '{at}': {e}"))?;
+        rules::check(&parsed, SYSTEM_MODULES).map_err(|e| anyhow!("edge.json at '{at}': {e}"))?;
+        Ok(manifest)
     }
 
     /* Refuses a project written for a newer engine, since a later one keeps running what an earlier one wrote but never the other way. Said here so an old binary names the version it lacks instead of failing on a field it cannot read. */
     pub fn check_engine(path: &Path) -> Result<()> {
         let Some(floor) = Self::load(path)?.edge else { return Ok(()) };
-        if newer(&floor) {
-            bail!("this project needs edge {floor}, this is {}\nhelp: curl -fsSL https://cdn.edgepython.com/cli/install.sh | sh", env!("CARGO_PKG_VERSION"));
+        if rules::newer(&floor, rules::ENGINE) {
+            bail!("this project needs edge {floor}, this is {}\nhelp: curl -fsSL https://cdn.edgepython.com/cli/install.sh | sh", rules::ENGINE);
         }
         Ok(())
     }
@@ -101,46 +58,6 @@ impl Manifest {
         let text = serde_json::to_string_pretty(self)?;
         std::fs::write(path, format!("{text}\n")).with_context(|| format!("writing {}", path.display()))
     }
-}
-
-/* A name that reads the same in a url, an import and a listing. */
-fn named(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && !name.ends_with('-')
-        && !name.contains("--")
-        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-/* An address a listing can open, so an ssh remote or a bare host is refused. */
-fn linked(url: &str) -> bool {
-    let Some(host) = url.strip_prefix("https://") else { return false };
-    !host.is_empty() && url.len() <= 256 && !url.contains(char::is_whitespace)
-}
-
-/// Whether `floor` asks for an engine later than the one running.
-pub fn newer(floor: &str) -> bool {
-    parts(floor) > parts(env!("CARGO_PKG_VERSION"))
-}
-
-/* The engine a manifest's bytes ask for, read on its own so a dependency answers out of the package that carries it rather than out of a registry. */
-pub fn floor(bytes: &[u8]) -> Option<String> {
-    let declared: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    declared.get("edge")?.as_str().map(str::to_string)
-}
-
-/* The three numbers of a version, each its own integer, so 0.7.0 outranks 0.6.45 rather than reading as a decimal. */
-fn parts(version: &str) -> (u32, u32, u32) {
-    let mut read = version.split('.').map(|part| part.parse().unwrap_or(0));
-    (read.next().unwrap_or(0), read.next().unwrap_or(0), read.next().unwrap_or(0))
-}
-
-/* Three numeric parts, no prerelease tags, so an ordering never depends on how a tag sorts. */
-fn versioned(version: &str) -> bool {
-    let parts: Vec<&str> = version.split('.').collect();
-    parts.len() == 3
-        && parts.iter().all(|p| !p.is_empty() && p.len() <= 9 && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(test)]
@@ -169,34 +86,27 @@ mod tests {
         assert!(m.name.is_none() && m.version.is_none() && m.docs.is_none());
     }
 
+    /* The rules live in the engine, the CLI applies them and names the file it read. */
     #[test]
     fn the_fields_a_registry_would_turn_away_are_refused() {
         for (body, want) in [
             (r#"{ "name": "Slugify" }"#, "must be lowercase"),
-            (r#"{ "name": "1slug" }"#, "must be lowercase"),
-            (r#"{ "name": "slug--ify" }"#, "must be lowercase"),
-            (r#"{ "name": "slugify-" }"#, "must be lowercase"),
             (r#"{ "name": "main" }"#, "is reserved for permissions"),
-            (r#"{ "name": "all" }"#, "is reserved for permissions"),
-            (r#"{ "version": "1.0" }"#, "must be major.minor.patch"),
-            (r#"{ "version": "1.0.0-rc1" }"#, "must be major.minor.patch"),
-            (r#"{ "description": "  " }"#, "description is empty"),
+            (r#"{ "name": "time" }"#, "is reserved for the system module"),
+            (r#"{ "version": "01.0.0" }"#, "must be major.minor.patch"),
             (r#"{ "description": "Turn absolutely any text that you have into a tidy url slug fast." }"#, "the cap is 60"),
-            (r#"{ "repository": "git@github.com:x/slugify.git" }"#, "must be an https url"),
-            (r#"{ "repository": "http://github.com/x/slugify" }"#, "must be an https url"),
-            (r#"{ "repository": "github.com/x/slugify" }"#, "must be an https url"),
-            (r#"{ "repository": "https://" }"#, "must be an https url"),
+            (r#"{ "imports": { "net": "./net.py" } }"#, "takes the name of a system module"),
         ] {
             let Err(e) = load(body) else { panic!("{body} should be refused") };
             let err = format!("{e:#}");
-            assert!(err.contains(want), "{body} wanted '{want}', got '{err}'");
+            assert!(err.contains("edge.json at '") && err.contains(want), "{body} wanted '{want}', got '{err}'");
         }
     }
 
     /* A later engine runs what an earlier one wrote, so only a floor above the running version is refused, and a project that names none runs anywhere. */
     #[test]
     fn a_project_runs_on_its_engine_or_a_later_one() {
-        let running = parts(env!("CARGO_PKG_VERSION"));
+        let running = rules::parts(rules::ENGINE);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("edge.json");
         let at = |major, minor, patch| format!("{{ \"edge\": \"{major}.{minor}.{patch}\" }}");
@@ -208,15 +118,7 @@ mod tests {
 
         std::fs::write(&path, at(running.0, running.1, running.2 + 1)).unwrap();
         let err = format!("{:#}", Manifest::check_engine(&path).unwrap_err());
-        assert!(err.contains("this project needs edge") && err.contains(env!("CARGO_PKG_VERSION")), "{err}");
-    }
-
-    // Each field is its own integer, so a patch of 45 sits below a minor of 7 rather than reading as a decimal.
-    #[test]
-    fn a_version_orders_by_its_numbers_and_not_as_a_decimal() {
-        assert!(parts("0.7.0") > parts("0.6.45"));
-        assert!(parts("0.6.5") < parts("0.6.41"));
-        assert!(parts("1.0.0") > parts("0.99.99"));
+        assert!(err.contains("this project needs edge") && err.contains(rules::ENGINE), "{err}");
     }
 
     #[test]

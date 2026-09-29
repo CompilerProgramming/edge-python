@@ -50,7 +50,6 @@ impl Host {
             exports: None,
             print: Arc::new(Mutex::new(sink)),
             natives: Vec::new(),
-            fetched: HashMap::new(),
             registered: HashMap::new(),
             deferred: Vec::new(),
             running: Vec::new(),
@@ -194,10 +193,6 @@ impl Instance {
         })
     }
 
-    pub(super) fn register_code(&mut self, spec: &str, src: &[u8]) -> Result<(), String> {
-        self.register_pair(spec, src, |store, ex, (s, sl), (p, pl)| ex.register_code_module.call(store, (s, sl, p, pl)))
-    }
-
     pub(super) fn register_error(&mut self, spec: &str, msg: &str) -> Result<(), String> {
         self.register_pair(spec, msg.as_bytes(), |store, ex, (s, sl), (p, pl)| ex.register_module_error.call(store, (s, sl, p, pl)))
     }
@@ -220,6 +215,47 @@ impl Instance {
         }
         state.registered.insert(spec.to_string(), (base, names.clone()));
         self.register_native(spec, &names, base)
+    }
+
+    /* Starts the engine's resolution walk, returning the first step it asks this host, as JSON. */
+    pub(super) fn walk_start(&mut self, src: &str, dir: &str, system: &str) -> Result<Vec<u8>, String> {
+        self.walk_call(&[src.as_bytes(), dir.as_bytes(), system.as_bytes()], |store, ex, s| ex.walk_start.call(store, (s[0].0, s[0].1, s[1].0, s[1].1, s[2].0, s[2].1)))
+    }
+
+    /* Answers a fetch, `kind` 0 with the bytes, 1 missing, 2 failed with why. */
+    pub(super) fn walk_fetched(&mut self, bytes: &[u8], kind: i32) -> Result<Vec<u8>, String> {
+        self.walk_call(&[bytes], |store, ex, s| ex.walk_fetched.call(store, (s[0].0, s[0].1, kind)))
+    }
+
+    /* The bytes of the plugin the last step named, which may never have passed through this host. */
+    pub(super) fn walk_plugin_bytes(&mut self) -> Result<Vec<u8>, String> {
+        self.walk_call(&[], |store, ex, _| ex.walk_plugin_bytes.call(store, ()))
+    }
+
+    /* Answers a plugin, `kind` 0 registered, 1 failed, 2 refused, each with why. */
+    pub(super) fn walk_plugin(&mut self, kind: i32, why: &str) -> Result<Vec<u8>, String> {
+        self.walk_call(&[why.as_bytes()], |store, ex, s| ex.walk_plugin.call(store, (kind, s[0].0, s[0].1)))
+    }
+
+    /* Hands back what serving the system modules failed at, the failures joined by NUL. */
+    pub(super) fn walk_served(&mut self, failures: &str) -> Result<Vec<u8>, String> {
+        self.walk_call(&[failures.as_bytes()], |store, ex, s| ex.walk_served.call(store, (s[0].0, s[0].1)))
+    }
+
+    // Stages the buffers for one walk call, frees them after, and reads the step it left.
+    fn walk_call(&mut self, bufs: &[&[u8]], call: impl FnOnce(&mut Store<State>, &Exports, &[(i32, i32)]) -> wasmtime::Result<i32>) -> Result<Vec<u8>, String> {
+        let mut staged = Vec::with_capacity(bufs.len());
+        for bytes in bufs {
+            let ptr = stage(&mut self.store, &self.ex, bytes).map_err(|e| e.to_string())?;
+            staged.push((ptr, bytes.len() as i32));
+        }
+        let ex = self.ex.clone();
+        let result = call(&mut self.store, &ex, &staged);
+        for (ptr, len) in &staged {
+            unstage(&mut self.store, &self.ex, *ptr, *len as usize);
+        }
+        self.checked(result).map_err(|e| e.to_string())?;
+        Ok(self.read_out())
     }
 
     /* Sleeps the next boot on the host's clock, or on the virtual one for a run no package holds time. */

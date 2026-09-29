@@ -11,15 +11,13 @@ import Icon from '../../../components/ui/icon.astro'
 import { avatarFor } from '../../../lib/account/avatar'
 import { packed } from '../../../lib/server/bundle'
 import { identify } from '../../../lib/server/license'
-import { keyOf, named, packageByName, versionsOf } from '../../../lib/server/packages'
+import { keyOf, packageByName, versionsOf } from '../../../lib/server/packages'
 import { publicUser, userById } from '../../../lib/server/users'
 import { bytes, count, on } from '../../../lib/format'
 import { entries, render } from '../../../lib/docs/page'
 import { tree } from '../../../lib/docs/tree'
 
 const name = String(Astro.params.name ?? '').toLowerCase()
-if (!named(name)) return Astro.rewrite('/404')
-
 const held = await packageByName(env.DB, name)
 if (!held) return Astro.rewrite('/404')
 
@@ -44,8 +42,8 @@ if (!object) return Astro.rewrite('/404')
 
 const artifact = packed(new Uint8Array(await object.arrayBuffer()))
 
-// The examples import the package they document, pinned to the release they sit on.
-const own = { [name]: `${env.CDN}/${keyOf(name, viewed.version)}#sha256-${viewed.digest}` }
+// The examples import the package they document at this release, as a project declares it.
+const own = { [name]: viewed.version }
 
 const sections = tree(entries(artifact.docs), '')
 const docs = sections.flatMap((section) => section.docs)

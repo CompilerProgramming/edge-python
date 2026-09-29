@@ -3,7 +3,7 @@ import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, type APIRequestContext } from '@playwright/test'
 import { MAILS, arriving, mailedCode, mintToken, packed, published, signIn, test, unique } from './helpers'
-import { MAX_ARTIFACT, MAX_DESCRIPTION, MAX_NOTICE } from '../src/lib/server/packages'
+import { MAX_ARTIFACT, MAX_NOTICE } from '../src/lib/server/packages'
 import { OWNER } from '../src/lib/account/handle'
 
 const DOCS = fileURLToPath(new URL('../../docs/', import.meta.url))
@@ -466,7 +466,9 @@ test.describe('publishing', () => {
       ['a name permissions reserve', release('main', '0.1.0')],
       ['an ssh remote', release(naming(), '0.1.0', { repository: 'git@github.com:you/charts.git' })],
       ['a notice past the cap', release(naming(), '0.1.0', {}, { LICENSE: 'x'.repeat(MAX_NOTICE + 1) })],
-      ['a description past the cap', release(naming(), '0.1.0', { description: 'x'.repeat(MAX_DESCRIPTION + 1) })],
+      ['a description past the cap', release(naming(), '0.1.0', { description: 'x'.repeat(61) })],
+      ['a version with a leading zero', release(naming(), '01.0.0')],
+      ['a name a system module takes', release('time', '0.1.0')],
       ['an engine floor that is not a version', release(naming(), '0.1.0', { edge: '0.7' })],
       ['a page the site cannot lay out', release(naming(), '0.1.0', {}, { '@docs/guide.mdx': 'no frontmatter here\n' })]
     ]
@@ -533,7 +535,7 @@ test.describe('publishing', () => {
   test('takes a version its lock holds and refuses one nothing resolved', async ({ request }) => {
     await signIn(request)
     const token = await mintToken(request)
-    const held = JSON.stringify({ dep: { version: '0.1.0', url: 'https://example.com/dep.edge', digest: 'sha256-ab' } })
+    const held = JSON.stringify({ dep: { version: '0.1.0', url: 'https://example.com/dep.edge', digest: `sha256-${'ab'.repeat(32)}` } })
     const nested = JSON.stringify({ imports: { dep: '0.1.0' } })
 
     const bad: [string, Buffer][] = [
@@ -541,7 +543,8 @@ test.describe('publishing', () => {
       ['a lock holding another release', release(naming(), '0.1.0', { imports: { dep: '0.2.0' } }, { 'edge.lock': held })],
       ['a lock missing the name', release(naming(), '0.1.0', { imports: { dep: '0.1.0' } }, { 'edge.lock': '{}' })],
       ['a lock that is not JSON', release(naming(), '0.1.0', { imports: { dep: '0.1.0' } }, { 'edge.lock': '{ nope' })],
-      ['a nested manifest with no lock beside it', release(naming(), '0.1.0', {}, { 'pkg/edge.json': nested })]
+      ['a nested manifest with no lock beside it', release(naming(), '0.1.0', {}, { 'pkg/edge.json': nested })],
+      ['a lock whose digest pins nothing', release(naming(), '0.1.0', { imports: { dep: '0.1.0' } }, { 'edge.lock': JSON.stringify({ dep: { version: '0.1.0', url: 'https://example.com/dep.edge', digest: 'sha256-ab' } }) })]
     ]
 
     for (const [why, buffer] of bad) {

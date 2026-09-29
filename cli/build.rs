@@ -41,7 +41,17 @@ fn js_host(dist: &Path, out: &Path) {
         table.push_str(&format!("    ({key:?}, include_bytes!({:?})),\n", path.display().to_string()));
     }
     table.push_str("];\n");
+    table.push_str(&format!("pub const SYSTEM_MODULES: &[&str] = &{:?};\n", system_modules(&root)));
     std::fs::write(out, table).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
+}
+
+/* The system module names as the JS host lists them, so the CLI reserves the same ones without starting SpiderMonkey. */
+fn system_modules(dist: &Path) -> Vec<String> {
+    let file = dist.join("system/names.js");
+    let text = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
+    let list = text.split_once("MODULES = [").and_then(|(_, rest)| rest.split_once(']')).map(|(list, _)| list);
+    let list = list.unwrap_or_else(|| panic!("{} lists no MODULES", file.display()));
+    list.split(',').map(|name| name.trim().trim_matches(['\'', '"']).to_string()).filter(|name| !name.is_empty()).collect()
 }
 
 // tsc writes to js/dist and the CDN serves that tree under js/src, so the prefix is added back here.

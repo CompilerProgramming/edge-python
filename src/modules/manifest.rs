@@ -2,44 +2,72 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::s;
+use super::json::{self, Value};
 
 /* Parsed `edge.json`, `extends` inherits another manifest's imports when a name is not local. */
-#[derive(Clone)]
+#[derive(Clone, Default, Debug)]
 pub struct Manifest {
     // Bare name to spec pairs, parsed once and scanned linearly, a Vec avoids a hashbrown monomorphization.
     pub imports: Vec<(String, String)>,
     pub extends: Option<String>,
+    // What a package carries into a registry, which the compiler never reads.
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub description: Option<String>,
+    pub repository: Option<String>,
+    // The lowest engine the manifest runs on.
+    pub edge: Option<String>,
+    // Each holder with the entries it is granted, as written.
+    pub permissions: Option<Vec<(String, Vec<String>)>>,
 }
 
-/* Parse `{ "imports": {...}, "extends": "..." }`, keys optional, unknown keys skipped, numbers, arrays, bools rejected. */
+/* Parse an edge.json, unknown keys skipped, numbers and booleans refused. */
 pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, String> {
-    let src = core::str::from_utf8(bytes).map_err(|_| s!("edge.json is not valid UTF-8"))?;
-    let mut p = Reader { src: src.as_bytes(), pos: 0 };
-    let mut m = Manifest { imports: Vec::new(), extends: None };
-
-    p.skip_ws();
-    p.expect(b'{', "edge.json must be a JSON object")?;
-    p.skip_ws();
-    if p.peek() == Some(b'}') { return Ok(m); }
-
-    loop {
-        p.skip_ws();
-        let key = p.read_string()?;
-        p.skip_ws();
-        p.expect(b':', "expected ':' after key in edge.json")?;
-        p.skip_ws();
+    let Value::Obj(fields) = json::parse(bytes, "edge.json")? else {
+        return Err(s!("edge.json must be a JSON object"));
+    };
+    let mut m = Manifest::default();
+    for (key, value) in fields {
         match key.as_str() {
-            "imports" => p.read_imports_into(&mut m.imports)?,
-            "extends" => m.extends = Some(p.read_string()?),
-            _ => p.skip_value()?,
-        }
-        p.skip_ws();
-        match p.peek() {
-            Some(b',') => { p.pos += 1; continue; }
-            Some(b'}') => return Ok(m),
-            _ => return Err(s!("expected ',' or '}' in edge.json")),
+            "imports" => m.imports = imports_of(value)?,
+            "permissions" => m.permissions = Some(holders_of(value)?),
+            "extends" => m.extends = Some(string_of(&key, value)?),
+            "name" => m.name = Some(string_of(&key, value)?),
+            "version" => m.version = Some(string_of(&key, value)?),
+            "description" => m.description = Some(string_of(&key, value)?),
+            "repository" => m.repository = Some(string_of(&key, value)?),
+            "edge" => m.edge = Some(string_of(&key, value)?),
+            _ => {}
         }
     }
+    Ok(m)
+}
+
+fn string_of(key: &str, value: Value) -> Result<String, String> {
+    match value {
+        Value::Str(s) => Ok(s),
+        _ => Err(s!("'", str key, "' must be a string")),
+    }
+}
+
+fn imports_of(value: Value) -> Result<Vec<(String, String)>, String> {
+    let Value::Obj(fields) = value else { return Err(s!("'imports' must be an object")) };
+    fields.into_iter().map(|(name, target)| match target {
+        Value::Str(target) => Ok((name, target)),
+        _ => Err(s!("'imports' maps '", str &name, "' to something that is not a string")),
+    }).collect()
+}
+
+// The shape the grants check of the system modules reads, each holder to its list of entries.
+fn holders_of(value: Value) -> Result<Vec<(String, Vec<String>)>, String> {
+    let Value::Obj(fields) = value else { return Err(s!("permissions must map each package to a list of entries")) };
+    fields.into_iter().map(|(holder, entries)| {
+        let listed = match entries {
+            Value::List(items) => items.into_iter().map(|e| match e { Value::Str(e) => Some(e), _ => None }).collect::<Option<Vec<_>>>(),
+            _ => None,
+        };
+        listed.map(|entries| (holder.clone(), entries)).ok_or_else(|| s!("permissions for '", str &holder, "' must be a list of entries such as \"net:api.example.com\""))
+    }).collect()
 }
 
 /* Yield the directory of `start` and every parent, in order. Each ends in '/' or is "" (topmost). */
@@ -91,7 +119,7 @@ pub fn join_relative(dir: &str, target: &str) -> String {
     base
 }
 
-fn parent_dir(dir: &str) -> Option<String> {
+pub fn parent_dir(dir: &str) -> Option<String> {
     if dir.is_empty() { return None; }
     let trimmed = dir.trim_end_matches('/');
     // URL guard, never strip the host. After "scheme://" there must still be a '/' to walk into.
@@ -103,115 +131,6 @@ fn parent_dir(dir: &str) -> Option<String> {
         Some(("", _)) => Some(String::new()),
         Some((head, _)) => Some(s!(str head, "/")),
         None => Some(String::new()),
-    }
-}
-
-struct Reader<'a> {
-    src: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn peek(&self) -> Option<u8> { self.src.get(self.pos).copied() }
-
-    fn skip_ws(&mut self) {
-        while let Some(c) = self.peek() {
-            if matches!(c, b' ' | b'\t' | b'\n' | b'\r') { self.pos += 1; } else { break; }
-        }
-    }
-
-    fn expect(&mut self, c: u8, msg: &'static str) -> Result<(), String> {
-        if self.peek() == Some(c) { self.pos += 1; Ok(()) } else { Err(s!(str msg)) }
-    }
-
-    fn read_string(&mut self) -> Result<String, String> {
-        self.expect(b'"', "expected '\"' starting a string")?;
-        let mut out = String::new();
-        loop {
-            match self.peek() {
-                None => return Err(s!("unterminated string in edge.json")),
-                Some(b'"') => { self.pos += 1; return Ok(out); }
-                Some(b'\\') => {
-                    self.pos += 1;
-                    let esc = self.peek().ok_or_else(|| s!("dangling '\\' in edge.json"))?;
-                    match esc {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
-                        b'/' => out.push('/'),
-                        b'n' => out.push('\n'),
-                        b't' => out.push('\t'),
-                        b'r' => out.push('\r'),
-                        _ => return Err(s!("unsupported escape '\\", char esc as char, "' in edge.json")),
-                    }
-                    self.pos += 1;
-                }
-                Some(c) => { out.push(c as char); self.pos += 1; }
-            }
-        }
-    }
-
-    fn read_imports_into(&mut self, out: &mut Vec<(String, String)>) -> Result<(), String> {
-        self.expect(b'{', "'imports' must be an object")?;
-        self.skip_ws();
-        if self.peek() == Some(b'}') { self.pos += 1; return Ok(()); }
-        loop {
-            self.skip_ws();
-            let k = self.read_string()?;
-            self.skip_ws();
-            self.expect(b':', "expected ':' after import name")?;
-            self.skip_ws();
-            let v = self.read_string()?;
-            out.push((k, v));
-            self.skip_ws();
-            match self.peek() {
-                Some(b',') => { self.pos += 1; continue; }
-                Some(b'}') => { self.pos += 1; return Ok(()); }
-                _ => return Err(s!("expected ',' or '}' in 'imports'")),
-            }
-        }
-    }
-
-    /* Skip a string, a list of strings or a string-keyed object, forgives future keys. Numeric and bool values surface as errors so typos don't pass silently. */
-    fn skip_value(&mut self) -> Result<(), String> {
-        match self.peek() {
-            Some(b'"') => { let _ = self.read_string()?; Ok(()) }
-            // A list of strings, the shape of each holder in `permissions`.
-            Some(b'[') => {
-                self.pos += 1;
-                self.skip_ws();
-                if self.peek() == Some(b']') { self.pos += 1; return Ok(()); }
-                loop {
-                    self.skip_ws();
-                    let _ = self.read_string()?;
-                    self.skip_ws();
-                    match self.peek() {
-                        Some(b',') => { self.pos += 1; continue; }
-                        Some(b']') => { self.pos += 1; return Ok(()); }
-                        _ => return Err(s!("expected ',' or ']' in a list")),
-                    }
-                }
-            }
-            Some(b'{') => {
-                self.pos += 1;
-                self.skip_ws();
-                if self.peek() == Some(b'}') { self.pos += 1; return Ok(()); }
-                loop {
-                    self.skip_ws();
-                    let _ = self.read_string()?;
-                    self.skip_ws();
-                    self.expect(b':', "expected ':' in nested object")?;
-                    self.skip_ws();
-                    self.skip_value()?;
-                    self.skip_ws();
-                    match self.peek() {
-                        Some(b',') => { self.pos += 1; continue; }
-                        Some(b'}') => { self.pos += 1; return Ok(()); }
-                        _ => return Err(s!("expected ',' or '}' in nested object")),
-                    }
-                }
-            }
-            _ => Err(s!("unsupported value in edge.json (only strings, lists of strings and string-objects)")),
-        }
     }
 }
 
@@ -230,11 +149,21 @@ mod tests {
     }
 
     #[test]
-    fn permissions_are_read_past() {
+    fn permissions_are_read_as_written() {
         let m = parse_manifest(br#"{ "imports": { "a": "./a.py" }, "permissions": { "main": ["net:api.example.com", "time"], "all": [] } }"#).unwrap();
         assert_eq!(m.imports, alloc::vec![(String::from("a"), String::from("./a.py"))]);
+        let holders = m.permissions.unwrap();
+        assert_eq!(holders[0], (String::from("main"), alloc::vec![String::from("net:api.example.com"), String::from("time")]));
         assert!(parse_manifest(br#"{ "permissions": { "main": [1] } }"#).is_err());
         assert!(parse_manifest(br#"{ "permissions": { "main": ["net" "time"] } }"#).is_err());
+        assert!(parse_manifest(br#"{ "permissions": ["net"] }"#).is_err());
+    }
+
+    #[test]
+    fn the_registry_fields_are_read_and_must_be_strings() {
+        let m = parse_manifest(r#"{ "name": "café", "version": "0.1.0", "edge": "0.7.5", "future": { "kept": ["x"] } }"#.as_bytes()).unwrap();
+        assert_eq!((m.name.as_deref(), m.version.as_deref(), m.edge.as_deref()), (Some("café"), Some("0.1.0"), Some("0.7.5")));
+        assert!(parse_manifest(br#"{ "name": ["x"] }"#).unwrap_err().contains("'name' must be a string"));
     }
 
     #[test]

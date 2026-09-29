@@ -1,6 +1,5 @@
 import type { Limits, RunOpts, ExecResult, WorkerRequest, WorkerMessage } from './protocol.ts';
 import type { Permissions } from './system/grants.ts';
-import { isVersion } from './specs.ts';
 
 export interface CreateWorkerOpts {
     // The program's directory, the page reads its files and its edge.json for the room.
@@ -159,8 +158,8 @@ async function rootOf(opts: CreateWorkerOpts, base: string | null): Promise<{ sp
         fetch(new URL(name, base), { credentials: 'omit' }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
     const manifest = await json('edge.json');
     const specs = Object.values((manifest['imports'] ?? {}) as Record<string, unknown>).map(String);
-    // A version names a release, and the lock beside the manifest says where its bytes are.
-    const locked = specs.some(isVersion) ? Object.values(await json('edge.lock')).map((entry) => String((entry as { url?: unknown } | null)?.url ?? '')) : [];
+    // The lock beside the manifest names where each release lives, so the room may reach it.
+    const locked = Object.values(await json('edge.lock')).map((entry) => String((entry as { url?: unknown } | null)?.url ?? ''));
     return { specs: [...specs, ...locked], permissions: (manifest['permissions'] ?? {}) as Permissions };
 }
 

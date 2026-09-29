@@ -181,7 +181,7 @@ fn main() -> Result<()> {
     let checked = || -> Result<()> {
         manifest::Manifest::check_engine(&manifest_path)?;
         // The tree is held to what edge lock checked, so a later edit cannot slip past.
-        asks::check(&manifest_path, &lock::Lock::beside(&manifest_path)?)
+        asks::check(&manifest_path, &lock::beside(&manifest_path)?)
     };
     if compiles
         && let Err(e) = checked()

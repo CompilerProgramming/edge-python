@@ -273,7 +273,7 @@ fn unbundle(body: &str) -> Option<(String, HashMap<String, Vec<u8>>, String)> {
     let bytes = base64_decode(b64.trim())?;
     let bundle = Bundle::decode(&bytes).ok()?;
     let entry = bundle.entry.clone();
-    let files = bundle.into_files();
+    let files = crate::pack::into_files(bundle);
     let source = String::from_utf8_lossy(files.get(&entry)?).into_owned();
     Some((source, files, dir_of(&entry)))
 }

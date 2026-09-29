@@ -1,4 +1,6 @@
 use anyhow::{anyhow, bail, Result};
+use compiler::modules::lock::{locked_spec, verify_pin};
+use compiler::modules::rules::HOLDERS;
 use compiler::modules::{dir_of, join_relative, parse_integrity, walk_up_dirs};
 use compiler::util::sha256::{hex_encode, sha256};
 use serde_json::{json, Map, Value};
@@ -8,7 +10,6 @@ use std::rc::Rc;
 
 use crate::host::{fetch_cached, system};
 use crate::lock::{self, Lock};
-use crate::manifest::RESERVED;
 use crate::pack::Bundle;
 
 /* Where a package's files are, the project on disk or a packed bundle held in memory. */
@@ -87,7 +88,7 @@ impl Walk {
     fn imports(&mut self, home: &Rc<Home>, id: &str, dir: &str, via: &[String], imports: &Map<String, Value>, lock: &Lock) -> Result<()> {
         for (name, target) in imports {
             // A target the lock cannot answer yet is the command's own error to report.
-            let Some(spec) = target.as_str().and_then(|t| lock.spec(name, t).ok()) else { continue };
+            let Some(spec) = target.as_str().and_then(|t| locked_spec(name, t, Some(lock)).ok()) else { continue };
             let (target, pin) = parse_integrity(&spec).map_err(|e| anyhow!(e))?;
             if target.contains("://") {
                 if packed(target) {
@@ -100,14 +101,14 @@ impl Walk {
                         Some(bytes) => bytes,
                         None => fetch_cached(target, pin).map_err(|e| anyhow!(e))?,
                     };
-                    self.bundle(target, &bytes, pin, name, via)?;
+                    self.bundle(target, &spec, &bytes, name, via)?;
                 }
                 continue;
             }
             let rel = join_relative(dir, target).trim_start_matches("./").to_string();
             if packed(&rel) {
                 let bytes = home.read(&rel).ok_or_else(|| anyhow!("reading {rel}: not found"))?;
-                self.bundle(&rel, &bytes, pin, name, via)?;
+                self.bundle(&rel, &spec, &bytes, name, via)?;
                 continue;
             }
             // A module belongs to the nearest manifest above it, another package unless that is this one.
@@ -121,11 +122,9 @@ impl Walk {
     }
 
     /* A packed package, held to its pin, then read from inside itself like any other. */
-    fn bundle(&mut self, address: &str, bytes: &[u8], pin: Option<[u8; 32]>, name: &str, via: &[String]) -> Result<()> {
-        if pin.is_some_and(|want| sha256(bytes) != want) {
-            bail!("integrity check failed for '{address}'");
-        }
-        let files = Bundle::decode(bytes).map_err(|e| anyhow!("package '{address}' is not a packed .edge, {e}"))?.into_files();
+    fn bundle(&mut self, address: &str, spec: &str, bytes: &[u8], name: &str, via: &[String]) -> Result<()> {
+        verify_pin(spec, bytes).map_err(|e| anyhow!(e))?;
+        let files = crate::pack::into_files(Bundle::decode(bytes).map_err(|e| anyhow!("package '{address}' is not a packed .edge, {e}"))?);
         self.visit(&Rc::new(Home::Packed(files)), &hex_encode(&sha256(bytes)), "", address, name, via)
     }
 
@@ -137,7 +136,7 @@ impl Walk {
         let Some(bytes) = home.read(&format!("{dir}edge.json")) else { return Ok(()) };
         let manifest: Value = serde_json::from_slice(&bytes).map_err(|e| anyhow!("edge.json at '{place}': {e}"))?;
         let named = manifest.get("name").and_then(Value::as_str);
-        if let Some(name) = named.filter(|n| RESERVED.contains(n)) {
+        if let Some(name) = named.filter(|n| HOLDERS.contains(n)) {
             bail!("edge.json at '{place}': name '{name}' is reserved for permissions");
         }
         let name = named.unwrap_or(hint).to_string();
@@ -156,7 +155,7 @@ impl Walk {
             None => name.clone(),
         };
         let lock = match home.read(&format!("{dir}{}", lock::FILE)) {
-            Some(bytes) => Lock::parse(&bytes)?,
+            Some(bytes) => Lock::parse(&bytes).map_err(|e| anyhow!("edge.json at '{place}': {e}"))?,
             None => Lock::default(),
         };
         let imports = manifest.get("imports").and_then(Value::as_object).cloned().unwrap_or_default();

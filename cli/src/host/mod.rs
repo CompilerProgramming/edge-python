@@ -220,7 +220,6 @@ pub struct State {
     pub exports: Option<Exports>,
     pub print: Printer,
     pub natives: Vec<Native>,
-    pub fetched: HashMap<String, Vec<u8>>,
     pub registered: Registered,
     // Ids of host calls parked since the last dispatch, each answer arrives as a completion.
     pub deferred: Vec<u32>,
@@ -252,7 +251,6 @@ pub struct Exports {
     pub out_len: TypedFunc<(), i32>,
     pub wasm_alloc: TypedFunc<i32, i32>,
     pub wasm_free: TypedFunc<(i32, i32), ()>,
-    pub register_code_module: TypedFunc<(i32, i32, i32, i32), ()>,
     pub register_native_module: TypedFunc<(i32, i32, i32, i32, i32), ()>,
     pub register_module_error: TypedFunc<(i32, i32, i32, i32), ()>,
     pub reset_modules: TypedFunc<(), ()>,
@@ -280,6 +278,12 @@ pub struct Exports {
     pub vm_create: TypedFunc<(), i32>,
     pub vm_select: TypedFunc<i32, i32>,
     pub vm_drop: TypedFunc<i32, i32>,
+    // The engine's resolution walk, each call answering one step and leaving the next.
+    pub walk_start: TypedFunc<(i32, i32, i32, i32, i32, i32), i32>,
+    pub walk_fetched: TypedFunc<(i32, i32, i32), i32>,
+    pub walk_plugin_bytes: TypedFunc<(), i32>,
+    pub walk_plugin: TypedFunc<(i32, i32, i32), i32>,
+    pub walk_served: TypedFunc<(i32, i32), i32>,
 }
 
 impl Exports {
@@ -296,7 +300,6 @@ impl Exports {
             out_len: f!("out_len"),
             wasm_alloc: f!("wasm_alloc"),
             wasm_free: f!("wasm_free"),
-            register_code_module: f!("register_code_module"),
             register_native_module: f!("register_native_module"),
             register_module_error: f!("register_module_error"),
             reset_modules: f!("reset_modules"),
@@ -324,6 +327,11 @@ impl Exports {
             vm_create: f!("vm_create"),
             vm_select: f!("vm_select"),
             vm_drop: f!("vm_drop"),
+            walk_start: f!("walk_start"),
+            walk_fetched: f!("walk_fetched"),
+            walk_plugin_bytes: f!("walk_plugin_bytes"),
+            walk_plugin: f!("walk_plugin"),
+            walk_served: f!("walk_served"),
         })
     }
 }

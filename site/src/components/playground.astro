@@ -12,7 +12,7 @@ interface Props {
   minLines?: number
   maxLines?: number
   outputMaxLines?: number
-  // A package page's own package, by name to its pinned url, beside what the example imports.
+  // A package page's own package, by name to its version, beside what the example imports.
   imports?: Record<string, string>
 }
 
@@ -101,6 +101,7 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
   import { run, type Manifest, type Phase } from '../lib/playground/runtime'
 
   const PHASES: Record<Phase, string> = {
+    lock: 'generating edge.lock…',
     runtime: 'loading runtime…',
     worker: 'initializing worker…',
     running: 'running…'

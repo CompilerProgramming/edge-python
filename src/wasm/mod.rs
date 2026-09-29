@@ -6,7 +6,9 @@ use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
 
 // Wires parser and VM to the host via the handle ABI, the wire contract lives in `crate::abi`.
 mod exports;
+mod package;
 mod resolver;
+mod walk;
 
 pub(crate) use resolver::system_call;
 
@@ -131,6 +133,9 @@ pub(super) struct WasmRuntime {
     pub chunk_cache: Vec<(String, Rc<SSAChunk>)>,
     pub slots: Vec<Option<Slot>>,
     pub current: usize,
+    /* The resolution walk the host is driving, and the plugin bytes its last step named. */
+    pub walk: Option<crate::modules::walk::Walk>,
+    pub walk_plugin: Vec<u8>,
 }
 
 impl WasmRuntime {
@@ -143,6 +148,8 @@ impl WasmRuntime {
             chunk_cache: Vec::new(),
             slots: Vec::new(),
             current: 0,
+            walk: None,
+            walk_plugin: Vec::new(),
         }
     }
 

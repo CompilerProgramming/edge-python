@@ -21,19 +21,12 @@ pub fn link(linker: &mut Linker<State>) -> Result<()> {
     linker
         .func_wrap("env", "host_now_ns", |_: Caller<'_, State>| -> i64 { super::now_ns() as i64 })
         .map_err(|e| anyhow!("{e}"))?;
+    // The walk put every manifest it read in the compiler, so nothing more answers here.
     linker
-        .func_wrap("env", "host_fetch_bytes", |mut caller: Caller<'_, State>, spec_ptr: i32, spec_len: i32, _hash_ptr: i32, out_len: i32| -> wasmtime::Result<i32> {
+        .func_wrap("env", "host_fetch_bytes", |mut caller: Caller<'_, State>, _spec_ptr: i32, _spec_len: i32, _hash_ptr: i32, out_len: i32| -> wasmtime::Result<i32> {
             let ex = exports(&caller);
-            let spec = String::from_utf8_lossy(&read(&mut caller, ex.memory, spec_ptr, spec_len)).into_owned();
-            let Some(bytes) = caller.data().fetched.get(&spec).cloned() else {
-                write_u32(&mut caller, ex.memory, out_len, 0);
-                return Ok(0);
-            };
-            // The compiler frees this with wasm_free and the same length.
-            let ptr = ex.wasm_alloc.call(&mut caller, bytes.len() as i32)?;
-            write(&mut caller, ex.memory, ptr, &bytes);
-            write_u32(&mut caller, ex.memory, out_len, bytes.len() as u32);
-            Ok(ptr)
+            write_u32(&mut caller, ex.memory, out_len, 0);
+            Ok(0)
         })
         .map_err(|e| anyhow!("{e}"))?;
     linker

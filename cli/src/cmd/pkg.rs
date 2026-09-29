@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Result};
+use compiler::modules::rules::shaped_like_version;
 use serde_json::{json, Map, Value};
 use std::io::Read;
 use std::path::Path;
@@ -67,7 +68,7 @@ pub fn add(path: &Path, pkgs: &[String]) -> Result<()> {
     let added: Map<String, Value> = resolved.iter().map(|(name, target)| (name.to_string(), Value::String(target.clone()))).collect();
     let packages = asks::packages(path, &added, &releases)?;
     let mut m = Manifest::load(path)?;
-    let versions = resolved.iter().any(|(_, target)| lock::version_of(target).is_some());
+    let versions = resolved.iter().any(|(_, target)| shaped_like_version(target));
     for (name, target) in resolved {
         ui::added(name, &target);
         m.imports.insert(name.to_string(), target);
@@ -120,11 +121,11 @@ pub fn lock(path: &Path) -> Result<()> {
         if javascript(target) {
             bail!("module '{name}' is JavaScript, ship a .py or a .wasm");
         }
-        let entry = match lock::version_of(target) {
-            Some(version) => release(name, Some(version), true)?,
+        let entry = match shaped_like_version(target) {
+            true => release(name, Some(target), true)?,
             // A path carries its own bytes and a pinned url its own digest.
-            None if !target.contains("://") || target.contains("#sha256-") => continue,
-            None => Entry { version: None, url: target.clone(), digest: lock::digest_of(&download(target)?) },
+            false if !target.contains("://") || target.contains("#sha256-") => continue,
+            false => Entry { version: None, url: target.clone(), digest: lock::digest_of(&download(target)?) },
         };
         ui::added(name, &entry.url);
         lock.insert(name, entry);
@@ -132,7 +133,7 @@ pub fn lock(path: &Path) -> Result<()> {
 
     // Nothing is written until the root grants what every package in the tree asks for.
     asks::check(path, &lock)?;
-    let written = lock.save(path)?;
+    let written = lock::save(&lock, path)?;
     ui::note(&format!("wrote {}", written.display()));
     Ok(())
 }

@@ -2,7 +2,7 @@ import type { APIRoute } from 'astro'
 import { getCollection } from 'astro:content'
 import { env } from 'cloudflare:workers'
 import { cached, json, tooMany } from '../../lib/server/http'
-import { MARK, named, searched } from '../../lib/server/packages'
+import { MARK, searched } from '../../lib/server/packages'
 import { parts } from '../../lib/docs/sections'
 import { slugOf, tree } from '../../lib/docs/tree'
 

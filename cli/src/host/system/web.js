@@ -104,7 +104,6 @@
 
     // The system modules opened for a run, each keyed by the run, its package and the module.
     const opened = new Map();
-    globalThis.__edge_modules = () => JSON.stringify(Object.keys(globalThis.__edge.open));
     globalThis.__edge_check = (json) => JSON.stringify({ error: globalThis.__edge.check(JSON.parse(json)) });
     globalThis.__edge_scopes = (json) => {
         const { permissions, pkg, module } = JSON.parse(json);
