@@ -42,10 +42,10 @@ fn parse_source(src: &str) -> Result<SSAChunk, String> {
     }
     let (mut chunk, errs) = p.parse();
     if !errs.is_empty() {
-        let mut buf = String::new();
+        let (mut buf, name) = (String::new(), source_name());
         for (i, e) in errs.iter().enumerate() {
             if i > 0 { buf.push('\n'); }
-            buf.push_str(&e.render(src, None));
+            buf.push_str(&e.render(src, name.as_deref()));
         }
         return Err(buf);
     }
@@ -213,16 +213,6 @@ pub extern "C" fn vm_drop(id: u32) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn register_code_module(spec_ptr: *const u8, spec_len: u32, src_ptr: *const u8, src_len: u32) {
-    let spec = unsafe { safe_str_owned(spec_ptr, spec_len) };
-    let src = unsafe { safe_str_owned(src_ptr, src_len) };
-    with_runtime(|rt| {
-        rt.registry.push((spec, ModuleEntry::Code(src)));
-        rt.registry_changed();
-    });
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn register_native_module(spec_ptr: *const u8, spec_len: u32, names_ptr: *const u8, names_len: u32, base_id: u32) {
     use alloc::vec::Vec;
     let spec = unsafe { safe_str_owned(spec_ptr, spec_len) };
@@ -283,28 +273,6 @@ pub unsafe extern "C" fn set_limits(heap: u64, ops: u64, calls: u64) {
     let pick = |v: u64, fallback: usize| if v == 0 { fallback } else { usize::try_from(v).unwrap_or(usize::MAX) };
     let limits = Limits { heap: pick(heap, sandbox.heap), ops: pick(ops, sandbox.ops), calls: pick(calls, sandbox.calls) };
     with_slot(|s| s.limits = Some(limits));
-}
-
-/* Pre-fetch feed, each import as `b<TAB>name` (bare, resolve via manifest), `r<TAB>path` (importer-relative) or `R<TAB>path` (manifest-root-relative), one per line. */
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn extract_imports(ptr: *const u8, len: u32) -> u32 {
-    use crate::modules::{scan_imports, ImportSpec};
-    let Ok(src) = core::str::from_utf8(unsafe { safe_bytes(ptr, len) }) else {
-        return write_out("") as u32;
-    };
-    let mut buf = alloc::string::String::new();
-    for spec in scan_imports(src) {
-        if !buf.is_empty() { buf.push('\n'); }
-        let (kind, name) = match &spec {
-            ImportSpec::Bare(n) => ('b', n),
-            ImportSpec::Relative(p) => ('r', p),
-            ImportSpec::Root(p) => ('R', p),
-        };
-        buf.push(kind);
-        buf.push('\t');
-        buf.push_str(name);
-    }
-    write_out(&buf) as u32
 }
 
 /* Drive one segment of execution, on `Pending*` re-stash the VM into the recycled `PausedRun` box. */

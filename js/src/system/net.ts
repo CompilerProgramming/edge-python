@@ -65,10 +65,7 @@ const plain = (url: string): { host: string, path: string, url: string } => {
     const [addressed] = rest.split('#') as [string];
     const at = addressed.indexOf('?');
     const path = [...resolve(at === -1 ? addressed : addressed.slice(0, at))].map((c) => (KEPT.test(c) ? c : encodeURIComponent(c))).join('');
-    const sent = `${scheme!.toLowerCase()}${host}${port}${path}${at === -1 ? '' : addressed.slice(at)}`;
-    // Rebuilt, the url must still name the host that was checked, whatever the path became.
-    if (parts(sent)?.[2]?.toLowerCase() !== host) throw notPlain(url);
-    return { host, path, url: sent };
+    return { host, path, url: `${scheme!.toLowerCase()}${host}${port}${path}${at === -1 ? '' : addressed.slice(at)}` };
 };
 
 const failed = (what: string, e: unknown) => new SystemError('OSError', `${what} failed, ${e instanceof Error ? e.message : String(e)}`);
