@@ -749,6 +749,10 @@ print(f())
 
 `import_module(name)` returns a module that was imported statically somewhere in the program. It is a lookup, not a load. Every reachable module is still resolved and verified at compile time. An unknown name raises `NameError`. A name bound to a non-module global, such as a function, raises `TypeError`.
 
+```edge-manifest
+{ "imports": { "math": "0.1.0" } }
+```
+
 ```edge-python
 import math
 

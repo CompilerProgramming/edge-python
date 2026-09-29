@@ -307,6 +307,10 @@ A `.wasm` exports only functions. A value attribute like `math.pi` ships as a ze
 fn pi() -> f64 { core::f64::consts::PI }
 ```
 
+```edge-manifest
+{ "imports": { "math": "0.1.0" } }
+```
+
 ```edge-python
 import math
 print(math.pi)   # a float, not a call

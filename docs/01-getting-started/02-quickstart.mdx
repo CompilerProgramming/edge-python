@@ -68,6 +68,10 @@ edge lock
 
 Now create `app.py`:
 
+```edge-manifest
+{ "imports": { "json": "0.1.0" } }
+```
+
 ```edge-python
 import json
 
@@ -77,7 +81,7 @@ print(json.dumps(data))
 ```
 
 ```output
-{"name":"edge","tags":["fast","small","sandboxed"]}
+{"name": "edge", "tags": ["fast", "small", "sandboxed"]}
 ```
 
 Run it:
