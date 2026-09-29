@@ -148,9 +148,18 @@ export function listed(db: D1Database, { handle, asked, recent = false, limit = 
     .all<Listed>()
 }
 
-/* One more reach for this package, counted where `edge add` asks what to declare, since that is the moment somebody puts it in a project rather than merely reads its page or locks it again. */
-export const downloaded = (db: D1Database, name: string) =>
-  db.prepare('update package set downloads = downloads + 1 where name = ?').bind(name).run()
+/* Counts a reach where `edge add` asks what to declare, once a day for each visitor, kept only as a hash of address and day. */
+export async function downloaded(db: D1Database, name: string, address: string | null) {
+  const day = new Date().toISOString().slice(0, 10)
+  const hashed = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${day} ${address ?? ''}`))
+  const visitor = [...new Uint8Array(hashed)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  // The insert changes a row only for a visitor new today, and the update adds what it changed.
+  await db.batch([
+    db.prepare('delete from download where day < ?').bind(day),
+    db.prepare('insert or ignore into download (package, visitor, day) values (?, ?, ?)').bind(name, visitor, day),
+    db.prepare('update package set downloads = downloads + changes() where name = ?').bind(name)
+  ])
+}
 
 export const counted = async (db: D1Database) =>
   ((await db

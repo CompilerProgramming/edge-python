@@ -25,7 +25,7 @@ export const GET: APIRoute = async ({ params, url, request }) => {
 
   // A lock refresh asks again about a package somebody already took, so it neither counts nor reaches here twice.
   const refresh = url.searchParams.get('lock') === '1'
-  if (!refresh) await downloaded(env.DB, name)
+  if (!refresh) await downloaded(env.DB, name, request.headers.get('cf-connecting-ip'))
 
   const answer = {
     name,

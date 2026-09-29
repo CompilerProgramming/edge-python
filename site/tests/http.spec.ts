@@ -587,17 +587,17 @@ test.describe('publishing', () => {
     expect((await request.get(`/api/packages/${naming()}`)).status()).toBe(404)
   })
 
-  /* A reach counts where `edge add` asks what to declare, which is somebody putting the package in a project. Reading the page is not that, and neither is `edge lock` resolving what a project already took, so the figure the page shows counts the asks and not its own views. */
-  test('counts a reach for the digest and not a look at the page', async ({ request }) => {
+  /* A reach counts where `edge add` asks what to declare, once a day for each visitor, which is somebody putting the package in a project. Reading the page is not that, and neither is `edge lock` resolving what a project already took. */
+  test('counts a reach once a day for each visitor and not a look at the page', async ({ request }) => {
     const { name } = await published(request)
     const shown = async () => (await (await request.get(`/package/${name}`)).text()).match(/([\d.k]+) downloads/)?.[1]
 
     expect(await shown()).toBe('0')
 
-    for (let at = 1; at <= 3; at++) {
-      const asked = await request.get(`/api/packages/${name}`)
+    for (const [from, want] of [['203.0.113.1', '1'], ['203.0.113.1', '1'], ['203.0.113.2', '2']]) {
+      const asked = await request.get(`/api/packages/${name}`, { headers: { 'cf-connecting-ip': from! } })
       expect(asked.status()).toBe(200)
-      expect(await shown(), `after ${at} asks`).toBe(String(at))
+      expect(await shown(), `after ${from} asked`).toBe(want)
 
       // Held anywhere, this would count once for everybody who asked.
       expect(asked.headers()['cache-control']).toBeUndefined()
@@ -605,7 +605,7 @@ test.describe('publishing', () => {
 
     const refresh = await request.get(`/api/packages/${name}?lock=1`)
     expect(refresh.status()).toBe(200)
-    expect(await shown(), 'after a lock refresh').toBe('3')
+    expect(await shown(), 'after a lock refresh').toBe('2')
     expect(refresh.headers()['cache-control']).toMatch(/^public, max-age=\d+$/)
   })
 })

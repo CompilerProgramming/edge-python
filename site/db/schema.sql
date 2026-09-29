@@ -73,6 +73,14 @@ create table package (
 
 create index package_user on package(user_id);
 
+-- A reach counted once a day for each visitor, a hash of the address and the day standing for it.
+create table download (
+  package text not null references package(name),
+  visitor text not null,
+  day text not null,
+  primary key (package, visitor, day)
+) strict;
+
 create table version (
   package text not null references package(name),
   version text not null,
