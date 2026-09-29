@@ -6,9 +6,15 @@ export type Permissions = Record<string, string[]>;
 // The holders beside package names, so no package may be named either.
 export const RESERVED = ['all', 'main'];
 
+// A host as a net scope names it and a url reaches it, a dotted name or a bracketed ip6.
+export const HOST = /[a-z0-9.-]+|\[[0-9a-f:.]+\]/;
+
+// A whole scope for net, one lowercase host with nothing before or after it.
+const NET_SCOPE = new RegExp(`^(?:${HOST.source})$`);
+
 // What a scope of each system module may be, a host for net and a clock for time.
 const SCOPES: Record<string, (scope: string) => boolean> = {
-    net: (host) => host.length > 0 && !/[\s/]/.test(host),
+    net: (host) => NET_SCOPE.test(host),
     time: (clock) => clock === 'wall' || clock === 'monotonic' || clock === 'zone',
 };
 

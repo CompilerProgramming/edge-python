@@ -30,7 +30,7 @@ Deno.test("js: a worker holds nothing of the page and reaches only its grants", 
         const got = await page.evaluate(async ([host, origin]) => {
             document.cookie = "session=secret";
             const { createWorker } = await import(host);
-            const worker = await createWorker({ permissions: { main: ["net:127.0.0.1", "net:a.test;script-src"] } });
+            const worker = await createWorker({ permissions: { main: ["net:127.0.0.1"] } });
             const lines = [];
             worker.onOutput((text) => lines.push(text));
             await worker.run(`import net\nr = net.request('GET', '${origin}/')\nnet.response(r)\nprint(net.read(r))`);
@@ -41,8 +41,16 @@ Deno.test("js: a worker holds nothing of the page and reaches only its grants", 
         const frame = page.frames().find((f) => f !== page.mainFrame());
         const room = await frame.evaluate(() => ({ origin, policy: document.querySelector("meta").content }));
         if (room.origin !== "null") throw new Error(`the room shares an origin with the page, ${room.origin}`);
-        // A grant that is not a plain host stays out of the policy, so it adds no rule.
-        if (room.policy.includes("a.test") || !room.policy.includes("http://127.0.0.1:*")) throw new Error(`unexpected policy ${room.policy}`);
+        if (!room.policy.includes("http://127.0.0.1:*")) throw new Error(`unexpected policy ${room.policy}`);
+
+        // A grant that is not a plain host is refused before the run, and stays out of the policy all the same.
+        const refused = await page.evaluate(async (host) => {
+            const worker = await (await import(host)).createWorker({ permissions: { main: ["net:a.test;script-src"] } });
+            return worker.run("import net\nprint(1)").then(() => "ran", (e) => e.message);
+        }, HOST);
+        if (!refused.includes("give net the scope 'a.test;script-src', which it does not have")) throw new Error(`unexpected ${refused}`);
+        const policy = await page.frames().at(-1).evaluate(() => document.querySelector("meta").content);
+        if (policy.includes("a.test")) throw new Error(`a malformed grant reached the policy ${policy}`);
 
         // Straight from the worker, past every grant, only the browser stands in the way.
         const reached = await (await spawned).evaluate(() => fetch("https://other.test/").then(() => "reached", () => "refused"));

@@ -90,6 +90,22 @@
   },
   {
     "given": {
+      "edge.json": "{\"permissions\": {\"main\": [\"net:127.0.0.1\"]}}\n",
+      "main.py": "import net\ntry:\n    net.request('GET', 'http://evil.test\\\\@127.0.0.1/')\nexcept ValueError as e:\n    print(e)\n"
+    },
+    "run": ["run", "main.py"],
+    "stdout": ["'http://evil.test\\@127.0.0.1/' is not a plain url, net takes scheme://host/path with no user, backslash or space"]
+  },
+  {
+    "given": {
+      "edge.json": "{\"permissions\": {\"main\": [\"net:127.0.0.1\"]}}\n",
+      "main.py": "import net\ntry:\n    net.request('GET', 'http://127.0.0.1:1/', [['Host', 'evil.test']])\nexcept ValueError as e:\n    print(e)\n"
+    },
+    "run": ["run", "main.py"],
+    "stdout": ["the header 'Host' belongs to the host, a program cannot set it"]
+  },
+  {
+    "given": {
       "edge.json": "{}\n",
       "main.py": "sleep(3600)\nprint('an hour, at once')\n"
     },

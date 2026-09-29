@@ -364,6 +364,8 @@ fn serve(mut stream: std::net::TcpStream) {
     let mut hold = || while matches!(reader.read(&mut [0u8; 64]), Ok(n) if n > 0) {};
     match path.as_str() {
         "/text" => drop(stream.write_all(http("hello from mock").as_bytes())),
+        // Hands the client to a host no grant names, which neither host may follow on its own.
+        "/redirect" => drop(stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://evil.example/\r\nContent-Length: 0\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n")),
         "/json" => drop(stream.write_all(http("{\"ok\":true}").as_bytes())),
         "/sse" => {
             let _ = stream.write_all(events.as_bytes());
@@ -427,6 +429,21 @@ fn system_calls_answer_the_same_with_and_without_web() {
     for args in [&["run", "main.py"][..], &["run", "--web", "main.py"][..]] {
         let (out, err, code) = run_in(&dir, args, None);
         assert_eq!((out.as_str(), code), (want, 0), "{args:?} stderr: {err}");
+    }
+}
+
+/* No host follows a redirect on its own, so a granted host cannot hand a request to one that is not. */
+#[test]
+fn a_redirect_is_refused_on_both_hosts() {
+    let port = spawn_fixture();
+    let dir = scratch("redirect");
+    std::fs::write(dir.join("edge.json"), r#"{ "permissions": { "main": ["net:127.0.0.1"] } }"#).unwrap();
+    let url = format!("http://127.0.0.1:{port}/redirect");
+    std::fs::write(dir.join("main.py"), format!("import net\ntry:\n    net.response(net.request('GET', '{url}'))\nexcept OSError as e:\n    print(e)\n")).unwrap();
+    let want = format!("net.request to {url} was redirected, request the new address with its own net.request\n");
+    for args in [&["run", "main.py"][..], &["run", "--web", "main.py"][..]] {
+        let (out, err, code) = run_in(&dir, args, None);
+        assert_eq!((out.as_str(), code), (want.as_str(), 0), "{args:?} stderr: {err}");
     }
 }
 

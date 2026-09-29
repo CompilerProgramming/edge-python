@@ -35,7 +35,7 @@ Only the root `edge.json` grants. Its `permissions` section maps each holder to 
 
 | Entry | Allows |
 |---|---|
-| `net:<host>` | `request` and `connect` to that exact host, on any port and path |
+| `net:<host>` | `request` and `connect` to that exact host, on any port and path. The host is a lowercase name or a bracketed IPv6, with no scheme, port or path |
 | `time:wall` | `now()` |
 | `time:monotonic` | `now('monotonic')` |
 | `time:zone` | `zone()` |
@@ -103,7 +103,9 @@ When no package holds a `time` scope the engine runs on its virtual clock. `slee
 | `send(id, data)` | Sends `bytes` or a `str` on a socket |
 | `close(id)` | Aborts a request or closes a socket |
 
-`headers` is a list of `[name, value]` pairs or a dict, and `body` is `bytes`, a `str` or `None`. A failure to connect or read raises `OSError` from the call that meets it. In a browser the request is a `fetch` from the Web Worker, so CORS applies on top of the grant. The CLI runs the same calls in SpiderMonkey, with its own HTTP and WebSocket clients underneath, so a program answers the same with and without `--web`.
+`headers` is a list of `[name, value]` pairs or a dict, and `body` is `bytes`, a `str` or `None`. A failure to connect or read raises `OSError` from the call that meets it.
+
+A url names its host right after the scheme, with no user before it and no backslash, space or control character anywhere, so the check and the request always read the same host. Anything else raises `ValueError`, while an `@` later in the path stays, as in `https://edgepython.com/@dylan`. No host follows a redirect. A 301, 302, 303, 307 or 308 raises `OSError`, and the new address goes through its own `request` and its own check. The headers fetch keeps for the host, such as `Host`, `Cookie`, `Origin` or any `Sec-` or `Proxy-` one, raise `ValueError`. In a browser the request is a `fetch` from the Web Worker, so CORS applies on top of the grant. The CLI runs the same calls in SpiderMonkey, with its own HTTP and WebSocket clients underneath, so a program answers the same with and without `--web`.
 
 ```python
 import net

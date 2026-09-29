@@ -1,7 +1,7 @@
 import type { EdgeValue } from '../rt.ts';
 import { batched } from './batch.ts';
 import { SystemError } from './error.ts';
-import { need } from './grants.ts';
+import { HOST, need } from './grants.ts';
 
 type Message = Uint8Array | string | null;
 
@@ -24,25 +24,38 @@ const body = (value: EdgeValue): Uint8Array<ArrayBuffer> | string | undefined =>
     throw new SystemError('ValueError', 'a body must be bytes, a str or None');
 };
 
+// The headers fetch keeps for the host, refused rather than dropped so both hosts answer alike.
+const FORBIDDEN = new Set([
+    'accept-charset', 'accept-encoding', 'access-control-request-headers', 'access-control-request-method', 'connection', 'content-length',
+    'cookie', 'cookie2', 'date', 'dnt', 'expect', 'host', 'keep-alive', 'origin', 'referer', 'set-cookie', 'te', 'trailer',
+    'transfer-encoding', 'upgrade', 'via',
+]);
+
 const pairs = (value: EdgeValue): [string, string][] => {
     if (value === null || value === undefined) return [];
     const entries = Array.isArray(value) ? value : Object.entries(value as Record<string, EdgeValue>);
     return entries.map((pair) => {
         if (!Array.isArray(pair) || pair.length !== 2) throw new SystemError('ValueError', 'headers are [name, value] pairs or a dict');
-        return [text(pair[0] as EdgeValue, 'a header name'), text(pair[1] as EdgeValue, 'a header value')];
+        const name = text(pair[0] as EdgeValue, 'a header name');
+        if (FORBIDDEN.has(name.toLowerCase()) || /^(?:proxy|sec)-/i.test(name)) throw new SystemError('ValueError', `the header '${name}' belongs to the host, a program cannot set it`);
+        return [name, text(pair[1] as EdgeValue, 'a header value')];
     });
 };
 
-/* The host part of an absolute url, what a net scope names, read here since not every host has URL. */
+// A url every parser reads alike, a scheme, the host right after it, a port, then the rest.
+const PLAIN = new RegExp(`^(?:https?|wss?)://(${HOST.source})(?::\\d{1,5})?(?:[/?#].*)?$`, 'i');
+
+/* The host a net scope names, refused when anything could let a parser read another one. */
 const hostOf = (url: string): string => {
-    const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(url)?.[1] ?? '';
-    const host = authority.slice(authority.lastIndexOf('@') + 1);
-    const name = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0] ?? '';
-    if (!name) throw new SystemError('ValueError', `'${url}' is not an absolute url`);
-    return name.toLowerCase();
+    const plain = [...url].every((c) => c > ' ' && c !== '\\' && c !== '\x7f') ? PLAIN.exec(url) : null;
+    if (!plain) throw new SystemError('ValueError', `'${url}' is not a plain url, net takes scheme://host/path with no user, backslash or space`);
+    return plain[1]!.toLowerCase();
 };
 
 const failed = (what: string, e: unknown) => new SystemError('OSError', `${what} failed, ${e instanceof Error ? e.message : String(e)}`);
+
+// Statuses that hand a request elsewhere, which only a new request of its own may follow.
+const REDIRECTS = [301, 302, 303, 307, 308];
 
 async function chunk(head: Promise<unknown>, body: Promise<ReadableStreamDefaultReader<Uint8Array> | null>): Promise<Message> {
     await head;
@@ -71,8 +84,12 @@ export default function net(pkg: string, held: string[]) {
         const target = text(url, 'a url');
         need(pkg, 'net', held, hostOf(target));
         const controller = new AbortController();
-        const answer = fetch(target, { method: text(method ?? 'GET', 'a method'), headers: pairs(headers), body: body(content), signal: controller.signal });
+        const answer = fetch(target, { method: text(method ?? 'GET', 'a method'), headers: pairs(headers), body: body(content), signal: controller.signal, redirect: 'manual' });
         const head = answer.then((res): [number, [string, string][]] => {
+            // No host follows a redirect, a browser hides where it points and a new request checks it.
+            if (res.type === 'opaqueredirect' || REDIRECTS.includes(res.status)) {
+                throw new SystemError('OSError', `net.request to ${target} was redirected, request the new address with its own net.request`);
+            }
             const received: [string, string][] = [];
             res.headers.forEach((value, name) => received.push([name, value]));
             return [res.status, received];

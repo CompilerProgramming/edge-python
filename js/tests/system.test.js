@@ -3,15 +3,17 @@ import { check, scopes, unmet } from "../src/system/grants.ts";
 import net from "../src/system/net.ts";
 import time from "../src/system/time.ts";
 
-const denied = (fn, message) => {
+const raises = (fn, name, message) => {
     try {
         fn();
     } catch (e) {
-        if (e.name !== "PermissionError" || e.message !== message) throw new Error(`unexpected ${e.name}: ${e.message}`);
+        if (e.name !== name || (message !== undefined && e.message !== message)) throw new Error(`unexpected ${e.name}: ${e.message}`);
         return;
     }
-    throw new Error("expected a PermissionError");
+    throw new Error(`expected a ${name}`);
 };
+
+const denied = (fn, message) => raises(fn, "PermissionError", message);
 
 Deno.test("system: a package holds its own entries and those for all", () => {
     const permissions = { all: ["time:wall"], main: ["net:api.example.com", "time:zone"], http: ["net"] };
@@ -33,12 +35,15 @@ Deno.test("system: a package asks under main and all, and only the root's grant 
 });
 
 Deno.test("system: a malformed permissions section says what it needs", () => {
-    if (check(undefined) !== null || check({ all: ["time:monotonic"], main: ["net:api.example.com", "net"] }) !== null) throw new Error("a valid section");
+    if (check(undefined) !== null || check({ all: ["time:monotonic"], main: ["net:api.example.com", "net", "net:[::1]"] }) !== null) throw new Error("a valid section");
     const cases = [
         [{ main: "net:api.example.com" }, "permissions for 'main' must be a list of entries such as \"net:api.example.com\""],
         [{ main: ["fs:/tmp"] }, "permissions for 'main' name 'fs', which is not a system module (net, time)"],
         [{ main: ["time:lunar"] }, "permissions for 'main' give time the scope 'lunar', which it does not have"],
         [{ main: ["net:https://api.example.com/"] }, "permissions for 'main' give net the scope 'https://api.example.com/', which it does not have"],
+        [{ main: ["net:a.test;script-src"] }, "permissions for 'main' give net the scope 'a.test;script-src', which it does not have"],
+        [{ main: ["net:user@a.test"] }, "permissions for 'main' give net the scope 'user@a.test', which it does not have"],
+        [{ main: ["net:API.example.com"] }, "permissions for 'main' give net the scope 'API.example.com', which it does not have"],
         [["net"], "permissions must map each package to a list of entries"],
     ];
     for (const [section, want] of cases) {
@@ -100,4 +105,42 @@ Deno.test("system: net reaches only its hosts and the ids its package opened", a
     main.close();
     await server.shutdown();
     if (status !== 200 || body !== "hi") throw new Error(`unexpected ${status} ${body}`);
+});
+
+Deno.test("system: net reads a url as every parser does, and an @ after the host is its path", async () => {
+    const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, (req) => new Response(new URL(req.url).pathname));
+    const at = `http://127.0.0.1:${server.addr.port}`;
+    const main = net("main", ["127.0.0.1"]);
+    for (const url of ["http://evil.test\\@127.0.0.1/", "http://user@127.0.0.1/", `${at}@evil.test/`, `${at}/a b`, "http://12%37.0.0.1/", "127.0.0.1/"]) {
+        raises(() => main.calls.request("GET", url), "ValueError", `'${url}' is not a plain url, net takes scheme://host/path with no user, backslash or space`);
+    }
+    const id = main.calls.request("GET", `${at}/@dylan`, [["accept", "text/plain"]]);
+    const [status] = await main.calls.response(id);
+    const path = new TextDecoder().decode(await main.calls.read(id));
+    main.close();
+    await server.shutdown();
+    if (status !== 200 || path !== "/@dylan") throw new Error(`unexpected ${status} ${path}`);
+});
+
+Deno.test("system: a redirect is refused, the next address goes through its own request", async () => {
+    const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, () => new Response(null, { status: 302, headers: { location: "http://evil.example/" } }));
+    const at = `http://127.0.0.1:${server.addr.port}/`;
+    const main = net("main", ["127.0.0.1"]);
+    const id = main.calls.request("GET", at);
+    try {
+        await main.calls.response(id);
+        throw new Error("the redirect was followed");
+    } catch (e) {
+        if (e.name !== "OSError" || e.message !== `net.request to ${at} was redirected, request the new address with its own net.request`) throw e;
+    }
+    main.close();
+    await server.shutdown();
+});
+
+Deno.test("system: the headers fetch keeps for the host are refused", () => {
+    const main = net("main", ["127.0.0.1"]);
+    for (const name of ["Host", "cookie", "Origin", "Content-Length", "Sec-Fetch-Site", "Proxy-Authorization"]) {
+        raises(() => main.calls.request("GET", "http://127.0.0.1:1/", [[name, "x"]]), "ValueError", `the header '${name}' belongs to the host, a program cannot set it`);
+    }
+    main.close();
 });

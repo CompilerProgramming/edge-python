@@ -193,7 +193,8 @@ impl Pipe {
 
 /* Runs one request to its end, handing its head and chunks to whoever waits on them. */
 fn fetch(method: &str, url: &str, headers: Vec<(String, String)>, body: Vec<u8>, flow: &Shared, cancel: &AtomicBool, io: &Sender<Msg>) {
-    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+    // A redirect comes back as it is, net.ts refuses it the same way the browser does.
+    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).build().into();
     let mut request = ureq::http::Request::builder().method(method).uri(url);
     for (name, value) in headers {
         request = request.header(name, value);

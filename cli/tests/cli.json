@@ -517,6 +517,14 @@
   },
   {
     "given": {
+      "edge.json": "{\"permissions\": {\"main\": [\"net:a.test;script-src\"]}}\n",
+      "main.py": "print(1)\n"
+    },
+    "run": ["lock"],
+    "fails": ["edge.json at 'edge.json': permissions for 'main' give net the scope 'a.test;script-src', which it does not have"]
+  },
+  {
+    "given": {
       "edge.json": "{\"name\": \"all\"}\n",
       "main.py": "print(1)\n"
     },
