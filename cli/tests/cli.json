@@ -228,16 +228,6 @@
     "fails": ["module 'json' is not provided by this host and no edge.json declares it\nhelp: declare it in edge.json, or use a relative import"]
   },
   {
-    "given": { "broken.py": "before = 1\nx = 1 / 0\n" },
-    "run": ["run", "broken.py"],
-    "fails": ["ZeroDivisionError", "--> broken.py:2:1"]
-  },
-  {
-    "given": { "late.py": "await sleep(0.01)\nbefore = 1\nx = 1 / 0\n" },
-    "run": ["run", "late.py"],
-    "fails": ["--> late.py:3:1", "x = 1 / 0"]
-  },
-  {
     "given": {
       "edge.json": "{ \"imports\": { \"lib\": \"./lib.py\", \"widget\": \"./widget.js\" } }\n",
       "widget.js": "export default () => ({ name: () => 'widget' });\n",

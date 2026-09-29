@@ -254,7 +254,12 @@ fn web_run(file: Option<&Path>, code: Option<&str>, manifest: Option<&Path>) -> 
     };
 
     let default = PathBuf::from("edge.json");
-    let entry = file.map(host::driver::path_spec).unwrap_or_default();
+    // The names a native run gives its entry, so a traceback reads alike on both hosts.
+    let entry = match (file, code) {
+        (_, Some(_)) => String::from("<eval>"),
+        (Some(path), None) => host::driver::path_spec(path),
+        (None, None) => String::from("<stdin>"),
+    };
     let code = host::browser::run(&src, &entry, Some(manifest.unwrap_or(default.as_path())))?;
     if code != 0 {
         std::process::exit(code);

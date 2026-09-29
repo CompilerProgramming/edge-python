@@ -16,6 +16,15 @@ impl<'a> VM<'a> {
         let name = self.expect_str_arg("getattr() name must be a string")?;
         let obj = self.pop()?;
 
+        // A module answers from its own table, the way `mod.name` reads it.
+        if obj.is_heap() && let HeapObj::Module(module, attrs) = self.heap.get(obj) {
+            if let Some(v) = attrs.iter().find(|(n, _)| *n == name).map(|(_, v)| *v).or(default) {
+                self.push(v);
+                return Ok(());
+            }
+            return Err(VmErr::Attribute(s!("module '", str module, "' has no attribute '", str &name, "'")));
+        }
+
         // Instance attribute, instance dict first, then the user class chain (mirrors obj.name).
         let mut bind: Option<(Val, Val)> = None;
         if obj.is_heap() && let HeapObj::Instance(cls_val, attrs) = self.heap.get(obj) {
@@ -93,13 +102,15 @@ impl<'a> VM<'a> {
             && self.lookup_class_member(obj, &name).is_some();
         let is_func_attr = obj.is_heap()
             && matches!(self.heap.get(obj), HeapObj::Func(_, _, _, attrs) if attrs.borrow().iter().any(|(n, _)| *n == name));
+        let is_module_attr = obj.is_heap()
+            && matches!(self.heap.get(obj), HeapObj::Module(_, attrs) if attrs.iter().any(|(n, _)| *n == name));
         let is_bound_attr = obj.is_heap() && match self.heap.get(obj) {
             HeapObj::BoundUserMethod(..) => matches!(name.as_str(), "__self__" | "__func__"),
             HeapObj::BoundMethod(..) => name == "__self__",
             _ => false,
         };
         let ty = self.type_name(obj);
-        let exists = is_class_attr || is_func_attr || is_bound_attr || crate::vm::methods::lookup_method(ty, &name).is_some();
+        let exists = is_class_attr || is_func_attr || is_module_attr || is_bound_attr || crate::vm::methods::lookup_method(ty, &name).is_some();
         self.push(Val::bool(exists));
         Ok(())
     }

@@ -26,7 +26,6 @@ export interface CompilerExports {
     set_preempt_interval?(n: number): void
     set_wall_clock?(on: number): void
     set_limits?(heap: bigint, ops: bigint, calls: bigint): void
-    set_source_name?(ptr: number, len: number): void
     save_state(): bigint
     restore_state(ptr: number, len: number): number
     state_globals(): number

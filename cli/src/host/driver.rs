@@ -72,7 +72,6 @@ pub fn run(file: Option<&Path>, code: Option<&str>, opts: &RunOpts) -> Result<i3
     let project = Project::disk(&name, opts.manifest.as_deref());
     let mut vm = host()?.vm(stdout_sink(), project, None, None)?;
     vm.set_preempt_interval(opts.preempt)?;
-    vm.set_source_name(&name)?;
     let status = vm.start(&src, input.as_deref())?;
     Ok(drive(&mut vm, status, opts))
 }
@@ -86,7 +85,6 @@ pub fn run_bundle(payload: &[u8], opts: &RunOpts) -> Result<i32> {
     let project = Project::bundle(files, &entry, false);
     let mut vm = host()?.vm(stdout_sink(), project, None, None)?;
     vm.set_preempt_interval(opts.preempt)?;
-    vm.set_source_name(&entry)?;
     let status = vm.start(&src, None)?;
     Ok(drive(&mut vm, status, opts))
 }

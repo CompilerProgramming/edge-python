@@ -265,18 +265,15 @@ pub unsafe extern "C" fn reset_modules() {
     bridge::reset();
 }
 
-/* The script the next run starts from, its directory roots the walk and the relative imports of the program. */
+/* The script the next run starts from, naming its traceback frame, its directory rooting the walk and the relative imports. */
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn set_entry(ptr: *const u8, len: u32) {
     let entry = unsafe { safe_str_owned(ptr, len) };
-    with_slot(|s| s.entry_dir = entry_dir(&entry));
-}
-
-/* Entry frame name for the next boot, empty restores `<input>`. */
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn set_source_name(ptr: *const u8, len: u32) {
-    let name = unsafe { safe_str_owned(ptr, len) };
-    with_slot(|s| s.source_name = name);
+    with_slot(|s| {
+        s.entry_dir = entry_dir(&entry);
+        // A directory or no entry at all names no script, so its frame keeps the anonymous marker.
+        s.source_name = if entry.ends_with('/') { String::new() } else { entry };
+    });
 }
 
 /* Caps for the next `run_start` or `repl_eval`, a zero field keeps the sandbox value. */

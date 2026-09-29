@@ -85,7 +85,7 @@ pub(super) struct Slot {
     pub limits: Option<Limits>,
     /* Whether the next boot sleeps on the host's clock, off keeps the virtual one. */
     pub wall_clock: bool,
-    /* Entry frame name in tracebacks, empty renders the anonymous marker. */
+    /* The script `set_entry` named, naming the entry frame in tracebacks, empty renders the anonymous marker. */
     pub source_name: String,
     /* Directory of the entry `set_entry` named, rooting the walk and the quoted imports of the source. */
     pub entry_dir: String,

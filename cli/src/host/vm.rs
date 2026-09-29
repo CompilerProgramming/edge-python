@@ -453,13 +453,6 @@ impl Vm {
         inst.checked(raw)
     }
 
-    /* Names the entry frame in tracebacks, the compiler renders `<input>` otherwise. */
-    pub fn set_source_name(&mut self, name: &str) -> Result<()> {
-        let mut inst = self.enter()?;
-        let raw = inst.with_bytes(name.as_bytes(), |store, ex, ptr, len| ex.set_source_name.call(store, (ptr, len)))?;
-        inst.checked(raw)
-    }
-
     /* Drops every module registration, the next input starts in a fresh namespace. */
     pub fn reset(&mut self) -> Result<()> {
         let mut inst = self.enter()?;
