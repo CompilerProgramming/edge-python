@@ -345,16 +345,18 @@ fn serve(mut stream: std::net::TcpStream) {
     let mut line = String::new();
     let _ = reader.read_line(&mut line);
     let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
-    let mut last_event_id = None;
+    let (mut last_event_id, mut socket_key) = (None, None);
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header).is_err() || header == "\r\n" || header.is_empty() {
             break;
         }
-        if let Some((name, value)) = header.split_once(':')
-            && name.eq_ignore_ascii_case("last-event-id")
-        {
-            last_event_id = Some(value.trim().to_string());
+        if let Some((name, value)) = header.split_once(':') {
+            match name.to_ascii_lowercase().as_str() {
+                "last-event-id" => last_event_id = Some(value.trim().to_string()),
+                "sec-websocket-key" => socket_key = Some(value.trim().to_string()),
+                _ => {}
+            }
         }
     }
     // A page on another port reads it too, so a run with --web reaches the same fixture.
@@ -366,6 +368,16 @@ fn serve(mut stream: std::net::TcpStream) {
         "/text" => drop(stream.write_all(http("hello from mock").as_bytes())),
         // Hands the client to a host no grant names, which neither host may follow on its own.
         "/redirect" => drop(stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://evil.example/\r\nContent-Length: 0\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n")),
+        // A socket that greets once, and one that points at it, which neither host may follow.
+        "/ws" => {
+            let accept = tungstenite::handshake::derive_accept_key(socket_key.unwrap_or_default().as_bytes());
+            let _ = stream.write_all(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").as_bytes());
+            let _ = stream.write_all(b"\x81\x07reached\x88\x00");
+        }
+        "/ws-redirect" => {
+            let port = stream.local_addr().map(|a| a.port()).unwrap_or(0);
+            let _ = stream.write_all(format!("HTTP/1.1 302 Found\r\nLocation: ws://127.0.0.1:{port}/ws\r\nContent-Length: 0\r\n\r\n").as_bytes());
+        }
         "/json" => drop(stream.write_all(http("{\"ok\":true}").as_bytes())),
         "/sse" => {
             let _ = stream.write_all(events.as_bytes());
@@ -439,8 +451,9 @@ fn a_redirect_is_refused_on_both_hosts() {
     let dir = scratch("redirect");
     std::fs::write(dir.join("edge.json"), r#"{ "permissions": { "main": ["net:127.0.0.1"] } }"#).unwrap();
     let url = format!("http://127.0.0.1:{port}/redirect");
-    std::fs::write(dir.join("main.py"), format!("import net\ntry:\n    net.response(net.request('GET', '{url}'))\nexcept OSError as e:\n    print(e)\n")).unwrap();
-    let want = format!("net.request to {url} was redirected, request the new address with its own net.request\n");
+    let socket = format!("ws://127.0.0.1:{port}/ws-redirect");
+    std::fs::write(dir.join("main.py"), format!("import net\ntry:\n    net.response(net.request('GET', '{url}'))\nexcept OSError as e:\n    print(e)\ntry:\n    net.connect('{socket}')\nexcept OSError as e:\n    print(e)\n")).unwrap();
+    let want = format!("net.request to {url} was redirected, request the new address with its own net.request\nthe socket to {socket} failed\n");
     for args in [&["run", "main.py"][..], &["run", "--web", "main.py"][..]] {
         let (out, err, code) = run_in(&dir, args, None);
         assert_eq!((out.as_str(), code), (want.as_str(), 0), "{args:?} stderr: {err}");

@@ -225,7 +225,8 @@ fn fetch(method: &str, url: &str, headers: Vec<(String, String)>, body: Vec<u8>,
 
 /* Keeps one socket open, sending what the program queues and handing on what arrives. */
 fn serve_socket(url: &str, id: i64, token: u64, flow: &Shared, queued: Receiver<Outgoing>, io: &Sender<Msg>) {
-    let mut socket = match tungstenite::connect(url) {
+    // No redirect is followed, a browser fails the socket on one and net.ts checked only this url.
+    let mut socket = match tungstenite::client::connect_with_config(url, None, 0) {
         Ok((socket, _)) => socket,
         Err(e) => return answer(io, token, Err(e.to_string())),
     };

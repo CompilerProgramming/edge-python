@@ -194,6 +194,9 @@ Deno.test("system: both hosts send one reading of a path", async () => {
         ["/@dylan", "/@dylan"],
         ["/items?q=a/../b", "/items?q=a/../b"],
         ["/keep#gone", "/keep"],
+        // No count of dot segments climbs above the root into the host.
+        ["/../@evil.test/x", "/@evil.test/x"],
+        ["/%2E%2E/.evil.test/x", "/.evil.test/x"],
     ];
     for (const [asked, want] of cases) {
         const got = await sent(asked);

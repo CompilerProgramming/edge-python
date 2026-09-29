@@ -55,7 +55,8 @@ const KEPT = /^[a-z0-9\-._~!$&'()*+,;=:@/%]$/i;
 /* A path as every host sends it, its dot segments resolved and its text escaped, so one reading of it cannot hide another. */
 const clean = (path: string): string => {
     const out: string[] = [];
-    const segments = path.split('/');
+    // The root is no segment, so no count of dot segments climbs above it into the host.
+    const segments = path.replace(/^\//, '').split('/');
     for (const [i, segment] of segments.entries()) {
         const last = i === segments.length - 1;
         if (ABOVE.test(segment)) {
@@ -67,7 +68,7 @@ const clean = (path: string): string => {
             out.push([...segment].map((c) => (KEPT.test(c) ? c : escaped(c))).join(''));
         }
     }
-    return out.join('/') || '/';
+    return `/${out.join('/')}`;
 };
 
 /* One character as the percent escapes of its UTF-8 bytes, spelled out since not every host has TextEncoder. */
@@ -80,10 +81,17 @@ const escaped = (c: string): string => {
     return bytes.map((b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join('');
 };
 
+/* The host a plain url names, null when it is not one. */
+const hostIn = (url: string): string | null => {
+    const parts = [...url].every((c) => c > ' ' && c !== '\\' && c !== '\x7f') ? PLAIN.exec(url) : null;
+    return parts ? parts[2]!.toLowerCase() : null;
+};
+
 /* A url as both hosts send it, refused when anything could let a parser read another host or path. */
 const plain = (url: string): { host: string, path: string, url: string } => {
-    const parts = [...url].every((c) => c > ' ' && c !== '\\' && c !== '\x7f') ? PLAIN.exec(url) : null;
-    if (!parts) throw new SystemError('ValueError', `'${url}' is not a plain url, net takes scheme://host/path with no user, backslash or space`);
+    const refused = () => new SystemError('ValueError', `'${url}' is not a plain url, net takes scheme://host/path with no user, backslash or space`);
+    const parts = hostIn(url) === null ? null : PLAIN.exec(url);
+    if (!parts) throw refused();
     const [, scheme, name, port, rest = '/'] = parts;
     // A fragment never leaves the host, so it is no part of what a grant reaches.
     const [addressed] = rest.split('#') as [string];
@@ -91,7 +99,10 @@ const plain = (url: string): { host: string, path: string, url: string } => {
     const path = clean(at === -1 ? addressed : addressed.slice(0, at));
     const query = at === -1 ? '' : addressed.slice(at);
     const host = name!.toLowerCase();
-    return { host, path, url: `${scheme!.toLowerCase()}${host}${port}${path}${query}` };
+    const sent = `${scheme!.toLowerCase()}${host}${port}${path}${query}`;
+    // The url is rebuilt, so it must still name the host that was checked, whatever the path became.
+    if (hostIn(sent) !== host) throw refused();
+    return { host, path, url: sent };
 };
 
 const failed = (what: string, e: unknown) => new SystemError('OSError', `${what} failed, ${e instanceof Error ? e.message : String(e)}`);
