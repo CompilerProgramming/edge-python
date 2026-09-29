@@ -60,6 +60,14 @@ pub unsafe extern "C" fn walk_served(ptr: *const u8, len: u32) -> u32 {
     drive()
 }
 
+/* Answers the undeclared names with the ones a registry has, joined by NUL. */
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn walk_known(ptr: *const u8, len: u32) -> u32 {
+    let names = split(unsafe { safe_bytes(ptr, len) }, '\0');
+    with_runtime(|rt| rt.walk.as_mut().map(|walk| walk.known(names)));
+    drive()
+}
+
 pub(super) fn split(bytes: &[u8], at: char) -> Vec<String> {
     core::str::from_utf8(bytes).unwrap_or("").split(at).filter(|l| !l.is_empty()).map(String::from).collect()
 }
@@ -102,6 +110,12 @@ fn drive() -> u32 {
                 return write_out(&out) as u32;
             }
             Step::System(packages) => return write_out(&system(&packages)) as u32,
+            Step::Undeclared(names) => {
+                out.push_str("{\"undeclared\":");
+                list(&mut out, &names);
+                out.push('}');
+                return write_out(&out) as u32;
+            }
             Step::Done(failures) => {
                 with_runtime(|rt| rt.walk = None);
                 out.push_str("{\"done\":");

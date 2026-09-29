@@ -13,6 +13,7 @@ export interface CompilerExports {
     walk_plugin_bytes(): number
     walk_plugin(kind: number, ptr: number, len: number): number
     walk_served(ptr: number, len: number): number
+    walk_known(ptr: number, len: number): number
     set_entry(ptr: number, len: number): void
     set_input?(ptr: number, len: number): void
     repl_eval(ptr: number, len: number): number

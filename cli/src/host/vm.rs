@@ -242,6 +242,11 @@ impl Instance {
         self.walk_call(&[failures.as_bytes()], |store, ex, s| ex.walk_served.call(store, (s[0].0, s[0].1)))
     }
 
+    /* Answers the undeclared names with the ones the registry has, joined by NUL. */
+    pub(super) fn walk_known(&mut self, names: &str) -> Result<Vec<u8>, String> {
+        self.walk_call(&[names.as_bytes()], |store, ex, s| ex.walk_known.call(store, (s[0].0, s[0].1)))
+    }
+
     // Stages the buffers for one walk call, frees them after, and reads the step it left.
     fn walk_call(&mut self, bufs: &[&[u8]], call: impl FnOnce(&mut Store<State>, &Exports, &[(i32, i32)]) -> wasmtime::Result<i32>) -> Result<Vec<u8>, String> {
         let mut staged = Vec::with_capacity(bufs.len());

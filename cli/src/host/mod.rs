@@ -284,6 +284,7 @@ pub struct Exports {
     pub walk_plugin_bytes: TypedFunc<(), i32>,
     pub walk_plugin: TypedFunc<(i32, i32, i32), i32>,
     pub walk_served: TypedFunc<(i32, i32), i32>,
+    pub walk_known: TypedFunc<(i32, i32), i32>,
 }
 
 impl Exports {
@@ -332,6 +333,7 @@ impl Exports {
             walk_plugin_bytes: f!("walk_plugin_bytes"),
             walk_plugin: f!("walk_plugin"),
             walk_served: f!("walk_served"),
+            walk_known: f!("walk_known"),
         })
     }
 }

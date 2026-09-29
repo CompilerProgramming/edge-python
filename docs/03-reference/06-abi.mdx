@@ -479,6 +479,7 @@ The engine decides what a program reaches and the host only answers what it asks
 | `{"fetch": spec}` | Reads the bytes behind `spec`, a manifest, a lock or a module, and answers `walk_fetched(ptr, len, kind)` with `kind` `0` and the bytes, `1` when nothing is there with an optional hint, or `2` with why the read failed. The engine checks any `#sha256-` pin itself. |
 | `{"plugin": spec, "name": name}` | Reads the plugin's bytes with `walk_plugin_bytes()`, raw in the out buffer since one inside a package never reached the host, registers it with `register_native_module`, and answers `walk_plugin(kind, ptr, len)` with `kind` `0` once registered, `1` with why it failed, or `2` with why this host refuses it. |
 | `{"system": {root, needed, dirs, permissions}}` | Serves each system module to every `[dir, package]` in `dirs` under the root's `permissions`, and answers `walk_served(ptr, len)` with its failures joined by NUL. `needed` says whether anything can reach one at all. |
+| `{"undeclared": [names]}` | Says which of these bare names, declared by no manifest, a registry has, and answers `walk_known(ptr, len)` with those joined by NUL. Each one fails at its import, with a help line that runs `edge add` when the registry has it and declares it otherwise. |
 | `{"done": [failures]}` | Nothing more to fetch, and the run fails with these when there are any. |
 
 Code modules, the manifests the compiler resolves names through, and refusals register inside the engine as the walk meets them.

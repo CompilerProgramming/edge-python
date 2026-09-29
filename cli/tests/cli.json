@@ -222,6 +222,12 @@
     "fails": ["module 'json' is not provided by this host and no edge.json declares it"]
   },
   {
+    "given": { "main.py": "import json\n" },
+    "env": { "EDGE_SITE_BASE": "http://127.0.0.1:1" },
+    "run": ["run", "main.py"],
+    "fails": ["module 'json' is not provided by this host and no edge.json declares it\nhelp: declare it in edge.json, or use a relative import"]
+  },
+  {
     "given": { "broken.py": "before = 1\nx = 1 / 0\n" },
     "run": ["run", "broken.py"],
     "fails": ["ZeroDivisionError", "--> broken.py:2:1"]

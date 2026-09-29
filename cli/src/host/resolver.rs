@@ -1,6 +1,6 @@
-use super::{cache_root, cdn, get, plugins, system, Instance, ORIGIN};
+use super::{cache_root, cdn, get, plugins, site, system, Instance, ORIGIN};
 use crate::web::SYSTEM_MODULES;
-use compiler::modules::{parse_integrity, system_spec};
+use compiler::modules::{parse_integrity, rules, system_spec};
 use compiler::util::sha256::{hex_encode, sha256};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -12,6 +12,8 @@ use std::rc::Rc;
 const ABSENT: &str = "not found on the server";
 // Bounds a runaway download, the largest module is well under a megabyte.
 const MAX_FETCH_BYTES: u64 = 64 << 20;
+// How long a failing run may wait on the registry for a better hint.
+const HINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /* Where a run's files come from and which bare names it may resolve. */
 #[derive(Clone, Default)]
@@ -39,6 +41,7 @@ enum Step {
     Fetch(String),
     Plugin { spec: String, name: String },
     System(Value),
+    Undeclared(Vec<String>),
     Done(Vec<String>),
 }
 
@@ -73,6 +76,11 @@ pub fn prefetch(inst: &mut Instance, root_src: &str) -> Result<(), String> {
                 let failures = serve_system(inst, &project, &packages);
                 inst.walk_served(&failures.join("\0"))?
             }
+            // An untrusted run makes no request on its own behalf, so its hint stays the generic one.
+            Step::Undeclared(names) => {
+                let known = if project.untrusted { Vec::new() } else { registered(&names) };
+                inst.walk_known(&known.join("\0"))?
+            }
             Step::Done(failures) if failures.is_empty() => return Ok(()),
             Step::Done(failures) => return Err(failures.iter().map(|f| format!("error: {f}")).collect::<Vec<_>>().join("\n")),
         };
@@ -91,8 +99,28 @@ fn step(out: &[u8]) -> Result<Step, String> {
     if let Some(packages) = v.get("system") {
         return Ok(Step::System(packages.clone()));
     }
+    if let Some(names) = v.get("undeclared").and_then(Value::as_array) {
+        return Ok(Step::Undeclared(names.iter().filter_map(Value::as_str).map(str::to_string).collect()));
+    }
     let failures = v.get("done").and_then(Value::as_array).ok_or_else(|| format!("the compiler left an unknown walk step: {v}"))?;
     Ok(Step::Done(failures.iter().filter_map(Value::as_str).map(str::to_string).collect()))
+}
+
+/* The names the registry has, asked at once with lock=1 so nothing counts, none when it is out of reach. */
+fn registered(names: &[String]) -> Vec<String> {
+    std::thread::scope(|scope| {
+        let asks: Vec<_> = names
+            .iter()
+            .filter(|name| rules::named(name))
+            .map(|name| {
+                scope.spawn(move || {
+                    let url = site(&format!("/api/packages/{name}?lock=1"));
+                    ureq::get(&url).config().timeout_global(Some(HINT_TIMEOUT)).build().call().is_ok().then(|| name.clone())
+                })
+            })
+            .collect();
+        asks.into_iter().filter_map(|ask| ask.join().ok().flatten()).collect()
+    })
 }
 
 /* Serves the system modules to every package the walk met, opened with its scopes or refused when the root grants it none. */

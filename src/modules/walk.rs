@@ -21,6 +21,8 @@ pub enum Step {
     Manifest { spec: String, manifest: Manifest },
     /* Every package met, for the host to serve its system modules, answered with `served`. */
     System(Packages),
+    /* Bare names no manifest declares, for the host to say which a registry has, answered with `known`. */
+    Undeclared(Vec<String>),
     /* Every failure, none when everything registered. */
     Done(Vec<String>),
 }
@@ -59,6 +61,7 @@ enum Waiting {
     Lock { spec: String, manifest: Manifest },
     Plugin(String),
     System,
+    Undeclared(Vec<String>),
 }
 
 /* The resolution walk both hosts drive, lazy so only what a program imports is ever fetched. */
@@ -162,18 +165,32 @@ impl Walk {
         }
     }
 
-    /* The host served the system modules, and a bare name still undeclared fails at its import. */
+    /* The host served the system modules, and a bare name still undeclared is asked about before it fails. */
     pub fn served(&mut self, failures: Vec<String>) {
         if !matches!(self.waiting.take(), Some(Waiting::System)) {
             return;
         }
         self.failures.extend(failures);
         let mut seen = FxHashSet::default();
-        for (name, _) in core::mem::take(&mut self.pending_bare) {
-            if seen.insert(name.clone()) {
-                let msg = s!("module '", str &name, "' is not provided by this host and no edge.json declares it\nhelp: declare it in edge.json, or use a relative import");
-                self.out.push_back(Step::Refuse { spec: name, msg });
-            }
+        let names: Vec<String> = core::mem::take(&mut self.pending_bare).into_iter().map(|(name, _)| name).filter(|name| seen.insert(name.clone())).collect();
+        if names.is_empty() {
+            self.done = true;
+            return;
+        }
+        self.waiting = Some(Waiting::Undeclared(names.clone()));
+        self.out.push_back(Step::Undeclared(names));
+    }
+
+    /* Each undeclared name fails at its import, pointing at `edge add` when the registry has it. */
+    pub fn known(&mut self, registered: Vec<String>) {
+        let Some(Waiting::Undeclared(names)) = self.waiting.take() else { return };
+        for name in names {
+            let help = match registered.contains(&name) {
+                true => s!("run `edge add ", str &name, "`"),
+                false => s!("declare it in edge.json, or use a relative import"),
+            };
+            let msg = s!("module '", str &name, "' is not provided by this host and no edge.json declares it\nhelp: ", str &help);
+            self.out.push_back(Step::Refuse { spec: name, msg });
         }
         self.done = true;
     }
@@ -510,6 +527,8 @@ mod tests {
                     seen.packages = Some(packages);
                     walk.served(Vec::new());
                 }
+                // A registry that has json and nothing else.
+                Step::Undeclared(names) => walk.known(names.into_iter().filter(|name| name == "json").collect()),
                 Step::Done(failures) => {
                     seen.failures = failures;
                     return seen;
@@ -580,10 +599,11 @@ mod tests {
 
     #[test]
     fn what_cannot_load_is_refused_where_it_is_imported() {
-        let seen = walk(&[file("edge.json", r#"{ "imports": { "ui": "./ui.js" } }"#)], "import ui\nimport json\n");
+        let seen = walk(&[file("edge.json", r#"{ "imports": { "ui": "./ui.js" } }"#)], "import ui\nimport json\nimport my_helpers\n");
         assert!(seen.refused.contains(&(s!("./ui.js"), s!("module 'ui' is JavaScript, ship a .py or a .wasm"))), "{:?}", seen.refused);
-        let json = seen.refused.iter().find(|(spec, _)| spec == "json").unwrap();
-        assert!(json.1.starts_with("module 'json' is not provided by this host and no edge.json declares it\nhelp:"));
+        let help = |name: &str| seen.refused.iter().find(|(spec, _)| spec == name).map(|(_, msg)| msg.split_once("\nhelp: ").unwrap().1.to_string());
+        assert_eq!(help("json").as_deref(), Some("run `edge add json`"));
+        assert_eq!(help("my_helpers").as_deref(), Some("declare it in edge.json, or use a relative import"));
         assert!(seen.packages.unwrap().needed);
     }
 

@@ -47,14 +47,13 @@
     "steps": [{ "run": ["run", "main.py"], "exit": 1, "stderr": ["module 'widget' is JavaScript, ship a .py or a .wasm\n", "--> <input>:1:8"] }]
   },
   {
-    "pending": "010100101010 WAITS ON EDGE-PYTHON-STD PUBLISHING ITS PACKAGES TO THE REGISTRY, RESTORE THEN",
     "name": "an undeclared official name says how to declare it",
     "given": { "main.py": "x = 1\nimport json\n" },
     "steps": [{ "run": ["run", "main.py"], "exit": 1, "stderr": ["error: module 'json' is not provided by this host and no edge.json declares it\nhelp: run `edge add json`\n", "--> <input>:2:8"] }]
   },
   {
     "name": "an undeclared unknown name keeps the generic hint",
-    "given": { "main.py": "import helpers\n" },
+    "given": { "main.py": "import my_helpers\n" },
     "steps": [{ "run": ["run", "main.py"], "exit": 1, "stderr": ["help: declare it in edge.json, or use a relative import\n", "--> <input>:1:8"] }]
   },
   {
