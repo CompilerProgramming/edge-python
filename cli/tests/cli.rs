@@ -14,6 +14,8 @@ struct Case {
     // Binary fixtures, each destination copied from a path relative to the repository root.
     #[serde(default)] copy: BTreeMap<String, String>,
     #[serde(default)] env: BTreeMap<String, String>,
+    // Commands run first in the same dir, each must succeed, the way lock precedes a run.
+    #[serde(default)] before: Vec<Vec<String>>,
     run: Vec<String>,
     #[serde(default)] stdin: String,
     #[serde(default)] stdout: Vec<String>,
@@ -39,36 +41,41 @@ struct Step {
 /// JSON-driven CLI suite, each case in `cli.json` is one tempdir plus one spawn of the `edge` binary.
 #[test]
 fn cli_suite() {
-    suite(include_str!("cli.json"));
+    suite(include_str!("cli.json"), &[&[]]);
 }
 
 /// Third party wasm plugins built from `pdk/example`, run the same way a project declares them.
 #[test]
 fn plugin_suite() {
-    suite(include_str!("plugins.json"));
+    suite(include_str!("plugins.json"), &[&[]]);
 }
 
-/// The browser host under `--web`, which needs a Chrome on the machine the way the plugin suite needs its fixture.
+/// Programs both hosts must run alike, each case natively and again in the browser, which needs a Chrome.
 #[test]
-fn web_suite() {
-    suite(include_str!("web.json"));
+fn hosts_suite() {
+    suite(include_str!("hosts.json"), &[&[], &["--web"]]);
 }
 
-fn suite(json: &str) {
+fn suite(json: &str, hosts: &[&[&str]]) {
     let cases: Vec<Case> = serde_json::from_str(json).expect("case file parse");
     let bin = env!("CARGO_BIN_EXE_edge");
     // One cache per suite, so no case touches the real one and the runtime downloads once.
     let cache = tempfile::tempdir().expect("suite cache dir");
     let mut failed = vec![];
     for c in cases.iter().filter(|c| c.pending.is_none()) {
-        if let Err(e) = check(bin, c, cache.path()) {
-            failed.push(format!("[edge {}] {e}", c.run.join(" ")));
+        for host in hosts {
+            // A host flag goes right after the subcommand, where `run` and `test` read it.
+            let mut args = c.run.clone();
+            args.splice(1..1, host.iter().map(|flag| flag.to_string()));
+            if let Err(e) = check(bin, c, &args, cache.path()) {
+                failed.push(format!("[edge {}] {e}", args.join(" ")));
+            }
         }
     }
     assert!(failed.is_empty(), "\n{}", failed.join("\n"));
 }
 
-fn check(bin: &str, c: &Case, cache: &std::path::Path) -> Result<(), String> {
+fn check(bin: &str, c: &Case, args: &[String], cache: &std::path::Path) -> Result<(), String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     for (p, v) in &c.given {
         let path = dir.path().join(p);
@@ -81,8 +88,12 @@ fn check(bin: &str, c: &Case, cache: &std::path::Path) -> Result<(), String> {
         if let Some(d) = path.parent() { let _ = std::fs::create_dir_all(d); }
         std::fs::copy(&from, path).map_err(|e| format!("fixture {}: {e}, build it first", from.display()))?;
     }
+    for step in &c.before {
+        let want = Expect { stdout: &[], stderr: &[], fails: None };
+        run(bin, step, &c.env, dir.path(), cache, "", want).map_err(|e| format!("[before {}] {e}", step.join(" ")))?;
+    }
     let want = Expect { stdout: &c.stdout, stderr: &c.stderr, fails: c.fails.as_deref() };
-    run(bin, &c.run, &c.env, dir.path(), cache, &c.stdin, want)?;
+    run(bin, args, &c.env, dir.path(), cache, &c.stdin, want)?;
     for f in &c.creates { if !dir.path().join(f).exists() { return Err(format!("file missing: {f}")); } }
     for (f, n) in &c.contains {
         let t = std::fs::read_to_string(dir.path().join(f)).map_err(|e| e.to_string())?;

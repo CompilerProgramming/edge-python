@@ -64,7 +64,6 @@ test('renders a published package from its row and its artifact', async ({ page,
   await expect(page.locator('[data-playground] [data-input]')).toHaveValue(/from slugify import slug/)
   // The example's edge.json declares the release as a project would, the lock stays out of it.
   await expect(page.locator('[data-playground] [data-manifest] textarea')).toHaveValue(new RegExp(`"${name}": "0\\.1\\.0"`))
-  // 010100101010 CLICK RUN HERE AND EXPECT THE DOCUMENTED OUTPUT, THE ONE TEST OF A PLAYGROUND IMPORTING ITS OWN .EDGE, ONCE THE CDN CARRIES THE HOST THAT OPENS ONE.
   await expect(page.locator('.prose code.language-bash')).toHaveText('edge add slugify\n')
 
   // The aside orders both pages and every link stays inside the package.
