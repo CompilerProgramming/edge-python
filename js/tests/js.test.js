@@ -8,14 +8,16 @@ const CDN_HOST = "cdn.edgepython.com";
 // The staged CDN this run tests, a tmp prefix in CI or the local one from infra.
 const BASE = Deno.env.get("EDGE_CDN_BASE")?.replace(/\/$/, "");
 if (!BASE) throw new Error("set EDGE_CDN_BASE (npm run cdn:local in infra)");
+// The registry the lock is read from, the real one unless a run moves it.
+const SITE = (Deno.env.get("EDGE_SITE_BASE") ?? "https://edgepython.com").replace(/\/$/, "");
 
 const REPO = new URL("../../", import.meta.url).pathname; // edge-python/ repo root
 const cases = JSON.parse(readFileSync(new URL("./js.json", import.meta.url)));
 const PKG = JSON.parse(readFileSync(new URL("./app/edge.json", import.meta.url)));
 // Negative fixtures, only their own cases import them, abi2 and ui fail to load by design.
 const FIXTURES = new Set(["trap", "abi2", "ui"]);
-// star-import every project module, official names sit at CDN urls and the cases import them explicitly
-const star = (imports) => Object.entries(imports).flatMap(([k, v]) => (FIXTURES.has(k) || String(v).includes("://") ? [] : `from ${k} import *`));
+// star-import every module the app carries, packages are imported by the cases that use them
+const star = (imports) => Object.entries(imports).flatMap(([k, v]) => (FIXTURES.has(k) || !String(v).startsWith("./") ? [] : `from ${k} import *`));
 const PRELUDE = star(PKG.imports).join("\n") + "\n";
 const TYPES = {
     ".js": "text/javascript", ".wasm": "application/wasm", ".html": "text/html",
@@ -24,9 +26,24 @@ const TYPES = {
 
 /* The official origin answers from BASE, decoded bytes and the CDN's own headers, CORS included. */
 async function cdn(route, url) {
-    const res = await fetch(BASE + url.pathname + url.search);
+    // A staged CDN carries only this build, the registry's packages stay on the real one.
+    const from = url.pathname.startsWith("/pkg/") ? url.origin : BASE;
+    const res = await fetch(from + url.pathname + url.search);
     const headers = Object.fromEntries([...res.headers].filter(([k]) => k !== "content-encoding" && k !== "content-length"));
     return route.fulfill({ status: res.status, headers, body: Buffer.from(await res.arrayBuffer()) });
+}
+
+/* What `edge lock` would write beside app/edge.json, asked with lock=1 so nothing counts. */
+async function lockOf(imports) {
+    const lock = {};
+    for (const [name, version] of Object.entries(imports)) {
+        if (!/^\d+\.\d+\.\d+$/.test(version)) continue;
+        const res = await fetch(`${SITE}/api/packages/${name}?v=${version}&lock=1`);
+        if (!res.ok) throw new Error(`the registry has no ${name} ${version}, it answered ${res.status}`);
+        const { url, digest } = await res.json();
+        lock[name] = { version, url, digest: `sha256-${digest}` };
+    }
+    return lock;
 }
 
 /* Minimal wasm-pdk module built by hand, `__edge_abi_version` reports `abi` and `boom` traps when called. */
@@ -60,6 +77,7 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
     page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
     const requested = [];
     page.on("request", (q) => requested.push(q.url()));
+    const lock = JSON.stringify(await lockOf(PKG.imports));
 
     const strays = new Set(); // requests to any host but the CDN and the page fixtures, each fails the test
     await page.route("**/*", (r) => {
@@ -71,6 +89,7 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
         }
         if (u.pathname.endsWith("/app/trap.wasm")) return r.fulfill({ contentType: "application/wasm", body: pdkModule(1) });
         if (u.pathname.endsWith("/app/abi2.wasm")) return r.fulfill({ contentType: "application/wasm", body: pdkModule(2) });
+        if (u.pathname.endsWith("/app/edge.lock")) return r.fulfill({ contentType: "application/json", body: lock });
         const ext = u.pathname.slice(u.pathname.lastIndexOf("."));
         try { return r.fulfill({ contentType: TYPES[ext] ?? "application/octet-stream", body: readFileSync(REPO + u.pathname.slice(1)) }); }
         catch { return r.fulfill({ status: 404 }); }
@@ -212,9 +231,8 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
 
         // Laziness, only what the corpus imports gets fetched, and a JavaScript import is refused before any fetch.
         if (reqd("/app/ui.js")) throw new Error("ui is JavaScript, yet ui.js was fetched");
-        // 010100101010 THE CASE THAT IMPORTS JSON IS PENDING, RESTORE THIS CHECK WITH IT.
-        // if (!reqd("json.wasm")) throw new Error("json imported but json.wasm never fetched");
-        if (reqd("re.wasm")) throw new Error("re declared but never imported, yet re.wasm was fetched (not lazy)");
+        if (!reqd("/pkg/json/")) throw new Error("json imported but its package was never fetched");
+        if (reqd("/pkg/re/")) throw new Error("re declared but never imported, yet its package was fetched (not lazy)");
 
         if (strays.size) throw new Error([...strays].join("\n"));
     } catch (e) {

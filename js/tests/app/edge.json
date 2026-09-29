@@ -3,8 +3,8 @@
         "calc": "./calculator.py",
         "trap": "./trap.wasm",
         "abi2": "./abi2.wasm",
-        "json": "https://cdn.edgepython.com/std/json.wasm",
-        "re": "https://cdn.edgepython.com/std/re.wasm",
+        "json": "0.1.0",
+        "re": "0.1.0",
         "ui": "./ui.js"
     },
     "permissions": {
