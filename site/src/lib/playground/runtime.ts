@@ -26,7 +26,7 @@ async function lock(imports: Record<string, string>): Promise<Record<string, str
 }
 
 type Worker = {
-  run(source: string): Promise<{ out: string; ms: number }>
+  run(source: string, opts?: { entry?: string }): Promise<{ out: string; ms: number }>
   onOutput(handler: (chunk: string) => void): void
   dispose(): void
 }
@@ -108,7 +108,7 @@ export async function run(
     let timer: ReturnType<typeof setTimeout> | undefined
 
     try {
-      const running = active.run(source)
+      const running = active.run(source, { entry: 'main.py' })
       running.catch(() => {})
 
       const timeout = new Promise<never>((_, reject) => {
