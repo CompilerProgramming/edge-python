@@ -1066,6 +1066,7 @@
   {"src": "def f():\n    pass\ng = f\nprint(g.__name__)", "output": ["f"]},
   {"src": "print(int.__name__)", "output": ["int"]},
   {"src": "print(type(1).__name__)", "output": ["int"]},
+  {"src": "g = (x * x for x in range(3))\nprint(type(g).__name__, type([]).__name__, type({}).__name__, type((1,)).__name__, type({1}).__name__, type('a').__name__)", "output": ["list list dict tuple set str"]},
   {"src": "class Foo:\n    pass\nprint(Foo.__name__)", "output": ["Foo"]},
   {"src": "reg = {}\ndef fixture(fn):\n    reg[fn.__name__] = fn\n    return fn\n@fixture\ndef user():\n    return 1\nprint('user' in reg)", "output": ["True"]},
   {"src": "try:\n    1 / 0\nexcept Exception as e:\n    print(type(e).__name__)", "output": ["ZeroDivisionError"]},

@@ -159,6 +159,14 @@ A script that exceeds a cap fails with an `Error::Run` traceback (`RecursionErro
 
 Within a run, `async`/`await` and cooperative tasks run on one thread, like an event loop, and `sleep` advances a deterministic virtual clock rather than a wall clock, so a run reproduces exactly. Across threads `Program` is not `Send`, so you scale share-nothing, one `Engine` and `Program` per thread, never shared.
 
+## In a browser
+
+A page embeds the engine through the JS host instead, `createWorker` from `https://cdn.edgepython.com/js/src/index.js`. It drives `compiler.wasm` directly, so it needs neither `lang` nor Rust. Each part of it is documented where it applies.
+
+- [Modules](/docs/reference/modules#in-a-page) covers `createWorker` and `run`, how a page hands the worker its files, and `entry` for a script in a subdirectory.
+- [System](/docs/reference/system#embedding) covers `imports` and `permissions` for a page with no `edge.json`, and the sandboxed frame every worker runs in.
+- [Snapshots](/docs/language/snapshots#pause-from-the-host) covers `setPreemptInterval`, `pause` and `resume`, and saving and restoring a run.
+
 ## Where to go next
 
 - [Limits and errors](/docs/reference/limits-and-errors) details each cap and the errors they raise.

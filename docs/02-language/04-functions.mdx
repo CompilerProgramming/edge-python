@@ -435,7 +435,7 @@ returned done
 
 ## Generator expressions
 
-A generator inline.
+A generator expression is evaluated at once into a list, so `(x * x for x in xs)` is `[x * x for x in xs]` and can be read more than once. When the values should come one at a time, as from an unbounded source, write a `def` with `yield`. [Parsing](/docs/implementation/parsing#comprehensions-and-generators) explains why.
 
 ```edge-python
 print(sum(x * x for x in range(5)))

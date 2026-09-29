@@ -401,7 +401,7 @@ Same `Cargo.toml` as the `wasm-pdk` example, minus `wasm-pdk`, plus `lol_alloc =
 For `from <name> import <names>` where the manifest maps `<name>` to a `.wasm` URL, the host:
 
 1. Fetches the bytes, which the engine holds to any `#sha256-...` fragment.
-2. Instantiates with the 6 host imports.
+2. Instantiates with the 7 host imports.
 3. Walks the export table.
 4. Marshals args as handles.
 5. Propagates results.
