@@ -16,7 +16,7 @@ interface Props {
   imports?: Record<string, string>
 }
 
-const { manifest: written = '{}', code, name, output = '', placeholder, minLines = 1, maxLines = 5, outputMaxLines = 5, imports } = Astro.props
+const { manifest: written = '{}', code, name, output = '', placeholder, minLines = 1, maxLines = 10, outputMaxLines = 5, imports } = Astro.props
 
 const rows = Math.min(Math.max(code.split('\n').length, minLines), maxLines)
 
@@ -128,6 +128,12 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
     const snapshot = () => `${input.value}\0${declared.value}`
     let ran = snapshot()
 
+    // A long print keeps its newest lines in view.
+    const write = (text: string) => {
+      output.textContent = text
+      output.scrollTop = output.scrollHeight
+    }
+
     const highlight = createHighlight(() => {
       editor.refresh()
       json.refresh()
@@ -170,13 +176,13 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
           parsed as Manifest,
           (chunk) => {
             buffer += chunk
-            output!.textContent = applyControls(buffer).replace(/\n$/, '')
+            write(applyControls(buffer).replace(/\n$/, ''))
           },
           (phase) => { status!.textContent = `Output, ${PHASES[phase]}` }
         )
 
         const text = applyControls(buffer).replace(/\n$/, '')
-        output!.textContent = [text, result.error].filter(Boolean).join('\n')
+        write([text, result.error].filter(Boolean).join('\n'))
 
         status!.textContent = result.error
           ? 'Output, failed'
@@ -184,7 +190,7 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
             ? 'Output, differs'
             : `Output, ${result.ms < 1000 ? `${result.ms.toFixed(0)}ms` : `${(result.ms / 1000).toFixed(2)}s`}`
       } catch (error) {
-        output!.textContent = String((error as Error)?.message ?? error)
+        write(String((error as Error)?.message ?? error))
         status!.textContent = 'Output, failed'
       } finally {
         running = false

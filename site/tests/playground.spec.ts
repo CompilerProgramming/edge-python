@@ -70,7 +70,7 @@ test('scrolls the highlight with the source', async ({ page }) => {
   const input = editor(page)
   await clear(page)
 
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 12; i++) {
     await input.pressSequentially(`print(${i})`)
     await input.press('Enter')
   }
@@ -104,6 +104,19 @@ test('runs an edit once typing pauses and reports a mismatch against the documen
   await input.pressSequentially('print("something else"')
 
   await expect(status(page)).toHaveText('Output, differs', { timeout: 30000 })
+})
+
+test('keeps a long output scrolled to its end', async ({ page }) => {
+  const input = editor(page)
+  const output = page.locator('[data-output]')
+  await clear(page)
+
+  await input.pressSequentially('for i in range(40):')
+  await input.press('Enter')
+  await input.pressSequentially('print(i)')
+
+  await expect(output).toContainText('39', { timeout: 30000 })
+  expect(await output.evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 1)).toBe(true)
 })
 
 test.describe('on a touch screen', () => {
