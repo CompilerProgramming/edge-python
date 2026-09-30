@@ -434,8 +434,8 @@ impl<'a> VM<'a> {
             OpCode::LoadName => {
                 // At module scope, module_state holds the live value so function `global` writes are visible.
                 if core::ptr::eq(chunk, self.chunk)
-                    && let Some(n) = chunk.names.get(op as usize)
-                    && let Some(&gv) = self.module_state.get(ssa_strip(n))
+                    && let Some(bare) = cache.bare(chunk, op as usize)
+                    && let Some(&gv) = self.module_state.get(bare)
                     && !gv.is_undef()
                 {
                     self.push(gv);
@@ -470,14 +470,17 @@ impl<'a> VM<'a> {
                 }
                 // Mirror entry-chunk stores into `module_state` so functions with `global X` see updates, and mirror Module values into `globals` so `import_module()` finds module aliases.
                 if core::ptr::eq(chunk, self.chunk)
-                    && let Some(name) = chunk.names.get(op as usize)
+                    && let Some(bare) = cache.bare(chunk, op as usize)
                 {
                     let v = slots[op as usize];
-                    let bare = ssa_strip(name).to_string();
-                    if NativeFnId::from_name(&bare).is_some() { self.builtins_rebound = true; }
-                    self.module_state.insert(bare.clone(), v);
+                    if !self.builtins_rebound && NativeFnId::from_name(bare).is_some() { self.builtins_rebound = true; }
+                    // A name already bound is overwritten in place, so only its first binding allocates a key.
+                    match self.module_state.get_mut(bare) {
+                        Some(slot) => *slot = v,
+                        None => { self.module_state.insert(bare.to_string(), v); }
+                    }
                     if v.is_heap() && matches!(self.heap.get(v), HeapObj::Module(..)) {
-                        self.globals.insert(bare, v);
+                        self.globals.insert(bare.to_string(), v);
                     }
                 }
             }

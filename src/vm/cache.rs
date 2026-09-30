@@ -43,6 +43,8 @@ pub struct OpcodeCache {
     fused: Option<Vec<Instruction>>,
     /* Pre-materialised const pool so LoadConst is one indexed load, no per-iter alloc. */
     const_vals: Option<Vec<Val>>,
+    /* Length of each name without its version suffix, cut on the first module-scope access. */
+    bare_len: Option<Vec<u32>>,
 }
 
 impl OpcodeCache {
@@ -51,7 +53,15 @@ impl OpcodeCache {
             slots: vec![CacheSlot::default(); chunk.instructions.len()],
             fused: None,
             const_vals: None,
+            bare_len: None,
         }
+    }
+
+    /* The bare name of `names[i]`, its version suffix cut once per chunk rather than on every access. */
+    pub fn bare<'c>(&mut self, chunk: &'c SSAChunk, i: usize) -> Option<&'c str> {
+        let lens = self.bare_len.get_or_insert_with(|| chunk.names.iter().map(|n| crate::parser::ssa_strip(n).len() as u32).collect());
+        let len = *lens.get(i)? as usize;
+        chunk.names.get(i).map(|n| &n[..len])
     }
 
     /* Compile the fused instruction stream on first access, reuse afterwards. */
