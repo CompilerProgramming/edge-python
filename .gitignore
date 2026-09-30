@@ -63,3 +63,6 @@ site/public/og.png
 # playwright writes these per run, the report only survives a failure in CI
 site/test-results/
 site/playwright-report/
+
+# local engine backlog, kept out of the repo
+/backlog.json

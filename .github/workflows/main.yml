@@ -138,6 +138,15 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/site
 
+  # Holds the engine to the reference seconds of bench/.snapshot once its tests pass.
+  bench:
+    name: Bench
+    needs: [compiler]
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/bench
+
   # Typechecks the deploy scripts and proves dev and prod can never name the same resource.
   infra:
     name: Infra

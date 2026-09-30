@@ -13,11 +13,12 @@ runs:
     - name: Cache Rust
       uses: Swatinem/rust-cache@v2
 
-    - name: Toolchain (stable)
-      uses: dtolnay/rust-toolchain@stable
+    # The release, its wasm target and clippy all come from rust-toolchain.toml, so a bump edits that file alone.
+    - name: Toolchain (pinned)
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        targets: wasm32-unknown-unknown
-        components: clippy
+        cache: false
+        build-warnings: ""
 
     # rust-cache drops binaries installed during the job, so take the prebuilt one.
     - name: Install cargo-shear

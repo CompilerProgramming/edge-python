@@ -81,6 +81,17 @@ mod test {
         }
     }
 
+    /* Two cases equal in every field test the same thing twice, so the suite keeps only the first. */
+    #[test]
+    fn no_duplicate_cases() {
+        let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!("cases/vm.json")).expect("invalid JSON");
+        let mut seen = std::collections::HashMap::new();
+        let repeated: Vec<String> = cases.iter().enumerate()
+            .filter_map(|(i, case)| seen.insert(case.to_string(), i).map(|first| format!("case {i} repeats case {first}, {}", case["src"])))
+            .collect();
+        assert!(repeated.is_empty(), "{} duplicate case(s):\n{}", repeated.len(), repeated.join("\n"));
+    }
+
     /* Runs vm.json cases under sandbox limits testing budget heap depth guards verifying runaway allocation recursion materialization produce MemoryError RecursionError */
     #[test]
     fn test_cases() {
