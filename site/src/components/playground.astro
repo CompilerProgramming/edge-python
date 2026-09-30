@@ -30,6 +30,9 @@ const manifest = (() => {
   }
 })()
 
+// Each file keeps its own height, so a short edge.json never sits in the box the code needed.
+const manifestRows = Math.min(manifest.split('\n').length, maxLines)
+
 const panel = 'bg-panel rounded-2xl mb-6'
 const card = 'bg-page border border-line-strong rounded-2xl overflow-hidden p-4'
 const footer = 'flex items-center justify-between py-3 px-[17px] text-2xs text-fg-hint'
@@ -57,7 +60,7 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
 
       <div data-manifest hidden class={pane} style={tall}>
         <pre aria-hidden="true" class={paint}><code class={colors}></code></pre>
-        <textarea rows={rows} spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="edge.json" class={field}>{manifest}</textarea>
+        <textarea rows={manifestRows} spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="edge.json" class={field}>{manifest}</textarea>
       </div>
     </div>
 
@@ -150,7 +153,6 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
       input: declared,
       view: manifest.querySelector('code')!,
       highlight,
-      minLines: input.rows,
       lang: 'json'
     })
 
