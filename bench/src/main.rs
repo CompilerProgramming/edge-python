@@ -93,9 +93,8 @@ fn check(last: &Snapshot, now: &Snapshot, sources: &BTreeMap<String, &str>) -> V
         failures.push(format!("{} cases moved past ±{:.0}% on their own.{}", apart.len(), last.case_threshold * 100.0, list(&lines)));
     }
 
-    if failures.is_empty() {
-        annotate("notice", &format!("vm.json runs in {total:.3} s of reference time, {:+.2}% against the snapshot across {} cases, inside the ±{:.1}% band.", change * 100.0, timed.len(), last.threshold * 100.0));
-    }
+    // Printed even when a finding fails, so adding cases never hides how the existing ones moved.
+    annotate("notice", &format!("vm.json runs in {total:.3} s of reference time, {:+.2}% against the snapshot across {} cases, the band is ±{:.1}%.", change * 100.0, timed.len(), last.threshold * 100.0));
     failures
 }
 

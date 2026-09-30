@@ -192,6 +192,12 @@ fn prev_live(dead: &[bool], from: usize) -> Option<usize> {
     None
 }
 
+/* True when the jump just before `start` lands in `(start, end]`, where `or`, `and` and ternaries join. */
+fn skips_into(chunk: &SSAChunk, start: usize, end: usize) -> bool {
+    let Some(j) = start.checked_sub(1).map(|i| chunk.instructions[i]) else { return false };
+    is_jump_op(j.opcode) && (start + 1..=end).contains(&(j.operand as usize))
+}
+
 fn try_fold_binop(chunk: &mut SSAChunk, dead: &mut [bool], ip: usize) {
     let Some(prev1_ip) = prev_live(dead, ip) else { return };
     let Some(prev2_ip) = prev_live(dead, prev1_ip) else { return };
@@ -207,6 +213,7 @@ fn try_fold_binop(chunk: &mut SSAChunk, dead: &mut [bool], ip: usize) {
 
     let opcode = chunk.instructions[ip].opcode;
     let Some(result) = fold_binop(opcode, a, b) else { return };
+    if skips_into(chunk, prev2_ip, ip) { return; }
 
     if !write_const_load(chunk, prev2_ip, result) { return; }
     dead[prev1_ip] = true;
@@ -221,6 +228,7 @@ fn try_fold_unary(chunk: &mut SSAChunk, dead: &mut [bool], ip: usize, fold: impl
     let Some(v) = const_to_val(&chunk.constants, p1.operand) else { return };
 
     if let Some(r) = fold(v)
+        && !skips_into(chunk, prev1_ip, ip)
         && write_const_load(chunk, prev1_ip, r)
     {
         dead[ip] = true;
