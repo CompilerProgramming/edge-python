@@ -64,7 +64,7 @@ runs:
       with:
         target: ${{ inputs.mode == 'test' && 'wasm32-unknown-unknown' || inputs.target }}
         cache: false
-        build-warnings: ""
+        rustflags: ""
 
     - name: Cache Rust
       uses: Swatinem/rust-cache@v2

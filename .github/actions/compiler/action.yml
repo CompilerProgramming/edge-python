@@ -18,7 +18,7 @@ runs:
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         cache: false
-        build-warnings: ""
+        rustflags: ""
 
     # rust-cache drops binaries installed during the job, so take the prebuilt one.
     - name: Install cargo-shear
