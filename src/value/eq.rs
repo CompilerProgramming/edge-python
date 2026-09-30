@@ -48,8 +48,9 @@ fn hash_depth(v: Val, heap: &HeapPool, depth: usize) -> u64 {
         HeapObj::Str(s) => { h.write_u8(1); h.write(s.as_bytes()); }
         HeapObj::Bytes(b) => { h.write_u8(2); h.write(b); }
         HeapObj::Tuple(t) => { h.write_u8(3); h.write_usize(t.len()); for &e in t { h.write_u64(hash_depth(e, heap, depth + 1)); } }
-        // Order-independent so equal frozensets (any order/handle) hash equal.
+        // Order-independent so equal frozensets hash equal, and a set probes like the frozenset it equals.
         HeapObj::FrozenSet(s) => { h.write_u8(4); let acc = s.iter().fold(0u64, |a, &e| a.wrapping_add(hash_depth(e, heap, depth + 1))); h.write_u64(acc); }
+        HeapObj::Set(s) => { h.write_u8(4); let acc = s.borrow().iter().fold(0u64, |a, &e| a.wrapping_add(hash_depth(e, heap, depth + 1))); h.write_u64(acc); }
         _ => h.write_u64(v.0),
     }
     h.finish()
