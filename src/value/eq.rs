@@ -17,7 +17,7 @@ pub(crate) fn eq_set(a: &ValSet, b: &ValSet, eq: impl Fn(Val,Val)->bool) -> bool
 }
 
 /* Recursion cap so self-referential containers fall back instead of overflowing the stack. */
-const EQ_DEPTH_MAX: usize = 100;
+pub(crate) const EQ_DEPTH_MAX: usize = 100;
 
 pub fn eq_vals_with_heap(a: Val, b: Val, heap: &HeapPool) -> bool {
     eq_vals_depth(a, b, heap, 0)

@@ -211,12 +211,16 @@ impl<'a> VM<'a> {
     }
 
     /* Reject mutable types (list/dict/set) used as dict/set keys, plus instances that override `__eq__` without `__hash__`. */
-    pub(in crate::vm) fn require_hashable(&self, v: Val) -> Result<(), VmErr> {
-        if v.is_heap() {
+    pub(in crate::vm) fn require_hashable(&self, v: Val) -> Result<(), VmErr> { self.require_hashable_at(v, 0) }
+
+    fn require_hashable_at(&self, v: Val, depth: usize) -> Result<(), VmErr> {
+        if v.is_heap() && depth <= EQ_DEPTH_MAX {
             match self.heap.get(v) {
                 HeapObj::List(_) => return Err(cold_type("unhashable type: 'list'")),
                 HeapObj::Dict(_) => return Err(cold_type("unhashable type: 'dict'")),
                 HeapObj::Set(_) => return Err(cold_type("unhashable type: 'set'")),
+                // A tuple hashes through its items as deep as the hash looks, so each must be hashable too.
+                HeapObj::Tuple(items) => for &item in items { self.require_hashable_at(item, depth + 1)?; },
                 HeapObj::Instance(cls, _) => {
                     // Same eq-hash invariant as `call_hash` since defining one without the other voids hashability.
                     let cls = *cls;

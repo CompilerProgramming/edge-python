@@ -108,6 +108,7 @@ impl<'a> VM<'a> {
             _ => "dict accumulator corrupted",
         });
         if !acc.is_heap() { return Err(corrupt()); }
+        if let Some(k) = key { self.require_hashable(k)?; } else if kind == "set" { self.require_hashable(value)?; }
         match (kind, self.heap.get(acc)) {
             ("list", HeapObj::List(rc)) => { rc.borrow_mut().push(value); }
             ("set", HeapObj::Set(rc))  => { rc.borrow_mut().insert(value, &self.heap); }

@@ -7,7 +7,15 @@ fn valset_of(items: &[Val], heap: &HeapPool) -> ValSet {
     s
 }
 
+/* A set probes as the frozenset it equals and never matches the set being changed, anything else must hash. */
+fn probes(vm: &VM, recv: Val, v: Val) -> Result<bool, VmErr> {
+    if v.0 == recv.0 { return Ok(false); }
+    if !(v.is_heap() && matches!(vm.heap.get(v), HeapObj::Set(_))) { vm.require_hashable(v)?; }
+    Ok(true)
+}
+
 pub fn add(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
+    vm.require_hashable(pos[0])?;
     set_mut(vm, recv, "add: receiver is not a set", |set, heap| {
         set.insert(pos[0], heap); Ok(())
     })?;
@@ -15,6 +23,7 @@ pub fn add(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 }
 
 pub fn remove(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
+    if !probes(vm, recv, pos[0])? { return Err(VmErr::Raised("KeyError".into())); }
     set_mut(vm, recv, "remove: receiver is not a set", |set, heap| {
         // KeyError, not ValueError.
         if !set.remove(pos[0], heap) { return Err(VmErr::Raised("KeyError".into())); }
@@ -24,9 +33,11 @@ pub fn remove(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 }
 
 pub fn discard(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    set_mut(vm, recv, "discard: receiver is not a set", |set, heap| {
-        set.remove(pos[0], heap); Ok(())
-    })?;
+    if probes(vm, recv, pos[0])? {
+        set_mut(vm, recv, "discard: receiver is not a set", |set, heap| {
+            set.remove(pos[0], heap); Ok(())
+        })?;
+    }
     vm.push(Val::none()); Ok(())
 }
 
@@ -47,9 +58,11 @@ pub fn clear(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
     vm.push(Val::none()); Ok(())
 }
 
-// Materialize every argument iterable up front (each may run iteration code).
+// Materialize every argument iterable up front (each may run iteration code), and reject unhashable items.
 fn collect_args(vm: &mut VM, pos: &[Val]) -> Result<Vec<Vec<Val>>, VmErr> {
-    pos.iter().map(|&a| iter_to_vec(vm, a)).collect()
+    let args: Vec<Vec<Val>> = pos.iter().map(|&a| iter_to_vec(vm, a)).collect::<Result<_, _>>()?;
+    for &v in args.iter().flatten() { vm.require_hashable(v)?; }
+    Ok(args)
 }
 
 pub fn update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
@@ -123,6 +136,7 @@ pub fn difference_update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmEr
 
 pub fn symmetric_difference_update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let other = iter_to_vec(vm, pos[0])?;
+    for &v in &other { vm.require_hashable(v)?; }
     set_mut(vm, recv, "symmetric_difference_update: receiver is not a set", |set, heap| {
         for v in other { if !set.remove(v, heap) { set.insert(v, heap); } }
         Ok(())
