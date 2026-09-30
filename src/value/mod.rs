@@ -552,6 +552,10 @@ impl HeapPool {
         }
     }
 
+    pub(crate) fn reserve(&mut self, n: usize) {
+        self.slots.reserve(n);
+    }
+
     pub fn alloc(&mut self, obj: HeapObj) -> Result<Val, VmErr> {
         if let Some(idx) = self.intern_lookup(&obj) { return Ok(Val::heap(idx)); }
         if self.live >= self.limit { return Err(cold_heap()); }

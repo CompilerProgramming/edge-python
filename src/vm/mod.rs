@@ -102,6 +102,8 @@ pub struct VM<'a> {
     pub(crate) yields: Vec<Val>,
     pub(crate) chunk: &'a SSAChunk,
     pub(crate) globals: HashMap<String, Val>,
+    /* The builtins under the globals, keyed by their static names and never rebound. */
+    pub(crate) builtins: HashMap<&'static str, Val>,
     /* User-mutated module-level state, keyed by bare name, mirrors entry-chunk stores and backs `global` declarations. */
     pub(crate) module_state: HashMap<String, Val>,
     pub(crate) live_slots: Vec<Val>,
@@ -222,6 +224,7 @@ impl<'a> VM<'a> {
             chunk,
             heap: HeapPool::new(limits.heap),
             globals: HashMap::default(),
+            builtins: HashMap::with_capacity_and_hasher(BUILTIN_TYPES.len() + NativeFnId::ALL.len() + 2, Default::default()),
             module_state: HashMap::default(),
             live_slots: Vec::new(),
             templates: Templates::new(),
@@ -293,29 +296,27 @@ impl<'a> VM<'a> {
         };
         vm.build_function_table(chunk, None, None);
         vm.index_functions(0);
+        // Every builtin takes a heap slot, reserved at once rather than grown by doubling.
+        vm.heap.reserve(BUILTIN_TYPES.len() + NativeFnId::ALL.len() + 2);
         for &name in BUILTIN_TYPES {
             if let Ok(type_obj) = vm.heap.alloc(HeapObj::Type(name.to_string())) {
-                vm.globals.insert(name.to_string(), type_obj);
-                vm.globals.insert(s!(str name, "_0"), type_obj);
+                vm.builtins.insert(name, type_obj);
             }
         }
         // Entry chunk's `__name__` is "__main__", inserted before slot_templates is built.
         if let Ok(main_name) = vm.heap.alloc(HeapObj::Str("__main__".to_string())) {
-            vm.globals.insert("__name__".to_string(), main_name);
-            vm.globals.insert("__name___0".to_string(), main_name);
+            vm.builtins.insert("__name__", main_name);
         }
         // `NotImplemented` singleton, dunders return it to delegate to the reflected operator.
         if let Ok(ni) = vm.heap.alloc(HeapObj::NotImplemented) {
-            vm.globals.insert("NotImplemented".to_string(), ni);
-            vm.globals.insert("NotImplemented_0".to_string(), ni);
+            vm.builtins.insert("NotImplemented", ni);
         }
         // Builtins as first-class NativeFn values so they can be rebound/passed around.
         for &id in NativeFnId::ALL {
             let name = id.name();
             if BUILTIN_TYPES.contains(&name) { continue; } // type names stay Type objects
             if let Ok(v) = vm.heap.alloc(HeapObj::NativeFn(id)) {
-                vm.globals.insert(name.to_string(), v);
-                vm.globals.insert(s!(str name, "_0"), v);
+                vm.builtins.insert(name, v);
             }
         }
         // Slot templates built after all globals are registered.
@@ -373,7 +374,7 @@ impl<'a> VM<'a> {
             let param_names: crate::util::hash::FxHashSet<&str> = params.iter().map(|p| crate::parser::types::param_base_name(p)).collect();
             body.names.iter().any(|n| {
                 let base = crate::parser::ssa_strip(n);
-                !param_names.contains(base) && !self.globals.contains_key(n)
+                !param_names.contains(base) && self.global_slot(n).is_none()
             })
         }).collect();
         self.needs_caller_slots.truncate(start);
@@ -446,7 +447,7 @@ impl<'a> VM<'a> {
         // A free load of a user binding could be rebound between calls and serve a stale result.
         let new: Vec<bool> = (start..self.functions.len()).map(|fi| {
             self.body_free_loads[fi].iter().all(|(bare, _, _)| {
-                self.globals.contains_key(bare.as_str()) || self.function_names.get(fi).is_some_and(|n| n == bare)
+                self.global(bare).is_some() || self.function_names.get(fi).is_some_and(|n| n == bare)
             })
         }).collect();
         self.memo_ok.truncate(start);

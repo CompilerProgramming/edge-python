@@ -53,7 +53,7 @@ impl<'a> VM<'a> {
             return Err(VmErr::TypeMsg(s!("call '", str name, "': too many arguments (max 255, got ", int args.len() as i64, ")")));
         }
         let callee = self.module_state.get(name).copied()
-            .or_else(|| self.globals.get(name).copied())
+            .or_else(|| self.global(name))
             .ok_or_else(|| VmErr::Name(name.into()))?;
         // Stack layout for a Call, callee at the bottom then positionals, exec_call pops them back.
         let chunk: &crate::parser::SSAChunk = unsafe { &*(self.chunk as *const _) };
@@ -136,11 +136,21 @@ impl<'a> VM<'a> {
     pub(crate) fn fill_builtins(&self, names: &[String]) -> Vec<Val> {
         let mut slots = vec![Val::undef(); names.len()];
         for (i, name) in names.iter().enumerate() {
-            if let Some(v) = self.globals.get(name) {
-                slots[i] = *v;
+            if let Some(v) = self.global_slot(name) {
+                slots[i] = v;
             }
         }
         slots
+    }
+
+    /* A global by its bare name, what the program bound shadowing the builtin under it. */
+    pub(crate) fn global(&self, bare: &str) -> Option<Val> {
+        self.globals.get(bare).or_else(|| self.builtins.get(bare)).copied()
+    }
+
+    /* The global a slot starts from, a builtin also answering to its version-0 name. */
+    pub(crate) fn global_slot(&self, name: &str) -> Option<Val> {
+        self.global(name).or_else(|| name.strip_suffix("_0").and_then(|bare| self.builtins.get(bare).copied()))
     }
 
     #[inline]

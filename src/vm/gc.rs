@@ -33,7 +33,7 @@ impl<'a> VM<'a> {
         // Closure cells live on the active call frames until the closures that capture them are built.
         for frame in &self.call_stack { for &(_, c) in &frame.cells { self.heap.mark(c); } }
         for &v in &self.template_roots { self.heap.mark(v); }
-        for &v in self.globals.values() { self.heap.mark(v); }
+        for &v in self.globals.values().chain(self.builtins.values()) { self.heap.mark(v); }
         for &v in self.module_state.values() { self.heap.mark(v); }
         // A `from x import` binds no name to the module, yet its functions still read their globals through this table.
         for &v in self.module_table.values() { self.heap.mark(v); }

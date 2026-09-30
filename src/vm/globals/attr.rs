@@ -284,7 +284,7 @@ impl<'a> VM<'a> {
             let (bare, ver) = crate::parser::SsaName::parse_or_bare(name);
             let ver = ver as i64;
             // Skip unrebound builtins, same Val as the global means the user never assigned locally.
-            if let Some(&gv) = self.globals.get(bare)
+            if let Some(gv) = self.global(bare)
                 && gv.0 == v.0 { continue; }
             let entry = latest.entry(bare.to_string()).or_insert((-1, Val::undef()));
             if ver > entry.0 { *entry = (ver, v); }

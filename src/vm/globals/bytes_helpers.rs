@@ -96,10 +96,7 @@ impl<'a> VM<'a> {
             HeapObj::Str(s) => s.clone(),
             _ => return Err(cold_type("import_module() argument must be a string")),
         };
-        // Parser stores top-level bindings as both `name` and `name_0`, try both so the user's alias matches.
-        let val = self.globals.get(&name)
-            .or_else(|| self.globals.get(&s!(str &name, "_0")))
-            .copied()
+        let val = self.global(&name)
             .ok_or_else(|| VmErr::Raised(s!("NameError: module '", str &name, "' not imported in this scope")))?;
         if !val.is_heap() || !matches!(self.heap.get(val), HeapObj::Module(..)) {
             return Err(VmErr::TypeMsg(s!("'", str &name, "' is not a module")));

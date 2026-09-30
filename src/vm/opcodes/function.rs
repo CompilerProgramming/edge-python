@@ -769,10 +769,7 @@ impl<'a> VM<'a> {
             return Some(v);
         }
         // Layer 4 checks globals, catching forward-ref mutual recursion in the entry chunk.
-        if let Some(&v) = self.globals.get(bare) {
-            return Some(v);
-        }
-        None
+        self.global(bare)
     }
 
     /* Bind the function's own name slot to `callee` so recursive calls skip the global lookup. No-op for lambdas or when an earlier phase already filled the slot. */

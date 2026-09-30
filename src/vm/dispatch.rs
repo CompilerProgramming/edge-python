@@ -484,7 +484,7 @@ impl<'a> VM<'a> {
             OpCode::LoadGlobal => {
                 let name = chunk.names.get(op as usize).ok_or(cold_runtime("LoadGlobal: name index out of bounds"))?;
                 let v = self.module_state.get(name.as_str()).copied()
-                    .or_else(|| self.globals.get(name.as_str()).copied())
+                    .or_else(|| self.global(name))
                     .or_else(|| self.builtin_binding(name))
                     .unwrap_or(Val::undef());
                 if v.is_undef() {
@@ -985,7 +985,7 @@ impl<'a> VM<'a> {
         if NativeFnId::from_name(bare).is_none() && !crate::parser::BUILTIN_TYPES.contains(&bare) {
             return None;
         }
-        self.globals.get(bare).copied()
+        self.global(bare)
     }
 
     #[inline(never)]
@@ -1010,7 +1010,7 @@ impl<'a> VM<'a> {
         for (i, name) in body.names.iter().enumerate() {
             let bare = ssa_strip(name);
             if class_slots.get(i).is_some_and(|v| v.is_undef())
-                && let Some(gv) = self.module_state.get(bare).or_else(|| self.globals.get(bare)).copied()
+                && let Some(gv) = self.module_state.get(bare).copied().or_else(|| self.global(bare))
             {
                 class_slots[i] = gv;
             }
