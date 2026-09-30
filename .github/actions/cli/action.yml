@@ -60,10 +60,11 @@ runs:
         deno bundle --platform browser --format iife src/worker/worker.ts -o dist/worker/bundle.js
 
     - name: Toolchain
-      uses: dtolnay/rust-toolchain@stable
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        components: ${{ inputs.mode == 'lint' && 'clippy' || '' }}
-        targets: ${{ inputs.mode == 'test' && 'wasm32-unknown-unknown' || inputs.target }}
+        target: ${{ inputs.mode == 'test' && 'wasm32-unknown-unknown' || inputs.target }}
+        cache: false
+        build-warnings: ""
 
     - name: Cache Rust
       uses: Swatinem/rust-cache@v2

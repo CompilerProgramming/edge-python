@@ -67,11 +67,11 @@ $ edge run app.py
 
 ## Repository
 
-The root crate is the engine, lexer, parser, VM and WebAssembly exports, tested from `tests/`. `cli/` is the `edge` binary that runs `compiler.wasm` under wasmtime and the system calls in SpiderMonkey, and `js/` is the JavaScript host. `pdk/` and `abi/` are the kit for writing `.wasm` plugins, and `lang/` builds your own scripting language on the engine. `site/` is the website that serves `docs/`, `infra/` declares its Cloudflare resources in code, and `fuzz/` and `skill/` hold the fuzzer and a guided reference for AI models. Build and test commands for every part live in [CONTRIBUTING.md](CONTRIBUTING.md).
+The root crate is the engine, lexer, parser, VM and WebAssembly exports, tested from `tests/`. `cli/` is the `edge` binary that runs `compiler.wasm` under wasmtime and the system calls in SpiderMonkey, and `js/` is the JavaScript host. `pdk/` and `abi/` are the kit for writing `.wasm` plugins, and `lang/` builds your own scripting language on the engine. `site/` is the website that serves `docs/`, `infra/` declares its Cloudflare resources in code, and `fuzz/`, `bench/` and `skill/` hold the fuzzer, the benchmark and a guided reference for AI models. Build and test commands for every part live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-The engine is open source under the Apache 2.0 License. That covers `src/`, `tests/`, `abi/`, `pdk/`, `cli/`, `js/`, `fuzz/`, `skill/` and `docs/`, so running it, embedding `compiler.wasm` and writing plugins for it need nothing from anyone.
+The engine is open source under the Apache 2.0 License. That covers `src/`, `tests/`, `abi/`, `pdk/`, `cli/`, `js/`, `fuzz/`, `bench/`, `skill/` and `docs/`, so running it, embedding `compiler.wasm` and writing plugins for it need nothing from anyone.
 
 `lang/` is under the PolyForm Noncommercial License, free for personal use, research and teaching, while a product or a project others may sell needs a written agreement. The products in `site/` and `infra/` are published to be read, not to be used. They carry no license, and using them needs a written agreement. See [LICENSE.md](LICENSE.md).
 

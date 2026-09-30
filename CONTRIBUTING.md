@@ -16,6 +16,7 @@ Pull requests are welcome everywhere the Apache 2.0 License applies, which is ev
 - Docs describe the code as it is after the change.
 - Changes to the language, the CLI, or package behavior update `skill/SKILL.md`, and `cargo test -p skill` stays green.
 - Significant changes run the [fuzzer](https://edgepython.com/docs/implementation/fuzzing) to check for new crashes or slowdowns.
+- Changes to the engine keep `cargo run -p bench --profile cli` passing.
 
 Run these from the repo root before sending. The maintainer runs CI once the PR is open.
 
@@ -33,7 +34,7 @@ Comments are one line, at most one per block, and deleted when redundant. No fil
 
 ## Building
 
-The root Cargo workspace holds the engine, `abi`, `pdk`, `skill` and `lang`. `cli/` and `fuzz/` are separate workspaces.
+The root Cargo workspace holds the engine, `abi`, `pdk`, `skill`, `lang` and `bench`. `cli/` and `fuzz/` are separate workspaces. `rust-toolchain.toml` pins every build to one Rust release, so the `compiler.wasm` the bench counts is the same everywhere.
 
 ```bash
 cargo wasm # compiler.wasm, CI ships a smaller build
@@ -49,6 +50,8 @@ The JS host in `js/src` is TypeScript, linted with `deno lint js/`.
 ## Testing
 
 `cargo test --release` runs `tests/cases/vm.json` under `Limits::sandbox()`, so a budget, heap, or call-depth regression fails as a `MemoryError` or `RecursionError` instead of hanging. Every fixture must fit that budget.
+
+`cargo run -p bench --profile cli` runs every case of `tests/cases/vm.json` on the `compiler.wasm` that `cargo wasm-cli` builds, and stops when that build is older than `src/`. It counts the WebAssembly instructions each case executes and prices each at 0.82 ns, the 822756 gas that `wasm_regular_op_cost` sets in `core/parameters/res/runtime_configs/parameters.yaml` of nearcore, taken at the 1 ms per Tgas that its gas estimator budgets, so `bench/.snapshot` keeps reference seconds that come out the same on every machine and every run, and a change shows case by case in its diff. The Bench job holds every pull request to it and fails when the snapshot was taken with another Rust, when a case is missing from it or an entry has no case, when the geometric mean moves past its threshold slower or faster, or when a single case moves past its own. `--update` reports the change and then takes the snapshot again, and a faster engine takes it too so the next change is measured from where the code stands. `tests/vm.rs` also fails on two cases equal in every field.
 
 The other suites read the builds from a CDN, the way CI does. Build what you changed, stage it, and serve it locally with no credentials.
 

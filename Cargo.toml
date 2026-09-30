@@ -39,7 +39,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [workspace]
-members = ["abi", "pdk", "pdk/macros", "pdk/example", "skill", "lang"]
+members = ["abi", "pdk", "pdk/macros", "pdk/example", "skill", "lang", "bench"]
 # `pdk/example` is wasm-only, in `members` for the lockfile but out of `default-members`, build it with `-p slugify-mod`.
 default-members = [".", "abi", "pdk", "pdk/macros", "skill", "lang"]
 resolver = "2"

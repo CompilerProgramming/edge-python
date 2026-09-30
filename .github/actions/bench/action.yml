@@ -1,0 +1,23 @@
+name: Bench
+description: Counts the instructions compiler.wasm runs for every vm.json case and holds their reference seconds to bench/.snapshot.
+
+runs:
+  using: composite
+  steps:
+    - name: Cache Rust
+      uses: Swatinem/rust-cache@v2
+
+    - name: Toolchain (pinned)
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        cache: false
+        build-warnings: ""
+
+    # The build the snapshot was taken from, never the wasm-opt one the Compiler job stages.
+    - name: Build compiler.wasm
+      shell: bash
+      run: cargo wasm-cli --locked
+
+    - name: Bench
+      shell: bash
+      run: cargo run --locked -p bench --profile cli
