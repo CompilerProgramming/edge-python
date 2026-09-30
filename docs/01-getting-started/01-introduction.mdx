@@ -16,19 +16,25 @@ Sandboxed means the defaults deny everything. A program gets no file system, no 
 
 Every runnable example in these docs executes on the real engine through the JS host. Try editing this one:
 
-```edge-python
-text = "the quick brown fox"
-words = {w: len(w) for w in text.split()}
+```edge-manifest
+{ "permissions": { "main": ["net:api.github.com"] } }
+```
 
-for w, n in words.items():
-  print(f"{w:>6} -> {n}")
+```edge-python
+import net
+
+url = "https://api.github.com/repos/dylan-sutton-chavez/edge-python"
+
+try:
+  r = net.request("GET", url, {}, None)
+  status, headers = net.response(r)
+  print(status)
+except PermissionError as e:
+  print(e)
 ```
 
 ```output
-   the -> 3
- quick -> 5
- brown -> 5
-   fox -> 3
+200
 ```
 
 ## What it is not
