@@ -50,7 +50,7 @@ pub fn popitem(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
 
 // `dict.fromkeys(iterable, value=None)` classmethod, new dict mapping each key to `value`.
 pub fn fromkeys(vm: &mut VM, _recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let keys = vm.extract_iter(pos[0], true)?;
+    let keys = vm.extract_iter(pos[0])?;
     let value = pos.get(1).copied().unwrap_or(Val::none());
     let mut dm = DictMap::with_capacity(keys.len());
     for k in keys { dm.insert(k, value, &vm.heap); }
@@ -73,7 +73,7 @@ pub fn update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
         if let Some(HeapObj::Dict(rc)) = vm.heap.try_get(src) {
             pairs.extend(rc.borrow().iter());
         } else {
-            for it in vm.extract_iter(src, true)? {
+            for it in vm.extract_iter(src)? {
                 let pair = match vm.heap.try_get(it) {
                     Some(HeapObj::Tuple(v)) if v.len() == 2 => (v[0], v[1]),
                     Some(HeapObj::List(v)) if v.borrow().len() == 2 => { let v = v.borrow(); (v[0], v[1]) }

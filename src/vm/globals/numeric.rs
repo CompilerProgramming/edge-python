@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 
 use super::super::VM;
 use super::super::types::*;
+use super::sequence::IterCursor;
 
 /* Convert a float to i128 for int()/round(), NaN and infinity raise, and the value is rejected before the saturating cast overflows. `transform` truncates or rounds. */
 fn finite_f64_to_i128(f: f64, transform: impl Fn(f64) -> f64) -> Result<i128, VmErr> {
@@ -314,7 +315,9 @@ impl<'a> VM<'a> {
         let args = self.pop_n(op as usize)?;
         if args.is_empty() { return Err(cold_type("sum() requires at least 1 argument")); }
         let start = if args.len() > 1 { args[1] } else { Val::int(0) };
-        let mut cur = self.iter_cursor(args[0])?;
+        let mut cur = if args[0].is_heap() && matches!(self.heap.get(args[0]), HeapObj::Coroutine(..)) {
+            IterCursor::Vec { items: self.extract_iter(args[0])?, idx: 0 }
+        } else { self.iter_cursor(args[0])? };
         let mut acc = start;
         // Once a float enters, switch to Neumaier compensated summation (Python 3.12+).
         let mut fstate: Option<(f64, f64)> = if start.is_float() { Some((start.as_float(), 0.0)) } else { None };

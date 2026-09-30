@@ -5,6 +5,9 @@ use crate::parser::SSAChunk;
 use super::super::VM;
 use super::super::types::*;
 
+/* An ip no chunk reaches, the same on 32 and 64 bits so a snapshot keeps it. */
+const FINISHED: usize = u32::MAX as usize;
+
 impl<'a> VM<'a> {
 
     // Resume coroutine, persist state on yield, restore caller on return. Suspended sync sub-frames run innermost-first, each pushing its result onto the next frame's stack at the Call site. The coro's `exception_frames` are restored before its body runs and saved back on yield, so `try`/`except` survives suspensions.
@@ -17,6 +20,7 @@ impl<'a> VM<'a> {
             } else {
                 return Err(cold_type("not a coroutine"));
             };
+        if outer_ip == FINISHED { self.yielded = false; return Ok(Val::none()); }
 
         // Bound depth, sync frames within a coroutine, plus nested resumes from mutual awaits (native-stack recursion).
         if sync_frames.len() >= self.max_calls || self.depth >= self.max_calls {
@@ -155,6 +159,9 @@ impl<'a> VM<'a> {
 
         self.depth -= 1;
         self.executing_coros.retain(|&id| id != callee.0);
+        // A body that returned or raised is finished, so a later resume must not run its tail again.
+        let finished = match &result { Ok(_) => !self.yielded, Err(e) => !matches!(e, VmErr::HostYield(_)) };
+        if finished && let Some(HeapObj::Coroutine(sip, ..)) = self.heap.try_get_mut(callee) { *sip = FINISHED; }
         let result = match result {
             Ok(v) => v,
             Err(e) => {

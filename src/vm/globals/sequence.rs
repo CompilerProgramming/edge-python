@@ -106,7 +106,7 @@ impl<'a> VM<'a> {
 
     pub fn call_sorted(&mut self, reverse: bool, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let o = self.pop()?;
-        let mut items = self.extract_iter(o, false)?;
+        let mut items = self.extract_iter(o)?;
         self.sort_by_lt(&mut items, chunk, slots)?;
         if reverse { items.reverse(); }
         self.alloc_and_push_list(items)
@@ -119,7 +119,7 @@ impl<'a> VM<'a> {
             _ => return self.call_sorted(reverse, chunk, slots),
         };
         let o = self.pop()?;
-        let items = self.extract_iter(o, false)?;
+        let items = self.extract_iter(o)?;
         let mut sorted = self.sort_by_key(items, key, chunk, slots)?;
         if reverse { sorted.reverse(); }
         self.alloc_and_push_list(sorted)
@@ -240,7 +240,7 @@ impl<'a> VM<'a> {
             let s = s.clone();
             self.str_to_char_vals(&s)?
         } else {
-            self.extract_iter(o, true)?
+            self.extract_iter(o)?
         };
         items.reverse();
         self.alloc_and_push_iter(items)
@@ -263,7 +263,7 @@ impl<'a> VM<'a> {
             Some(n) => n,
             None => return Err(cold_type("enumerate() start must be an integer")),
         };
-        let src = self.extract_iter(positional[0], false)?;
+        let src = self.extract_iter(positional[0])?;
         let mut pairs: Vec<Val> = Vec::with_capacity(src.len());
         for (i, x) in src.into_iter().enumerate() {
             let idx = self.int_to_val(start.checked_add(i as i128))?;
@@ -279,7 +279,7 @@ impl<'a> VM<'a> {
         let mut vals = Vec::with_capacity(op as usize);
         for _ in 0..op { vals.push(self.pop()?); }
         vals.reverse();
-        for v in vals { iters.push(self.extract_iter(v, false)?); }
+        for v in vals { iters.push(self.extract_iter(v)?); }
         let len = iters.iter().map(|v| v.len()).min().unwrap_or(0);
         let mut pairs: Vec<Val> = Vec::with_capacity(len);
         for i in 0..len {
@@ -313,10 +313,25 @@ impl<'a> VM<'a> {
         })
     }
 
-    /* Vec<Val> from any iterable (dict yields keys, str yields one-char strs, bytes yields ints). `include_range = false` lets callers reject Range. */
-    pub(in crate::vm) fn extract_iter(&mut self, o: Val, include_range: bool) -> Result<Vec<Val>, VmErr> {
+    /* Vec<Val> from any iterable (dict yields keys, str yields one-char strs, bytes yields ints, a generator runs to its end). */
+    pub(in crate::vm) fn extract_iter(&mut self, o: Val) -> Result<Vec<Val>, VmErr> {
         if !o.is_heap() {
             return Err(self.not_iterable(o));
+        }
+        if matches!(self.heap.get(o), HeapObj::Coroutine(..)) {
+            // Keep the coroutine and its yielded values rooted on the VM stack, each resume can allocate and trigger GC.
+            self.push(o);
+            let base = self.stack.len();
+            loop {
+                self.charge_step()?;
+                let v = self.resume_coroutine(o)?;
+                if !self.yielded { break; }
+                self.yielded = false;
+                self.push(v);
+            }
+            let out = self.stack.split_off(base.min(self.stack.len()));
+            self.pop()?;
+            return Ok(out);
         }
         // Snapshot the variant out so the &self borrow ends before any allocation.
         let snapshot = match self.heap.get(o) {
@@ -324,7 +339,7 @@ impl<'a> VM<'a> {
             HeapObj::Tuple(v) => Some(v.clone()),
             HeapObj::Set(v) => Some(v.borrow().iter().cloned().collect()),
             HeapObj::FrozenSet(v) => Some(v.iter().cloned().collect()),
-            HeapObj::Range(s, e, st) if include_range => {
+            HeapObj::Range(s, e, st) => {
                 let (mut cur, end, step) = (*s, *e, *st);
                 // Materialised length is user-controlled, cap it against the heap budget.
                 let span = (end as i128 - cur as i128).unsigned_abs();
@@ -378,7 +393,7 @@ impl<'a> VM<'a> {
         if let HeapObj::Dict(rc) = self.heap.get(o) {
             return Ok(rc.borrow().keys().collect());
         }
-        self.extract_iter(o, true)
+        self.extract_iter(o)
     }
 
     /* `iter(x)`, eager flatten into a fresh List flagged as a builtin iterator so next() may drain it. Original isn't touched. Mirrors the universal ABI's `Op::Iter`. The 2-arg form `iter(callable, sentinel)` calls `callable()` until it returns `sentinel`, eagerly. */
@@ -536,33 +551,7 @@ impl<'a> VM<'a> {
         if let Some(items) = self.iter_to_vec_op(o, chunk, slots)? {
             return self.alloc_and_push_list(items);
         }
-        if o.is_heap() {
-            match self.heap.get(o) {
-                HeapObj::Str(s) => {
-                    let s = s.clone();
-                    let items = self.str_to_char_vals(&s)?;
-                    return self.alloc_and_push_list(items);
-                }
-                HeapObj::Coroutine(..) => {
-                    // Keep the coroutine and its yielded values rooted on the VM stack, each resume can allocate and trigger GC.
-                    self.push(o);
-                    let base = self.stack.len();
-                    loop {
-                        self.charge_step()?;
-                        let v = self.resume_coroutine(o)?;
-                        if !self.yielded { break; }
-                        self.yielded = false;
-                        self.push(v);
-                    }
-                    // A shorter stack must not panic split_off, clamp.
-                    let out = self.stack.split_off(base.min(self.stack.len()));
-                    self.pop()?; // drop the rooted coroutine
-                    return self.alloc_and_push_list(out);
-                }
-                _ => {}
-            }
-        }
-        let items = self.extract_iter(o, true)?;
+        let items = self.extract_iter(o)?;
         self.alloc_and_push_list(items)
     }
 
@@ -572,7 +561,7 @@ impl<'a> VM<'a> {
         if let Some(items) = self.iter_to_vec_op(o, chunk, slots)? {
             return self.alloc_and_push_tuple(items);
         }
-        let items = self.extract_iter(o, true)?;
+        let items = self.extract_iter(o)?;
         self.alloc_and_push_tuple(items)
     }
 

@@ -255,7 +255,7 @@ impl<'a> VM<'a> {
         if idx_val.is_heap()
             && let HeapObj::Slice(start, stop, step) = self.heap.get(idx_val).clone()
         {
-            let new_items = self.extract_iter(value, false)?;
+            let new_items = self.extract_iter(value)?;
             return self.store_slice(cont, start, stop, step, new_items);
         }
         // Reject mutable keys before borrowing the container mutably below.

@@ -101,7 +101,7 @@ pub(super) fn extract_sequence(vm: &VM, v: Val, err: &'static str) -> Result<Vec
 // `Vec<Val>` from any iterable (str/range/dict/bytes/frozenset/list/tuple/set), for set ops.
 #[inline]
 pub(super) fn iter_to_vec(vm: &mut VM, v: Val) -> Result<Vec<Val>, VmErr> {
-    vm.extract_iter(v, true)
+    vm.extract_iter(v)
 }
 
 #[inline]

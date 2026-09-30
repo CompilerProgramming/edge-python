@@ -63,7 +63,7 @@ pub fn reverse(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
 }
 
 pub fn extend(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let items = vm.extract_iter(pos[0], true)?;
+    let items = vm.extract_iter(pos[0])?;
     list_mut(vm, recv, "extend: receiver is not a list", |list| {
         list.extend_from_slice(&items); Ok(())
     })?;

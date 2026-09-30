@@ -132,10 +132,10 @@ impl<'a> VM<'a> {
             let pairs: Vec<(Val, Val)> = rc.borrow().iter().collect();
             return Ok(DictMap::from_pairs(pairs, &self.heap));
         }
-        let items = self.extract_iter(src, true)?;
+        let items = self.extract_iter(src)?;
         let mut dm = DictMap::with_capacity(items.len());
         for item in items {
-            let pair = self.extract_iter(item, true)?;
+            let pair = self.extract_iter(item)?;
             if pair.len() != 2 {
                 return Err(cold_value("dictionary update sequence element has length != 2"));
             }
@@ -151,7 +151,7 @@ impl<'a> VM<'a> {
             self.push(val);
         } else {
             let o = self.pop()?;
-            let src = self.extract_iter(o, true)?;
+            let src = self.extract_iter(o)?;
             let val = self.alloc_set(src)?;
             self.push(val);
         }
