@@ -182,7 +182,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
     pub(super) fn with_fresh_chunk(&mut self, f: impl FnOnce(&mut Self)) -> SSAChunk {
         let saved_chunk = core::mem::take(&mut self.chunk);
-        let saved_ver = self.ssa_versions.clone();
+        let saved_ver = core::mem::take(&mut self.ssa_versions);
         let saved_globals = core::mem::take(&mut self.globals_decl);
         // Nested body owns its loops and block stack, isolate, then restore the enclosing ones.
         let saved_loops = (
