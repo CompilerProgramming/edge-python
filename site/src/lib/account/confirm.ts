@@ -1,6 +1,6 @@
 import { offer } from './form'
 
-type Ask ={ title: string; body: string; action: string }
+type Ask = { title: string; body: string; action: string }
 
 const CODE = 6
 const AGAIN = 'Resend code'

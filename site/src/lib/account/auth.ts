@@ -7,7 +7,7 @@ export type Profile = { handle: string; name: string; avatar: Avatar; bio?: stri
 export type Public = { id: string; name: string | null; handle: string | null; bio: string | null; avatar: Avatar | null }
 export type Me = Public & { email: string | null }
 
-async function call<T>(path: string, method: string, data?: unknown): Promise<T> {
+export async function call<T>(path: string, method: string, data?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
     headers: data ? { 'content-type': 'application/json' } : undefined,
