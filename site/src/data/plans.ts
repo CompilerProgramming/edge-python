@@ -51,7 +51,7 @@ export const plans: Plan[] = [
     features: [
       'Unlimited apps, tenants by volume',
       'The editor, with your functions autocompleted',
-      'Your own keywords, so it reads like your product',
+      'A commercial license for lang, ecosystem included',
       'Schedules every minute, run by us',
       'A year of runs, with the full trace'
     ]
