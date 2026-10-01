@@ -190,6 +190,7 @@ impl<'a> VM<'a> {
                 // At module scope, drop it from module_state too so later reads see the deletion.
                 if core::ptr::eq(chunk, self.chunk) && let Some(n) = chunk.names.get(slot) {
                     self.module_state.remove(ssa_strip(n));
+                    self.templates.clear();
                     self.note_builtin_binding(ssa_strip(n));
                 }
                 // Unbind the shared closure cell too, so closures over this name see the deletion.

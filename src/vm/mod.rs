@@ -134,7 +134,7 @@ pub struct VM<'a> {
     /* Recycled fn_slots buffers, popped in exec_call, pushed back on normal return. Never a GC root (entries are cleared before reuse). */
     pub(crate) slot_pool: Vec<Vec<Val>>,
     pub(crate) needs_caller_slots: Vec<bool>,
-    /* Free loads limited to builtins and the function itself, safe to memoise. */
+    /* Whether `fi` may memoize, a call that shows its result can change turns it off. */
     pub(crate) memo_ok: Vec<bool>,
     /* Bitmap of slots bound to a formal parameter, protected from caller-slot propagation. */
     pub(crate) is_param_slot: Vec<Vec<bool>>,
@@ -429,11 +429,10 @@ impl<'a> VM<'a> {
         }).collect();
         self.slot_templates.truncate(start);
         self.slot_templates.extend(new);
-        // A free load of a user binding could be rebound between calls and serve a stale result.
+        // A nested or imported body reads only its own name, any other could be an enclosing local.
         let new: Vec<bool> = (start..self.functions.len()).map(|fi| {
-            self.body_free_loads[fi].iter().all(|(bare, _, _)| {
-                self.global(bare).is_some() || self.function_names.get(fi).is_some_and(|n| n == bare)
-            })
+            (self.function_parents[fi].is_none() && self.fn_module[fi].is_none())
+                || self.body_free_loads[fi].iter().all(|(bare, _, _)| self.function_names.get(fi).is_some_and(|n| n == bare))
         }).collect();
         self.memo_ok.truncate(start);
         self.memo_ok.extend(new);
@@ -448,7 +447,7 @@ impl<'a> VM<'a> {
     pub(crate) fn note_builtin_binding(&mut self, bare: &str) {
         if NativeFnId::from_name(bare).is_some() {
             self.builtins_rebound = true;
-            self.templates = Templates::new();
+            self.templates.clear();
         }
     }
 
@@ -472,6 +471,8 @@ impl<'a> VM<'a> {
         self.build_function_table(chunk, None, None);
         self.index_functions(start);
         self.index_templates(start);
+        // A later input can rebind any name a cached result read.
+        self.templates.clear();
         self.chunk = chunk;
     }
 

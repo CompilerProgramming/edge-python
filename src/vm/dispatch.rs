@@ -498,6 +498,8 @@ impl<'a> VM<'a> {
             OpCode::StoreGlobal => {
                 let v = self.pop()?;
                 let name = chunk.names.get(op as usize).ok_or(cold_runtime("StoreGlobal: name index out of bounds"))?;
+                // A `global` store rebinds a name some cached result may have read.
+                self.templates.clear();
                 self.note_builtin_binding(name);
                 self.module_state.insert(name.clone(), v);
             }
@@ -1096,6 +1098,8 @@ impl<'a> VM<'a> {
         }
         if let HeapObj::Func(_, _, _, attrs) = self.heap.get(obj) {
             set_member(attrs, &name, value);
+            // A cached result may have read the old attribute.
+            self.templates.clear();
             return Ok(());
         }
         let key = self.heap.alloc(HeapObj::Str(name))?;
