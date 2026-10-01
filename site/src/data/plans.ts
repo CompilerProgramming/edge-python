@@ -21,7 +21,7 @@ export const plans: Plan[] = [
     cadence: null,
     who: 'Enough to see whether it fits.',
     features: [
-      '1 app and 1,000 runs a month',
+      '1 program and 1,000 runs a month',
       'Every host function you define',
       'One schedule, hourly',
       'A week of runs and their traces',
@@ -49,7 +49,7 @@ export const plans: Plan[] = [
     cadence: 'a month',
     who: 'For a product whose customers write the logic.',
     features: [
-      'Unlimited apps, tenants by volume',
+      'Unlimited programs, tenants by volume',
       'The editor, with your functions autocompleted',
       'A commercial license for lang, ecosystem included',
       'Schedules every minute, run by us',

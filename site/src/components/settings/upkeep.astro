@@ -7,12 +7,13 @@ type Paid = { date: string; amount: string; status: string }
 // Stands in until upkeep is measured.
 const held: Held[] = [
   { name: 'slugify', reach: '1,204 people this month', earns: '$18.40' },
-  { name: 'edge-struct', reach: '312 people this month', earns: '$4.90' }
+  { name: 'edge-struct', reach: '312 people this month', earns: '$4.90' },
+  { name: 'vuln-alarm', reach: '87 programs running this month', earns: '$6.10' }
 ]
 
 // Stands in until a payment provider answers.
 const paid: Paid[] = [
-  { date: 'September 1, 2026', amount: '$23.30', status: 'Paid' },
+  { date: 'September 1, 2026', amount: '$29.40', status: 'Paid' },
   { date: 'August 1, 2026', amount: '$19.80', status: 'Paid' }
 ]
 
@@ -26,7 +27,7 @@ const note = 'ml-4 text-2xs text-fg-hint'
 <div class="flex flex-col gap-6">
   <div>
     <h2 class="text-md">Upkeep</h2>
-    <p class="text-fg-hint mt-0.5">What a package earns while people use it and you maintain it. Publishing is not upkeep, and a bot is not a person.</p>
+    <p class="text-fg-hint mt-0.5">What a package or template earns while people use it and you maintain it. Publishing is not upkeep, and a bot is not a person.</p>
   </div>
 
   <section class="flex flex-col gap-2">
@@ -40,7 +41,7 @@ const note = 'ml-4 text-2xs text-fg-hint'
   </section>
 
   <section class="flex flex-col gap-2">
-    <h3 class="ml-4">Your packages</h3>
+    <h3 class="ml-4">What you maintain</h3>
 
     <div class={card}>
       <ul class={rows}>
@@ -59,7 +60,7 @@ const note = 'ml-4 text-2xs text-fg-hint'
       </ul>
     </div>
 
-    <p class={note}>A package stops earning when it stops being used, or when it stops being maintained.</p>
+    <p class={note}>A package or template stops earning when it stops being used, or when it stops being maintained.</p>
   </section>
 
   <section class="flex flex-col gap-2">

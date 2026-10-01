@@ -95,6 +95,7 @@ test('shows an email account the room it gets and how to ask for more', async ({
 
   const panel = page.locator('[data-view="Storage"]')
   await expect(panel).toContainText('of 50.0 MB')
+  await expect(panel).toContainText('Linking GitHub or Google raises this to 1.0 GB')
   await expect(panel).toContainText('Nothing published yet.')
   await expect(panel.getByRole('link', { name: 'Ask for more room' })).toHaveAttribute('href', /^mailto:.*subject=/)
 })
