@@ -96,7 +96,7 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
         <div data-sorts class="flex items-center gap-4 sm:ml-auto">
           <span class="text-fg-hint">Sort</span>
           {sorts.map(({ label, href, current }) => (
-            <a href={href} class:list={['rounded-full border border-line-strong px-3 py-1', current ? 'text-fg' : 'text-fg-faint transition hover:text-fg']}>
+            <a href={href} class:list={['rounded-full border border-line-strong px-3 py-1 text-xs', current ? 'text-fg' : 'text-fg-faint transition hover:text-fg']}>
               <span>{label}</span>
             </a>
           ))}
