@@ -2,7 +2,8 @@ import { expect, type Page } from '@playwright/test'
 import { test, unique } from './helpers'
 
 const routes = [
-  { path: '/', group: 'Explore', label: 'Community' },
+  { path: '/', group: 'Explore', label: 'Packages' },
+  { path: '/templates', group: 'Explore', label: 'Templates' },
   { path: '/docs/getting-started/introduction', group: 'Docs', label: 'Getting started' }
 ]
 
@@ -178,6 +179,19 @@ test('applies hover styles', async ({ page }) => {
   await link.hover()
 
   await expect.poll(color).not.toBe(idle)
+})
+
+test('says on hover what edge.json needs to list a template', async ({ page }) => {
+  await page.goto('/templates')
+  const hint = page.getByRole('tooltip')
+
+  await expect(hint).toBeHidden()
+  await page.getByRole('button', { name: 'What makes a template' }).hover()
+
+  await expect(hint).toBeVisible()
+  await expect(hint).toContainText('"kind": "template"')
+  // Highlighted when the site builds, so the tokens arrive already painted.
+  await expect(hint.locator('span[style*="--shiki-light"]').first()).toBeAttached()
 })
 
 // No engine emulates a pointer that cannot hover, so the page is told it has none.

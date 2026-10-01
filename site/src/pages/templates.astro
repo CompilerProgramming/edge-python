@@ -1,0 +1,64 @@
+---
+import Base from '../layouts/base.astro'
+import Icon from '../components/ui/icon.astro'
+import LinkList from '../components/ui/link-list.astro'
+import Field from '../components/ui/field.astro'
+// Painted when the site builds, so neither the page nor the Worker loads a highlighter.
+import { Content as Manifest } from '../components/template-manifest.md'
+
+// What writing one needs, the values it reads and how it ships.
+const guides = [
+  { icon: 'mask', label: 'Secrets', detail: 'secret.read("GITHUB_TOKEN")', href: '/docs/reference/system#secret' },
+  { icon: 'create', label: 'Publishing', detail: 'edge build && edge publish app.edge', href: '/docs/reference/cli#edge-publish-send-it-to-the-registry' }
+] as const
+
+// A query arrives in the url, so the form works before any script does.
+const asked = (Astro.url.searchParams.get('q') ?? '').trim().slice(0, 64)
+
+// Stands in until a package can publish itself as a template.
+const total: number = 0
+
+const code = '[&_pre]:mt-3 [&_pre]:overflow-auto [&_pre]:rounded-xl [&_pre]:border [&_pre]:border-line-strong [&_pre]:bg-page [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-2xs [&_pre]:leading-5 [&_span]:text-(--shiki-light) dark:[&_span]:text-(--shiki-dark)'
+
+const hint = 'invisible absolute right-0 top-full z-10 pt-2 opacity-0 -translate-y-1 transition-all group-hover:visible group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:visible group-focus-within:opacity-100 group-focus-within:translate-y-0'
+---
+
+<Base title="Templates" description="Programs ready to run, to download or to use in Runs.">
+  <div class="flex w-full flex-col gap-9">
+    <div class="flex items-start gap-4">
+      <div class="flex flex-col gap-2">
+        <h1 class="text-xl font-semibold">Templates</h1>
+        <span class="flex items-center gap-1.5 text-2xs text-fg-hint"><Icon name="image" size="xs" />{total} {total === 1 ? 'template' : 'templates'}</span>
+      </div>
+
+      <div class="group relative ml-auto">
+        <button type="button" aria-label="What makes a template" aria-describedby="template-hint" class="flex h-8.5 w-8.5 items-center justify-center rounded-full border border-line text-fg-subtle transition hover:text-fg">
+          <Icon name="info" />
+        </button>
+
+        <div id="template-hint" role="tooltip" class={hint}>
+          <div class="w-72 rounded-2xl border border-line bg-surface p-4 text-xs">
+            <p class="text-fg-muted">A template is a package that runs as a program. Give its edge.json a kind, then build and publish it as any package.</p>
+            <div class={code}><Manifest /></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <section class="flex flex-col gap-2">
+      <h2 class="ml-4">Get started</h2>
+
+      <LinkList links={guides} mono />
+    </section>
+
+    <section class="flex flex-col gap-3">
+      <h2 class="ml-4">Templates</h2>
+
+      <form role="search" class="w-full text-sm sm:w-[341px]">
+        <Field name="q" label="Filter templates" hideLabel type="search" placeholder="Filter templates" icon="search" value={asked} class="[&>span]:h-8.5 [&>span]:py-0 [&>span]:transition-shadow [&>span]:focus-within:border-link/60 [&>span]:focus-within:ring-2 [&>span]:focus-within:ring-link/20" />
+      </form>
+
+      <p class="ml-4 text-sm text-fg-hint">{asked ? 'No template matches that.' : 'No templates yet.'}</p>
+    </section>
+  </div>
+</Base>
