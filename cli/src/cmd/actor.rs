@@ -73,6 +73,8 @@ pub fn run(path: &Path, manifest_path: Option<&Path>) -> Result<()> {
         dir.push('/');
     }
     let manifest_path = manifest_path.map(|p| p.to_string_lossy().replace('\\', "/"));
+    // Read once, so a malformed eval grant stops the boot instead of a run.
+    let ceiling = eval_ceiling(&manifest_path.clone().unwrap_or_else(|| format!("{dir}edge.json")))?;
 
     let mut groups = Vec::new();
     for (name, spec) in manifest.groups {
@@ -97,6 +99,7 @@ pub fn run(path: &Path, manifest_path: Option<&Path>) -> Result<()> {
             manifest: manifest_path.clone(),
             replicas: spec.replicas.unwrap_or(1),
             eval: spec.eval,
+            ceiling: ceiling.clone(),
             retry: spec.retry,
             limits,
             preempt: spec.limits.preempt.unwrap_or(2000),
@@ -138,6 +141,17 @@ pub fn run(path: &Path, manifest_path: Option<&Path>) -> Result<()> {
         std::process::exit(code);
     }
     Ok(())
+}
+
+/* What the pool edge.json grants its eval groups, nothing when it names no eval holder. */
+fn eval_ceiling(path: &str) -> Result<Vec<String>> {
+    let Ok(bytes) = std::fs::read(path) else { return Ok(Vec::new()) };
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).with_context(|| format!("parsing {path}"))?;
+    let Some(entries) = manifest.pointer("/permissions/eval") else { return Ok(Vec::new()) };
+    if let Some(problem) = crate::host::system::check(&serde_json::json!({ "eval": entries })) {
+        return Err(anyhow!("edge.json at '{path}': {problem}"));
+    }
+    Ok(serde_json::from_value(entries.clone())?)
 }
 
 /* Loads a run target as source plus base dir, a directory runs its main.py from inside it. */

@@ -35,6 +35,7 @@ pub struct Context {
     pub out: Out,
     // The group's edge.json, what an eval snippet without its own resolves through.
     pub manifest: String,
+    pub ceiling: Vec<String>,
 }
 
 // One live actor plus the mailbox its work drains from.
@@ -228,8 +229,9 @@ fn run_eval(ctx: &Context, body: &str, limits: Limits, preempt: usize, capture: 
     };
     let own_manifest = files.contains_key(&format!("{entry_dir}edge.json"));
     let mut project = Project::bundle(files, &entry_dir, true);
-    if !own_manifest {
-        project.manifest = Some(ctx.manifest.clone());
+    match own_manifest {
+        true => project.ceiling = Some(ctx.ceiling.clone()),
+        false => project.manifest = Some(ctx.manifest.clone()),
     }
     let mut vm = ctx.host.vm(sink, project, Some(EVAL_DEADLINE_TICKS), Some(EVAL_MEMORY)).map_err(|e| format!("error: {e}"))?;
     vm.set_preempt_interval(preempt).map_err(|e| format!("error: {e}"))?;

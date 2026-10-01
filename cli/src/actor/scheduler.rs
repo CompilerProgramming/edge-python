@@ -298,7 +298,7 @@ impl GroupState {
         let manifest = g.manifest.clone().unwrap_or_else(|| format!("{}edge.json", g.dir));
         GroupState {
             name: g.name,
-            ctx: Context { host, source: Rc::new(g.source), out: g.out, manifest },
+            ctx: Context { host, source: Rc::new(g.source), out: g.out, manifest, ceiling: g.ceiling },
             dir: g.dir,
             manifest: g.manifest,
             retry: g.retry,

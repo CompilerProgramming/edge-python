@@ -730,7 +730,7 @@ import time
 'main' imports time, which edge.json does not grant it
 ```
 
-`permissions` maps each holder to a list of `module:scope` entries. The holder is `main` for the program's own code, `all` for every package, or a package name for that package alone. `net:<host>` allows exactly that host, a lowercase name or an IPv4 as `a.b.c.d` with no scheme or port and no IPv6, `net:<host>/<prefix>` bounds it to that path prefix and what sits under it however a server decodes the path, and `time:wall`, `time:monotonic` and `time:zone` allow one clock call each. An entry without a scope, like `"net"`, lets the package import the module and reach nothing.
+`permissions` maps each holder to a list of `module:scope` entries. The holder is `main` for the program's own code, `all` for every package, a package name for that package alone, or `eval` for the most a bundle may grant in an eval group. `net:<host>` allows exactly that host, a lowercase name or an IPv4 as `a.b.c.d` with no scheme or port and no IPv6, `net:<host>/<prefix>` bounds it to that path prefix and what sits under it however a server decodes the path, and `time:wall`, `time:monotonic` and `time:zone` allow one clock call each. An entry without a scope, like `"net"`, lets the package import the module and reach nothing.
 
 ```json
 {
@@ -741,7 +741,7 @@ import time
 }
 ```
 
-Only the root grants. A dependency lists what it needs in its own `edge.json` in the same shape, which grants it nothing, and trust is never inherited, so the root writes out every entry for every package however deep. `edge lock` stops until the root grants every ask, a package that asks needs a `name`, and no package may be named `all` or `main`. A package is the nearest `edge.json` above its files. Each call checks its scope again, a call outside the grant raises `PermissionError`, a subclass of `OSError`, and a request or socket belongs to the package that opened it. An `eval` group holds no permission. Every system module also takes `batch(calls)`, a list of `[name, *args]` lists answered in one crossing with the results in order, where the first failure raises. A `.wasm` plugin reaches the same calls through the `Sys` op of the ABI with the grants of its package, and finishes a call that waits in `__edge_resume`.
+Only the root grants. A dependency lists what it needs in its own `edge.json` in the same shape, which grants it nothing, and trust is never inherited, so the root writes out every entry for every package however deep. `edge lock` stops until the root grants every ask, a package that asks needs a `name`, and no package may be named `all`, `main` or `eval`. A package is the nearest `edge.json` above its files. Each call checks its scope again, a call outside the grant raises `PermissionError`, a subclass of `OSError`, and a request or socket belongs to the package that opened it. Every system module also takes `batch(calls)`, a list of `[name, *args]` lists answered in one crossing with the results in order, where the first failure raises. A `.wasm` plugin reaches the same calls through the `Sys` op of the ABI with the grants of its package, and finishes a call that waits in `__edge_resume`.
 
 ### time
 
@@ -815,7 +815,7 @@ got hello
 
 ### The untrusted model
 
-`eval: true` groups compile each message as its own program in a fresh wasm instance with its own memory, capped by the group's `heap` limit and a 256 MiB reservation, and cut off after ten seconds of wall-clock time by a deadline the host enforces from outside. No state survives between messages. A bundle that carries its own `edge.json` resolves through it, any other message through the pool's manifest. Either way `.wasm` plugins are refused, remote modules load only from `https://cdn.edgepython.com/`, `net` and `time` are refused and `send()` has no scheduler, so untrusted code cannot send, reach the network or load modules from disk. A `code` or `run` group is trusted instead, it keeps state, can send and can use `net` and `time` under the pool's grants, so reach for `eval` when the code is not yours.
+`eval: true` groups compile each message as its own program in a fresh wasm instance with its own memory, capped by the group's `heap` limit and a 256 MiB reservation, and cut off after ten seconds of wall-clock time by a deadline the host enforces from outside. No state survives between messages. A bundle that carries its own `edge.json` resolves through it, any other message through the pool's manifest. Either way `.wasm` plugins are refused, remote modules load only from `https://cdn.edgepython.com/` and `send()` has no scheduler, so untrusted code cannot send or load modules from disk. A bundle grants its own permissions in its own `edge.json` as any root does, but only within what the pool grants `eval`, so an entry past it refuses the run before it compiles, and a snippet holds nothing. A `code` or `run` group is trusted instead, it keeps state, can send and can use `net` and `time` under the pool's grants, so reach for `eval` when the code is not yours.
 
 ```yml untrusted
 groups:

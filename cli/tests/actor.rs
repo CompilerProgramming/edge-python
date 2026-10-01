@@ -213,24 +213,29 @@ fn eval_group_runs_a_bundled_project_over_the_wire() {
     assert_eq!(got, vec!["bundled and run"], "stdout was {got:?}, stderr {err:?}");
 }
 
-/* An eval group holds no permission, even when the bundle it runs grants itself one. */
+/* An eval bundle grants only within what the pool grants eval, and a snippet holds nothing. */
 #[test]
-fn an_eval_group_holds_no_permission_whatever_its_bundle_grants() {
-    let payload = bundle("main.py", &[
-        ("main.py", "import time\nprint(time.now() > 0)\n"),
-        ("edge.json", "{ \"permissions\": { \"main\": [\"time:wall\"] } }\n"),
-    ]);
+fn an_eval_bundle_grants_only_within_what_the_pool_grants_eval() {
     let scratch = std::env::temp_dir().join(format!("edge-actor-grant-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&scratch);
     let manifest = scratch.join("actor.yml");
     std::fs::write(&manifest, "runtime:\n  listen: tcp://127.0.0.1:7812\n  control: tcp://127.0.0.1:9812\ngroups:\n  runners:\n    eval: true\n").unwrap();
+    std::fs::write(scratch.join("edge.json"), r#"{ "permissions": { "main": ["time:wall"], "all": ["time:wall"], "eval": ["time:monotonic"] } }"#).unwrap();
+    let source = "import time\nprint(time.now('monotonic') > 0)\n";
+    let granting = |grant: &str| {
+        let manifest = format!(r#"{{ "permissions": {{ "main": ["{grant}"] }} }}"#);
+        let payload = bundle("main.py", &[("main.py", source), ("edge.json", manifest.as_str())]);
+        post_eval("127.0.0.1:9812", "/eval/runners", &format!("EDGEPKG:{}", base64_encode(&payload)))
+    };
 
     let mut child = edge().args(["actor", manifest.to_str().unwrap()]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    let reply = post_eval("127.0.0.1:9812", "/eval/runners", &format!("EDGEPKG:{}", base64_encode(&payload)));
+    let (held, beyond, snippet) = (granting("time:monotonic"), granting("time:wall"), post_eval("127.0.0.1:9812", "/eval/runners", source));
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&scratch);
-    assert!(reply.contains("'main' imports time, which edge.json does not grant it"), "reply was {reply:?}");
+    assert!(held.contains(r#"{"ok":true,"stdout":"True\n"}"#), "held was {held:?}");
+    assert!(beyond.contains("the bundle grants time:wall, which the pool does not grant eval") && !beyond.contains("monotonic"), "beyond was {beyond:?}");
+    assert!(snippet.contains("'main' imports time, which edge.json does not grant it"), "snippet was {snippet:?}");
 }
 
 // Polls /stats until it carries `want`, messages settle after the publish returns.

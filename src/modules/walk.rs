@@ -254,7 +254,7 @@ impl Walk {
         let dir = dir_of(&spec);
         self.manifest_dirs.insert(dir.clone());
         let key = norm(&dir).to_string();
-        // A package named all or main answers to its dir, so it never takes their grants.
+        // A package named after a holder answers to its dir, so it never takes its grants.
         if let Some(name) = manifest.name.as_ref().filter(|n| !rules::HOLDERS.contains(&n.as_str())) {
             self.names.insert(key.clone(), name.clone());
         }

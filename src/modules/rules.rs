@@ -12,8 +12,8 @@ pub const MAX_DESCRIPTION: usize = 60;
 pub const MAX_NAME: usize = 40;
 pub const MAX_REPOSITORY: usize = 256;
 
-// The holders a permissions section names beside packages, so no package may be named either.
-pub const HOLDERS: [&str; 2] = ["all", "main"];
+// The holders a permissions section names beside packages, so no package may be named any of them.
+pub const HOLDERS: [&str; 3] = ["all", "main", "eval"];
 
 const VERSION_RULE: &str = "major.minor.patch, each part 0 to 99 without leading zeros";
 
@@ -171,6 +171,7 @@ mod tests {
             (r#"{ "name": "slugify-" }"#, "must be lowercase"),
             (r#"{ "name": "a-name-far-too-long-for-any-listing-to-show" }"#, "must be lowercase"),
             (r#"{ "name": "main" }"#, "is reserved for permissions"),
+            (r#"{ "name": "eval" }"#, "is reserved for permissions"),
             (r#"{ "name": "time" }"#, "is reserved for the system module"),
             (r#"{ "version": "1.0" }"#, "must be major.minor.patch"),
             (r#"{ "version": "01.2.3" }"#, "without leading zeros"),

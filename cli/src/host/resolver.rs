@@ -24,15 +24,17 @@ pub struct Project {
     // An in-memory tree replaces the disk, untrusted runs always carry one.
     pub bundle: Option<Rc<HashMap<String, Vec<u8>>>>,
     pub untrusted: bool,
+    // What an untrusted bundle with its own edge.json may grant, None for any other run.
+    pub ceiling: Option<Vec<String>>,
 }
 
 impl Project {
     pub fn disk(entry: &str, manifest: Option<&str>) -> Project {
-        Project { entry: entry.to_string(), manifest: manifest.map(String::from), bundle: None, untrusted: false }
+        Project { entry: entry.to_string(), manifest: manifest.map(String::from), bundle: None, untrusted: false, ceiling: None }
     }
 
     pub fn bundle(files: HashMap<String, Vec<u8>>, entry: &str, untrusted: bool) -> Project {
-        Project { entry: entry.to_string(), manifest: None, bundle: Some(Rc::new(files)), untrusted }
+        Project { entry: entry.to_string(), manifest: None, bundle: Some(Rc::new(files)), untrusted, ceiling: None }
     }
 }
 
@@ -126,15 +128,25 @@ fn registered(names: &[String]) -> Vec<String> {
 /* Serves the system modules to every package the walk met, opened with its scopes or refused when the root grants it none. */
 fn serve_system(inst: &mut Instance, project: &Project, packages: &Value) -> Vec<String> {
     let root = packages["root"].as_str().unwrap_or_default();
-    // An untrusted run holds no permission whatever its manifest says, and an empty grant needs no checking.
-    let declared = packages.get("permissions").filter(|p| !project.untrusted && p.as_object().is_some_and(|holders| !holders.is_empty())).cloned();
+    // An untrusted run grants only through its own bundle manifest, and an empty grant needs no checking.
+    let declared = packages.get("permissions").filter(|p| (!project.untrusted || project.ceiling.is_some()) && p.as_object().is_some_and(|holders| !holders.is_empty())).cloned();
     if let Some(problem) = declared.as_ref().and_then(system::check) {
         return vec![format!("edge.json at '{root}edge.json': {problem}")];
     }
     let permissions = declared.unwrap_or_else(|| json!({}));
+    let entries: Vec<&Value> = permissions.as_object().into_iter().flat_map(|holders| holders.values()).filter_map(Value::as_array).flatten().collect();
+    // The refusal names only what the bundle grants, never the eval grant of the pool.
+    if let Some(ceiling) = &project.ceiling
+        && !entries.is_empty()
+    {
+        let over = system::unmet(&json!({ "eval": ceiling }), "eval", &json!({ "main": entries }));
+        if !over.is_empty() {
+            return vec![format!("the bundle grants {}, which the pool does not grant eval", over.join(", "))];
+        }
+    }
     let mut failures = Vec::new();
     // A run that reads no clock sleeps on the virtual one, so what it prints never depends on when it runs.
-    let clock = permissions.as_object().into_iter().flat_map(|holders| holders.values()).filter_map(Value::as_array).flatten().any(|e| e.as_str().is_some_and(|e| e.starts_with("time:")));
+    let clock = entries.iter().any(|e| e.as_str().is_some_and(|e| e.starts_with("time:")));
     if let Err(e) = inst.set_wall_clock(clock) {
         failures.push(e);
     }

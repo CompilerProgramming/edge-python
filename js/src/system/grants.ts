@@ -3,8 +3,8 @@ import { SystemError } from './error.ts';
 /* The permissions section of the root edge.json, each holder to its entries, `module` or `module:scope`. */
 export type Permissions = Record<string, string[]>;
 
-// The holders beside package names, so no package may be named either.
-export const RESERVED = ['all', 'main'];
+// The holders beside package names, so no package may be named any of them.
+export const RESERVED = ['all', 'main', 'eval'];
 
 // A host as a net scope names it and a url reaches it, a dotted lowercase name.
 export const HOST = /[a-z0-9.-]+/;
