@@ -75,8 +75,11 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 return None;
             }
             self.advance()
-        } else {
+        } else if matches!(first.kind, TokenType::Name | TokenType::Underscore | TokenType::Match | TokenType::Case | TokenType::Type) {
             first
+        } else {
+            self.error_at(first.start, first.end, "expected a module name");
+            return None;
         };
         let (name, end) = self.dotted_name(first_name);
         let alias = name.split('.').next().unwrap_or(&name).to_string();

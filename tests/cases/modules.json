@@ -507,6 +507,27 @@
     "error": "expected a module name after '.'"
   },
   {
+    "src": "import (",
+    "error": "expected a module name",
+    "error_span_covers": "("
+  },
+  {
+    "src": "from ( import x",
+    "error": "expected a module name"
+  },
+  {
+    "src": "import 1",
+    "error": "expected a module name"
+  },
+  {
+    "src": "import",
+    "error": "expected a module name"
+  },
+  {
+    "src": "import match",
+    "error": "module 'match'"
+  },
+  {
     "src": "import prod\nimport dev\nm = import_module('prod')\nprint(m.handler())",
     "output": ["prod-handle"],
     "modules": {
