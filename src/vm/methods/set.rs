@@ -10,7 +10,7 @@ fn valset_of(items: &[Val], heap: &HeapPool) -> ValSet {
 /* A set probes as the frozenset it equals and never matches the set being changed, anything else must hash. */
 fn probes(vm: &VM, recv: Val, v: Val) -> Result<bool, VmErr> {
     if v.0 == recv.0 { return Ok(false); }
-    if !(v.is_heap() && matches!(vm.heap.get(v), HeapObj::Set(_))) { vm.require_hashable(v)?; }
+    vm.require_set_probe(v)?;
     Ok(true)
 }
 
@@ -58,11 +58,9 @@ pub fn clear(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
     vm.push(Val::none()); Ok(())
 }
 
-// Materialize every argument iterable up front (each may run iteration code), and reject unhashable items.
+// Materialize every argument iterable up front (each may run iteration code).
 fn collect_args(vm: &mut VM, pos: &[Val]) -> Result<Vec<Vec<Val>>, VmErr> {
-    let args: Vec<Vec<Val>> = pos.iter().map(|&a| iter_to_vec(vm, a)).collect::<Result<_, _>>()?;
-    for &v in args.iter().flatten() { vm.require_hashable(v)?; }
-    Ok(args)
+    pos.iter().map(|&a| iter_to_vec(vm, a)).collect()
 }
 
 pub fn update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
@@ -136,7 +134,6 @@ pub fn difference_update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmEr
 
 pub fn symmetric_difference_update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let other = iter_to_vec(vm, pos[0])?;
-    for &v in &other { vm.require_hashable(v)?; }
     set_mut(vm, recv, "symmetric_difference_update: receiver is not a set", |set, heap| {
         for v in other { if !set.remove(v, heap) { set.insert(v, heap); } }
         Ok(())

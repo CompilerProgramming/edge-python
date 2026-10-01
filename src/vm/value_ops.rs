@@ -394,9 +394,10 @@ impl<'a> VM<'a> {
             match self.heap.get(container) {
                 HeapObj::List(v) => return Ok(v.borrow().iter().any(|x| eq_vals_with_heap(*x, item, &self.heap))),
                 HeapObj::Tuple(v) => return Ok(v.iter().any(|x| eq_vals_with_heap(*x, item, &self.heap))),
-                HeapObj::Dict(p) => return Ok(p.borrow().contains_key(&item, &self.heap)),
-                HeapObj::Set(s) => return Ok(s.borrow().contains(item, &self.heap)),
-                HeapObj::FrozenSet(s) => return Ok(s.contains(item, &self.heap)),
+                // Only a miss checks the item, an unhashable one is never inside so a hit needs no check.
+                HeapObj::Dict(p) => { let hit = p.borrow().contains_key(&item, &self.heap); if !hit { self.require_hashable(item)?; } return Ok(hit); }
+                HeapObj::Set(s) => { let hit = s.borrow().contains(item, &self.heap); if !hit { self.require_set_probe(item)?; } return Ok(hit); }
+                HeapObj::FrozenSet(s) => { let hit = s.contains(item, &self.heap); if !hit { self.require_set_probe(item)?; } return Ok(hit); }
                 HeapObj::Str(s) => {
                     if item.is_heap() && let HeapObj::Str(sub) = self.heap.get(item) { return Ok(s.contains(sub.as_str())); }
                     return Ok(false);

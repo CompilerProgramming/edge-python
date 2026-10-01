@@ -96,6 +96,7 @@ impl<'a> VM<'a> {
             match hit {
                 Some(v) => { self.push(v); return Ok(false); }
                 None => {
+                    self.require_hashable(idx)?;
                     let msg = self.repr(idx);
                     let exc = self.heap.alloc(HeapObj::ExcInstance(alloc::string::String::from("KeyError"), alloc::vec![idx]))?;
                     self.pending.exc_val = Some(exc);
@@ -203,7 +204,7 @@ impl<'a> VM<'a> {
                 match p.borrow().get(&idx, &self.heap).copied() {
                     Some(v) => Ok(v),
                     // raises KeyError, and its str is the key's repr.
-                    None => Err(VmErr::Raised(crate::s!("KeyError: ", str &self.repr(idx)))),
+                    None => { self.require_hashable(idx)?; Err(VmErr::Raised(crate::s!("KeyError: ", str &self.repr(idx)))) }
                 }
             }
             _ => Err(cold_type("object is not subscriptable")),
@@ -212,6 +213,12 @@ impl<'a> VM<'a> {
 
     /* Reject mutable types (list/dict/set) used as dict/set keys, plus instances that override `__eq__` without `__hash__`. */
     pub(in crate::vm) fn require_hashable(&self, v: Val) -> Result<(), VmErr> { self.require_hashable_at(v, 0) }
+
+    /* A set probe of a set looks up as the frozenset it equals, so only other values must hash. */
+    pub(in crate::vm) fn require_set_probe(&self, v: Val) -> Result<(), VmErr> {
+        if v.is_heap() && matches!(self.heap.get(v), HeapObj::Set(_)) { return Ok(()); }
+        self.require_hashable(v)
+    }
 
     fn require_hashable_at(&self, v: Val, depth: usize) -> Result<(), VmErr> {
         if v.is_heap() && depth <= EQ_DEPTH_MAX {

@@ -50,7 +50,7 @@ pub fn popitem(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
 
 // `dict.fromkeys(iterable, value=None)` classmethod, new dict mapping each key to `value`.
 pub fn fromkeys(vm: &mut VM, _recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let keys = vm.extract_iter(pos[0])?;
+    let keys = iter_to_vec(vm, pos[0])?;
     let value = pos.get(1).copied().unwrap_or(Val::none());
     let mut dm = DictMap::with_capacity(keys.len());
     for k in keys { dm.insert(k, value, &vm.heap); }
@@ -59,11 +59,12 @@ pub fn fromkeys(vm: &mut VM, _recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 
 pub fn get(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let default = if pos.len() == 2 { pos[1] } else { Val::none() };
-    let result = match vm.heap.get(recv) {
-        HeapObj::Dict(rc) => rc.borrow().get(&pos[0], &vm.heap).copied().unwrap_or(default),
+    let found = match vm.heap.get(recv) {
+        HeapObj::Dict(rc) => rc.borrow().get(&pos[0], &vm.heap).copied(),
         _ => return Err(cold_type("get: receiver is not a dict")),
     };
-    vm.push(result); Ok(())
+    if found.is_none() { vm.require_hashable(pos[0])?; }
+    vm.push(found.unwrap_or(default)); Ok(())
 }
 
 pub fn update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
@@ -79,6 +80,7 @@ pub fn update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
                     Some(HeapObj::List(v)) if v.borrow().len() == 2 => { let v = v.borrow(); (v[0], v[1]) }
                     _ => return Err(cold_value("dictionary update sequence element must have length 2")),
                 };
+                vm.require_hashable(pair.0)?;
                 pairs.push(pair);
             }
         }
@@ -93,6 +95,7 @@ pub fn update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 pub fn pop(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let default = if pos.len() == 2 { Some(pos[1]) } else { None };
     let removed = dict_mut(vm, recv, "pop: receiver is not a dict", |dict, heap| Ok(dict.remove(&pos[0], heap)))?;
+    if removed.is_none() { vm.require_hashable(pos[0])?; }
     let result = match removed {
         Some(val) => val,
         None => match default {
@@ -106,6 +109,7 @@ pub fn pop(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 
 pub fn setdefault(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let default = if pos.len() > 1 { pos[1] } else { Val::none() };
+    vm.require_hashable(pos[0])?;
     let result = dict_mut(vm, recv, "setdefault: receiver is not a dict", |dict, heap| {
         if let Some(v) = dict.get(&pos[0], heap).copied() { Ok(v) }
         else { dict.insert(pos[0], default, heap); Ok(default) }

@@ -143,11 +143,11 @@ impl<'a> VM<'a> {
         }
         else if o.is_none() { 0u64.hash(&mut h); }
         else if o.is_heap() {
+            self.require_hashable(o)?;
             match self.heap.get(o) {
                 HeapObj::Str(s) => s.hash(&mut h),
                 HeapObj::Bytes(b) => b.hash(&mut h),
                 HeapObj::Tuple(items) => { for v in items { v.0.hash(&mut h); } }
-                HeapObj::List(_) | HeapObj::Dict(_) | HeapObj::Set(_) => { return Err(cold_type("unhashable type")); }
                 _ => o.0.hash(&mut h),
             }
         }
