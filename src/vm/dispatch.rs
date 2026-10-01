@@ -501,6 +501,7 @@ impl<'a> VM<'a> {
                 // A `global` store rebinds a name some cached result may have read.
                 self.templates.clear();
                 self.note_builtin_binding(name);
+                self.globals_written = true;
                 self.module_state.insert(name.clone(), v);
             }
             OpCode::LoadConst => {

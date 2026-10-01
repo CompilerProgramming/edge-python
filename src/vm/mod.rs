@@ -146,6 +146,8 @@ pub struct VM<'a> {
     pub(crate) executing_coros: Vec<u64>,
     /* True once any builtin name is rebound at module scope, fused call sites then consult `module_state` first. */
     pub(crate) builtins_rebound: bool,
+    /* A `global` store ran, so function callers re-read their globals until the entry frame. */
+    pub(crate) globals_written: bool,
     pub(crate) is_async: Vec<bool>,
     pub(crate) default_slots: Vec<Vec<(usize, Val)>>,
     /* Pre-resolved `<name>_0` body slot for self-reference binding, None for lambdas. */
@@ -285,6 +287,7 @@ impl<'a> VM<'a> {
             chunk_local_binds: HashMap::default(),
             executing_coros: Vec::new(),
             builtins_rebound: false,
+            globals_written: false,
             is_async: Vec::new(),
             default_slots: Vec::new(),
             self_ref_slot: Vec::new(),
@@ -353,14 +356,14 @@ impl<'a> VM<'a> {
         self.nonlocal_tables.truncate(start);
         self.nonlocal_tables.extend(new);
 
-        // True iff the body references names not in params/builtins/captures.
+        // True iff the body references names not in params/builtins/captures, or a builtin was rebound.
         let new: Vec<bool> = (start..end).map(|fi| {
             let (params, body, _, _) = self.functions[fi];
             let param_names: crate::util::hash::FxHashSet<&str> = params.iter().map(|p| crate::parser::types::param_base_name(p)).collect();
             body.names.iter().any(|n| {
                 let base = crate::parser::ssa_strip(n);
                 !param_names.contains(base) && self.global_slot(n).is_none()
-            })
+            }) || self.builtins_rebound
         }).collect();
         self.needs_caller_slots.truncate(start);
         self.needs_caller_slots.extend(new);
@@ -447,6 +450,8 @@ impl<'a> VM<'a> {
     pub(crate) fn note_builtin_binding(&mut self, bare: &str) {
         if NativeFnId::from_name(bare).is_some() {
             self.builtins_rebound = true;
+            // A body that read only builtins skipped propagation, the name may be a global now.
+            self.needs_caller_slots.fill(true);
             self.templates.clear();
         }
     }

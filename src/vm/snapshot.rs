@@ -678,6 +678,7 @@ pub fn restore(vm: &mut VM, blob: &[u8]) -> Result<(), SnapErr> {
     if r.p != r.b.len() { return Err("snapshot has trailing bytes".to_string()); }
     // Derived flag, not serialized, recompute from the restored module bindings.
     vm.builtins_rebound = vm.module_state.keys().any(|k| NativeFnId::from_name(k).is_some());
+    if vm.builtins_rebound { vm.needs_caller_slots.fill(true); }
     rehash(vm, fills)?;
     rebuild_mro(vm)
 }

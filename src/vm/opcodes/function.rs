@@ -261,12 +261,11 @@ impl<'a> VM<'a> {
         self.exec_call(operand, chunk, slots)
     }
 
-    /* Only the entry binds `bare`, once, so no caller local can stand in for it. */
+    /* The entry binds `bare` once and no class or module body binds it. */
     fn bound_once(&self, bare: &str) -> bool {
         let bound = |names: &crate::vm::NameVersionIndex| names.get(bare).map_or(0, |v| v.iter().filter(|(ver, _)| *ver >= 1).count());
         self.chunk_name_versions.get(&(self.chunk as *const SSAChunk)).is_some_and(|names| bound(names) == 1)
-            && self.chunk_name_versions.iter().all(|(&chunk, names)| core::ptr::eq(chunk, self.chunk) || bound(names) == 0
-                || self.body_to_fi.get(&chunk).is_some_and(|&f| self.body_free_loads[f].iter().any(|(b, _, _)| b == bare)))
+            && self.chunk_name_versions.iter().all(|(&chunk, names)| core::ptr::eq(chunk, self.chunk) || self.body_to_fi.contains_key(&chunk) || bound(names) == 0)
     }
 
     /* Each free name is an unbound builtin, or bound once to an immutable value or fixed function. */
@@ -372,7 +371,10 @@ impl<'a> VM<'a> {
         self.back_propagate_nonlocals(fi, body, callee, chunk, slots, &fn_slots);
 
         let result = exec_result?;
-        if callee_impure { self.mark_impure(); }
+        if callee_impure {
+            self.mark_impure();
+            if self.globals_written { self.reload_globals(chunk, slots); }
+        }
 
         if self.yielded {
             // Sync helper suspended mid-execution (e.g. `sleep(0)` from inside a sync fn called by an async coro). Stage its frame on the VM-level buffer. `resume_coroutine` drains it onto the enclosing coro so the helper is re-entered from the right ip. Without this, the outer's resume_ip would skip past the unfinished helper and the next StoreName would underflow. A nested sync call inside this helper would already have pushed its own frame first, so the buffer ends up innermost-last.
@@ -744,37 +746,54 @@ impl<'a> VM<'a> {
         }
     }
 
+    /* After a `global` store a function caller re-reads its globals, back at the entry it resets. */
+    fn reload_globals(&mut self, chunk: &SSAChunk, slots: &mut [Val]) {
+        if core::ptr::eq(chunk, self.chunk) { self.globals_written = false; return; }
+        let ptr = chunk as *const SSAChunk;
+        let Some(&cfi) = self.body_to_fi.get(&ptr) else { return };
+        if self.fn_module[cfi].is_some() { return; }
+        for i in 0..self.body_free_loads[cfi].len() {
+            let (bare, slot, _) = &self.body_free_loads[cfi][i];
+            let Some(&v) = self.module_state.get(bare.as_str()) else { continue };
+            let (bare, slot) = (bare.clone(), *slot);
+            // A name an enclosing function binds is its captured local, not the global.
+            if !self.lexical_ancestor_binds(ptr, &bare) && let Some(s) = slots.get_mut(slot) { *s = v; }
+        }
+    }
+
     /* Build or fetch the static propagation info for (chunk, fi). Chunks are borrowed for the VM's lifetime, so the pointer key is stable. */
     fn propagation_map(&mut self, fi: usize, chunk: &SSAChunk) -> super::super::PropagationMap {
         let key = (chunk as *const SSAChunk, fi);
         if let Some(m) = self.propagation_maps.get(&key) { return m.clone(); }
-        let body_map = &self.body_maps[fi];
-        let param_bm = &self.is_param_slot[fi];
-        let pairs: Vec<(u32, u32)> = chunk.names.iter().enumerate()
-            .filter_map(|(si, name)| {
-                let &bs = body_map.get(name.as_str())?;
-                if param_bm.get(bs).copied().unwrap_or(false) { return None; }
-                Some((si as u32, bs as u32))
-            })
-            .collect();
         // Same-scope also requires same module, keeps top-level imports (`parent_fi == None`) isolated.
         let caller_fi = self.body_to_fi.get(&(chunk as *const _)).copied();
         let callee_parent_fi = self.function_parents.get(fi).and_then(|x| *x);
         let caller_module = caller_fi.and_then(|cf| self.fn_module.get(cf).and_then(|m| m.as_deref()));
         let callee_module = self.fn_module.get(fi).and_then(|m| m.as_deref());
         let same_scope = caller_fi == callee_parent_fi && caller_module == callee_module;
+        // Another top-level function lends only the globals it reads itself, never one of its locals.
+        let lent: &[(String, usize, i64)] = match caller_fi {
+            Some(cf) if !same_scope && caller_module == callee_module && self.function_parents[cf].is_none() => &self.body_free_loads[cf],
+            _ => &[],
+        };
+        let canon = |si: usize| chunk.alias_groups.get(si).and_then(|g| g.first().copied()).unwrap_or(si as u16) as u32;
+        let lends = |si: u32| same_scope || lent.iter().any(|&(_, s, _)| s == si as usize);
+        let body_map = &self.body_maps[fi];
+        let param_bm = &self.is_param_slot[fi];
+        let pairs: Vec<(u32, u32)> = chunk.names.iter().enumerate()
+            .filter_map(|(si, name)| {
+                let &bs = body_map.get(name.as_str())?;
+                if param_bm.get(bs).copied().unwrap_or(false) || !lends(canon(si)) { return None; }
+                Some((si as u32, bs as u32))
+            })
+            .collect();
         // Free loads with their caller-chunk (version, slot) candidates resolved once. Candidate slots canonicalise because operand rewriting stores values at the version chain's root.
         let name_index = self.chunk_name_versions.get(&(chunk as *const _));
         let free: Vec<super::super::FreeLoadEntry> = self.body_free_loads[fi].iter()
             .map(|(bare, bs, ref_ver)| {
                 let versions = name_index
                     .and_then(|idx| idx.get(bare.as_str()))
-                    .map(|v| v.iter().map(|&(ver, si)| {
-                        let canon = chunk.alias_groups.get(si)
-                            .and_then(|g| g.first().copied())
-                            .unwrap_or(si as u16) as u32;
-                        (ver, canon)
-                    }).collect())
+                    .map(|v| v.iter().map(|&(ver, si)| (ver, canon(si))).filter(|&(_, si)| lends(si)).collect())
                     .unwrap_or_default();
                 (bare.clone(), *bs as u32, *ref_ver, versions)
             })
