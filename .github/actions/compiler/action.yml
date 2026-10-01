@@ -99,9 +99,12 @@ runs:
 
         rm /tmp/wasm_stage1.wasm /tmp/wasm_stage2.wasm
 
-    - name: Size (optimized)
+    # A notice survives on the run page, a job summary would be buried among the other jobs.
+    - name: Size
       shell: bash
-      run: ls -lh target/wasm32-unknown-unknown/release/compiler.wasm
+      run: |
+        wasm=target/wasm32-unknown-unknown/release/compiler.wasm
+        echo "::notice title=compiler.wasm::served as brotli-11: $(( $(brotli -q 11 -c "$wasm" | wc -c) / 1024 )) KB (raw $(( $(wc -c < "$wasm") / 1024 )) KB)"
 
     # The CLI precompiles its compiler.wasm to native code, so this build trades size for speed.
     - name: Build (CLI)
