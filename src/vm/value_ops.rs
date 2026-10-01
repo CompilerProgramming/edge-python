@@ -198,7 +198,7 @@ impl<'a> VM<'a> {
         Ok(())
     }
 
-    pub fn type_name(&self, v: Val) -> &'static str {
+    pub fn type_name(&self, v: Val) -> &str {
         if v.is_bool() { "bool" }
         else if v.is_int() { "int" }
         else if v.is_float() { "float" }
@@ -223,9 +223,8 @@ impl<'a> VM<'a> {
             HeapObj::StaticMethod(..) => "staticmethod",
             HeapObj::ClassMethod(..) => "classmethod",
             HeapObj::Instance(cls, _) => {
-                // Leak the class name, the static return type cannot borrow the heap String.
                 if cls.is_heap() && let HeapObj::Class(name, _, _) = self.heap.get(*cls) {
-                    return alloc::boxed::Box::leak(name.clone().into_boxed_str());
+                    return name;
                 }
                 "object"
             }

@@ -210,11 +210,13 @@ impl<'a> VM<'a> {
             }
         };
 
-        self.check_classinfo(arg2, check_one)
+        let result = self.check_classinfo(arg2, check_one)?;
+        self.push(Val::bool(result));
+        Ok(())
     }
 
     /* Shared `isinstance`/`issubclass` classinfo dispatch, a tuple matches if any member does, else a single check. `single` already emits the correct TypeError for non-heap / wrong-variant args. */
-    fn check_classinfo<F>(&mut self, arg2: Val, single: F) -> Result<(), VmErr>
+    fn check_classinfo<F>(&self, arg2: Val, single: F) -> Result<bool, VmErr>
     where F: Fn(Val, &HeapPool) -> Result<bool, VmErr> {
         let result = if arg2.is_heap() && let HeapObj::Tuple(items) = self.heap.get(arg2) {
             // Propagate TypeError from a non-class member instead of silently ignoring it.
@@ -225,8 +227,7 @@ impl<'a> VM<'a> {
         } else {
             single(arg2, &self.heap)?
         };
-        self.push(Val::bool(result));
-        Ok(())
+        Ok(result)
     }
 
     /* `issubclass(C, B)`, both are classes (B may be a tuple). Walks the exception hierarchy for built-ins and the inheritance chain for user classes. Unlike `isinstance`, arg 1 must itself be a class. */
@@ -254,6 +255,8 @@ impl<'a> VM<'a> {
             }
         };
 
-        self.check_classinfo(arg2, check_one)
+        let result = self.check_classinfo(arg2, check_one)?;
+        self.push(Val::bool(result));
+        Ok(())
     }
 }
