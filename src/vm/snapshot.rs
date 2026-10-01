@@ -182,7 +182,7 @@ fn put_iter_frame(w: &mut W, x: &IterFrame) {
 }
 fn get_iter_frame(r: &mut R) -> Result<IterFrame, SnapErr> {
     Ok(match r.u8()? {
-        0 => IterFrame::Seq { items: r.vals()?, idx: r.usz()? },
+        0 => IterFrame::Seq { items: r.vals()?.into(), idx: r.usz()? },
         1 => IterFrame::Range { cur: r.i64()?, end: r.i64()?, step: r.i64()? },
         2 => IterFrame::Coroutine(r.val()?),
         3 => IterFrame::UserDefined(r.val()?),

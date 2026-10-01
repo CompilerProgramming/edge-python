@@ -87,8 +87,7 @@ pub fn startswith(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let ascii = vm.heap.str_is_ascii(recv);
     let s = recv_str_ref(vm, recv)?;
     // Optional start/stop window restricts where the prefix must begin.
-    let (lo, hi) = window(s, ascii, pos, 1);
-    let hit = prefixes.iter().any(|p| s[lo..hi].starts_with(p.as_str()));
+    let hit = window(s, ascii, pos, 1).is_some_and(|(lo, hi)| prefixes.iter().any(|p| s[lo..hi].starts_with(p.as_str())));
     vm.push(Val::bool(hit));
     Ok(())
 }
@@ -97,34 +96,35 @@ pub fn endswith(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let suffixes = affixes(vm, pos[0])?;
     let ascii = vm.heap.str_is_ascii(recv);
     let s = recv_str_ref(vm, recv)?;
-    let (lo, hi) = window(s, ascii, pos, 1);
-    let hit = suffixes.iter().any(|p| s[lo..hi].ends_with(p.as_str()));
+    let hit = window(s, ascii, pos, 1).is_some_and(|(lo, hi)| suffixes.iter().any(|p| s[lo..hi].ends_with(p.as_str())));
     vm.push(Val::bool(hit));
     Ok(())
 }
 
-// Byte bounds of the optional char-index `start`/`stop` window (pos[from], pos[from + 1]), negatives count from the end.
-fn window(s: &str, ascii: bool, pos: &[Val], from: usize) -> (usize, usize) {
+// Byte bounds of the optional char-index `start`/`stop` window (pos[from], pos[from + 1]), None when start lies past the end or past stop.
+fn window(s: &str, ascii: bool, pos: &[Val], from: usize) -> Option<(usize, usize)> {
     let arg = |k: usize| pos.get(k).filter(|v| v.is_int()).map(|v| v.as_int());
     let len = s.len() as i64;
-    // ASCII has one char per byte, other text walks chars from the end the index counts from.
-    let byte = |i: i64| -> usize {
-        if ascii { (if i < 0 { (len + i).max(0) } else { i.min(len) }) as usize }
-        else if i < 0 { s.char_indices().rev().nth(usize::try_from(i.unsigned_abs() - 1).unwrap_or(usize::MAX)).map_or(0, |(b, _)| b) }
-        else { s.char_indices().nth(usize::try_from(i).unwrap_or(usize::MAX)).map_or(s.len(), |(b, _)| b) }
+    // ASCII has one char per byte, other text walks chars from the end the index counts from, None past the end.
+    let byte = |i: i64| -> Option<usize> {
+        if ascii { if i < 0 { Some((len + i).max(0) as usize) } else { (i <= len).then_some(i as usize) } }
+        else if i < 0 { Some(s.char_indices().rev().nth(usize::try_from(i.unsigned_abs() - 1).unwrap_or(usize::MAX)).map_or(0, |(b, _)| b)) }
+        else { s.char_indices().map(|(b, _)| b).chain(iter::once(s.len())).nth(usize::try_from(i).unwrap_or(usize::MAX)) }
     };
-    let lo = arg(from).map_or(0, byte);
-    (lo, arg(from + 1).map_or(s.len(), byte).max(lo))
+    let lo = match arg(from) { Some(i) => byte(i)?, None => 0 };
+    let hi = arg(from + 1).map_or(s.len(), |i| byte(i).unwrap_or(s.len()));
+    (lo <= hi).then_some((lo, hi))
 }
 
 fn find_impl(vm: &mut VM, recv: Val, pos: &[Val], last: bool, raise: bool) -> Result<(), VmErr> {
     let sub = val_to_str(vm, pos[0])?;
     let ascii = vm.heap.str_is_ascii(recv);
     let s = recv_str_ref(vm, recv)?;
-    let (lo, hi) = window(s, ascii, pos, 1);
-    let hay = &s[lo..hi];
-    let local = if last { hay.rfind(sub.as_str()) } else { hay.find(sub.as_str()) };
-    let idx = local.map_or(-1, |b| if ascii { lo + b } else { s[..lo + b].chars().count() } as i64);
+    let idx = window(s, ascii, pos, 1).and_then(|(lo, hi)| {
+        let hay = &s[lo..hi];
+        let local = if last { hay.rfind(sub.as_str()) } else { hay.find(sub.as_str()) };
+        local.map(|b| if ascii { lo + b } else { s[..lo + b].chars().count() } as i64)
+    }).unwrap_or(-1);
     if raise && idx < 0 { return Err(cold_value("substring not found")); }
     vm.push(Val::int(idx));
     Ok(())
@@ -138,9 +138,10 @@ pub fn count(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let sub = val_to_str(vm, pos[0])?;
     let ascii = vm.heap.str_is_ascii(recv);
     let s = recv_str_ref(vm, recv)?;
-    let (lo, hi) = window(s, ascii, pos, 1);
-    let hay = &s[lo..hi];
-    let c = if sub.is_empty() { hay.chars().count() + 1 } else { hay.matches(sub.as_str()).count() };
+    let c = window(s, ascii, pos, 1).map_or(0, |(lo, hi)| {
+        let hay = &s[lo..hi];
+        if sub.is_empty() { hay.chars().count() + 1 } else { hay.matches(sub.as_str()).count() }
+    });
     vm.push(Val::int(c as i64));
     Ok(())
 }

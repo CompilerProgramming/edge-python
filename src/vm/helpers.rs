@@ -182,25 +182,25 @@ impl<'a> VM<'a> {
         Ok(match self.heap.get(obj) {
             HeapObj::Range(s, e, st) => IterFrame::Range { cur: *s, end: *e, step: *st },
             HeapObj::List(v) => IterFrame::List { rc: v.clone(), idx: 0 },
-            HeapObj::Tuple(v) => IterFrame::Seq { items: v.clone(), idx: 0 },
+            HeapObj::Tuple(v) => IterFrame::Seq { items: v.as_slice().into(), idx: 0 },
             HeapObj::Dict(p) => IterFrame::Seq { items: p.borrow().keys().collect(), idx: 0 },
             HeapObj::Set(s) => {
                 let items: Vec<Val> = s.borrow().iter().cloned().collect();
-                IterFrame::Seq { items, idx: 0 }
+                IterFrame::Seq { items: items.into(), idx: 0 }
             },
             HeapObj::FrozenSet(s) => {
                 let items: Vec<Val> = s.iter().cloned().collect();
-                IterFrame::Seq { items, idx: 0 }
+                IterFrame::Seq { items: items.into(), idx: 0 }
             },
             HeapObj::Str(s) => {
                 let s = s.clone();
                 let items = self.str_to_char_vals(&s)?;
-                IterFrame::Seq { items, idx: 0 }
+                IterFrame::Seq { items: items.into(), idx: 0 }
             },
             HeapObj::Bytes(b) => {
                 // Bytes iteration yields ints, matching `iter()` and indexing.
                 let items: Vec<Val> = b.iter().map(|&byte| Val::int(byte as i64)).collect();
-                IterFrame::Seq { items, idx: 0 }
+                IterFrame::Seq { items: items.into(), idx: 0 }
             },
             HeapObj::Coroutine(..) => return Ok(IterFrame::Coroutine(obj)),
             _ => return Err(VmErr::TypeMsg(s!("'", str self.type_name(obj), "' object is not iterable"))),

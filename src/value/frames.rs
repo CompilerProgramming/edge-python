@@ -105,7 +105,8 @@ pub struct CallFrame {
 /* ForIter state, consumed one item per `next_item`. */
 #[derive(Clone, Debug)]
 pub enum IterFrame {
-    Seq { items: Vec<Val>, idx: usize },
+    // Shared items, so a generator saving its frames on every yield copies none of them.
+    Seq { items: alloc::rc::Rc<[Val]>, idx: usize },
     // Live list view, items appended during the loop are visited.
     List { rc: alloc::rc::Rc<core::cell::RefCell<Vec<Val>>>, idx: usize },
     Range { cur: i64, end: i64, step: i64 },
@@ -142,7 +143,7 @@ impl IterFrame {
     /* Visit each Val in this frame, Range holds none. */
     pub(crate) fn for_each_val(&self, f: &mut impl FnMut(Val)) {
         match self {
-            IterFrame::Seq { items, .. } => for &v in items { f(v); },
+            IterFrame::Seq { items, .. } => for &v in items.iter() { f(v); },
             IterFrame::List { rc, .. } => for &v in rc.borrow().iter() { f(v); },
             Self::Coroutine(v) | Self::UserDefined(v) => f(*v),
             IterFrame::Range { .. } => {}
