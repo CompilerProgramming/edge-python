@@ -94,7 +94,7 @@ pub(super) struct Pipe {
     next: i64,
 }
 
-fn epoch() -> Instant {
+pub(super) fn epoch() -> Instant {
     static START: OnceLock<Instant> = OnceLock::new();
     *START.get_or_init(Instant::now)
 }

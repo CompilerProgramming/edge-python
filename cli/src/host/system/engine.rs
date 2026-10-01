@@ -1,4 +1,4 @@
-use super::pipe::Pipe;
+use super::pipe::{epoch, Pipe};
 use super::{fault_text, from_json, Msg};
 use crate::host::Completion;
 use compiler::modules::{dir_of, join_relative};
@@ -62,6 +62,8 @@ extern "C" fn stop() {
 }
 
 fn serve(inbox: Receiver<Msg>, io: Sender<Msg>) {
+    // The monotonic clock starts with the thread, so a first reading is never the tick it started on.
+    epoch();
     STATE.set(Some(State { io, settles: HashMap::new(), pipe: Pipe::default() }));
     let engine = JSEngine::init().expect("starting SpiderMonkey");
     // Registered after init, so the hook runs before exit destroys what init created.
