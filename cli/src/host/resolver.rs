@@ -139,9 +139,20 @@ fn serve_system(inst: &mut Instance, project: &Project, packages: &Value) -> Vec
     if let Some(ceiling) = &project.ceiling
         && !entries.is_empty()
     {
-        let over = system::unmet(&json!({ "eval": ceiling }), "eval", &json!({ "main": entries }));
+        let over: Vec<(&String, String)> = permissions
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(holder, listed)| {
+                let missing = system::unmet(&json!({ "eval": ceiling }), "eval", &json!({ "main": listed }));
+                (!missing.is_empty()).then(|| (holder, missing.join(", ")))
+            })
+            .collect();
         if !over.is_empty() {
-            return vec![format!("the bundle grants {}, which the pool does not grant eval", over.join(", "))];
+            // Laid out as edge lock lays out what a root misses, one holder to a line.
+            let width = over.iter().map(|(holder, _)| holder.len()).max().unwrap_or(0);
+            let lines: Vec<String> = over.iter().map(|(holder, asks)| format!("  {holder:<width$}   {asks}")).collect();
+            return vec![format!("the pool does not grant eval what this bundle grants\n{}", lines.join("\n"))];
         }
     }
     let mut failures = Vec::new();
