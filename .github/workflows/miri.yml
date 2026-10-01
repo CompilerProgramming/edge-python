@@ -30,8 +30,6 @@ jobs:
             args: "-p edge-python --test tests modules::"
           - entry: parser
             args: "-p edge-python --test tests parser::"
-            # Miri spends hours on these two, the native run still covers them.
-            skip: "instruction_overflow_does_not_panic deep_operator_chains_error_not_overflow"
           - entry: lexer
             args: "-p edge-python --test tests lexer::"
           - entry: abi
@@ -56,9 +54,5 @@ jobs:
       - name: Sysroot
         run: cargo +nightly miri setup
 
-      # A skip naming no test fails, so a renamed test cannot slip back under Miri.
       - name: Interpret
-        run: |
-          list=$(cargo +nightly miri test ${{ matrix.args }} -- --list)
-          for t in ${{ matrix.skip }}; do grep -q "::$t: test" <<< "$list" || { echo "::error::skip $t names no test"; exit 1; }; set -- "$@" --skip "$t"; done
-          cargo +nightly miri test ${{ matrix.args }} -- "$@"
+        run: cargo +nightly miri test ${{ matrix.args }}
