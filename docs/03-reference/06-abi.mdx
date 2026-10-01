@@ -164,7 +164,7 @@ Sets and frozensets construct via `NewSet` / `NewFrozenSet`. Remaining composite
 
 ## System calls
 
-A plugin reaches `net` and `time` through the `Sys` op, served exactly as a `.py` beside the `.wasm` would import them. It holds the grants of the package it sits in, and a module that package is not granted fails with `PermissionError`.
+A plugin reaches `net`, `time` and `secret` through the `Sys` op, served exactly as a `.py` beside the `.wasm` would import them. It holds the grants of the package it sits in, and a module that package is not granted fails with `PermissionError`.
 
 A call that answers at once returns `0` with the value. One that waits returns `2`, the plugin returns `2` from its own export, and the host parks the coroutine. Once the system call settles, the host calls `__edge_resume` with the same call id and a handle to the answer, or `0` with the error left for `edge_take_error`. What `__edge_resume` returns is what the program sees, `0` a value, `1` an error, and `2` another wait on the same call.
 

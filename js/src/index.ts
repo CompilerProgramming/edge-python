@@ -7,6 +7,7 @@ export interface CreateWorkerOpts {
     wasmUrl?: string
     imports?: Record<string, string>
     permissions?: Permissions
+    secrets?: Record<string, string>
     limits?: Limits | null
 }
 

@@ -16,6 +16,8 @@ export interface LoadOpts {
     imports?: Record<string, string> | null
     // What the embedder's root manifest grants, beside the imports it declares.
     permissions?: Permissions | null
+    // What secret reads, each value only under a name the permissions grant.
+    secrets?: Record<string, string> | null
     // The program's directory, where its files and its edge.json live.
     baseUrl?: string | null
     limits?: Limits | null

@@ -22,13 +22,15 @@ export function plainHost(host: string): boolean {
 // A whole scope for net, one lowercase host and the path prefix it may bound the reach to.
 const NET_SCOPE = new RegExp(`^(${HOST.source})((?:/[A-Za-z0-9\\-._~!$&'()*+,=:@]+)*/?)$`);
 
-// What a scope of each system module may be, a host for net and a clock for time.
+// What a scope of each system module may be, a host for net, a name for secret and a clock for time.
 const SCOPES: Record<string, (scope: string) => boolean> = {
     // A prefix names plain segments, since a dot segment or an escape never matches a resolved path.
     net: (scope) => {
         const [, host, prefix] = NET_SCOPE.exec(scope) ?? [];
         return host !== undefined && plainHost(host) && prefix!.split('/').every((segment) => segment !== '.' && segment !== '..');
     },
+    // Spelled as an environment variable, since the CLI reads the one variable a name forms.
+    secret: (name) => /^[A-Z_][A-Z0-9_]*$/.test(name),
     time: (clock) => clock === 'wall' || clock === 'monotonic' || clock === 'zone',
 };
 

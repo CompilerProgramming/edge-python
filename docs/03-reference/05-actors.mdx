@@ -136,7 +136,7 @@ What the pool grants `eval` under [permissions](/docs/reference/system#permissio
 error: the bundle grants time:wall, which the pool does not grant eval
 ```
 
-A `code` or `run` group runs code you trust. It keeps state between messages, can send, and can reach `net` and `time` under what the pool's `edge.json` grants, with the metered limits as the only cap, so keep third-party code out of it and reach for `eval` instead.
+A `code` or `run` group runs code you trust. It keeps state between messages, can send, and can reach `net`, `time` and `secret` under what the pool's `edge.json` grants, with the metered limits as the only cap, so keep third-party code out of it and reach for `eval` instead.
 
 For a project, `edge build` packs it into a `.edge`, and a client sends it base64-encoded behind an `EDGEPKG:` marker. The actor validates it and serves its files to the compiler from memory, so an untrusted bundle never touches the disk.
 

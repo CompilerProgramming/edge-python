@@ -117,6 +117,8 @@ impl Pipe {
         let id = args["id"].as_i64().unwrap_or(-1);
         match op {
             "monotonic" => Ok(json!(epoch().elapsed().as_secs_f64() * 1000.0)),
+            // Only a name the package holds asks, so the prefix keeps every other variable out of reach.
+            "secret" => Ok(std::env::var(format!("EDGE_SECRET_{}", text(args, "name")?)).map_or(Value::Null, Value::String)),
             "http_start" => {
                 let headers = args["headers"].as_array().into_iter().flatten().filter_map(|p| Some((p[0].as_str()?.to_string(), p[1].as_str()?.to_string()))).collect();
                 let (method, url, body) = (text(args, "method")?, text(args, "url")?, bytes(&args["body"]));

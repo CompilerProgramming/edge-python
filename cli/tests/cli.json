@@ -503,7 +503,7 @@
       "clock/edge.json": "{\"name\": \"clock\", \"permissions\": {\"main\": [\"fs:/\"]}}\n"
     },
     "run": ["lock"],
-    "fails": ["edge.json at 'clock/edge.json': permissions for 'main' name 'fs', which is not a system module (net, time)"]
+    "fails": ["edge.json at 'clock/edge.json': permissions for 'main' name 'fs', which is not a system module (net, secret, time)"]
   },
   {
     "given": {

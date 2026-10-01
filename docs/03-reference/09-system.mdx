@@ -1,15 +1,16 @@
 ---
 title: "System"
-description: "The net and time modules, and the permissions edge.json grants each package."
+description: "The net, time and secret modules, and the permissions edge.json grants each package."
 ---
 
 # System
 
-Edge Python reaches outside its sandbox through two system modules, `net` for the network and `time` for the clock. They ship inside Edge Python and need no `imports` entry, but a package can only import them when the root `edge.json` grants it.
+Edge Python reaches outside its sandbox through three system modules, `net` for the network, `time` for the clock and `secret` for the values a host keeps for the program. They ship inside Edge Python and need no `imports` entry, but a package can only import them when the root `edge.json` grants it.
 
 ```python
 import net
 import time
+import secret
 ```
 
 ## Permissions
@@ -41,6 +42,7 @@ Only the root `edge.json` grants. Its `permissions` section maps each holder to 
 | `time:wall` | `now()` |
 | `time:monotonic` | `now('monotonic')` |
 | `time:zone` | `zone()` |
+| `secret:<NAME>` | `read('<NAME>')`, that one value and no other. The name is uppercase letters, digits and underscores, and never starts with a digit |
 
 A package is the nearest `edge.json` above its files. The root's own modules belong to `main`, and a dependency answers to the `name` its own manifest carries. An entry without a scope, such as `"net"`, lets the package import the module and reach nothing. What a package holds is its own entries joined with those for `all`, and code outside any package holds nothing.
 
@@ -123,6 +125,26 @@ while chunk is not None:
     chunk = net.read(r)
 ```
 
+## secret
+
+| Call | Needs | Returns |
+|---|---|---|
+| `read(name)` | `secret:<name>` | The value the host keeps under that name, as a `str` |
+
+A name the package does not hold raises `PermissionError`, and one it holds but the host keeps no value for raises `OSError`. Nothing lists the names a host keeps, so a program reads only the values it was granted and asks for by name.
+
+The CLI reads `EDGE_SECRET_<name>` from its environment at the moment of the call, so a program never reaches a variable it was not granted, whatever else the environment holds. With `--web` the CLI hands the page only the values a `secret` entry names. A page that embeds the engine passes them to `createWorker` as `secrets`.
+
+```python
+import secret
+
+token = secret.read("GITHUB_TOKEN")
+```
+
+```bash
+EDGE_SECRET_GITHUB_TOKEN=ghp_example edge run main.py
+```
+
 ## batch
 
 Every system module also takes `batch(calls)`, a list of `[name, *args]` lists answered in one crossing, the results in the same order. A call that waits holds the batch until every one settles, the first failure raises in the coroutine that made the batch, and each call still checks its own scope.
@@ -144,13 +166,14 @@ A `.wasm` plugin reaches the same calls through the `Sys` op of the [ABI](/docs/
 
 ## Embedding
 
-A page that runs a program with `createWorker` passes what its root `edge.json` would grant beside the imports, or points `baseUrl` at the directory whose `edge.json` says it.
+A page that runs a program with `createWorker` passes what its root `edge.json` would grant beside the imports, or points `baseUrl` at the directory whose `edge.json` says it. The values `secret` reads go in `secrets`, and each is read only under a name the permissions grant.
 
 ```js
 const worker = await createWorker({
   baseUrl: new URL("./app/", location.href).href,
   imports: { calc: "./calc.py" },
-  permissions: { main: ["net:api.example.com"] },
+  permissions: { main: ["net:api.example.com", "secret:API_KEY"] },
+  secrets: { API_KEY: key },
 });
 ```
 

@@ -1,6 +1,7 @@
 /* The system calls on their own, each opened for one package with the scopes the root grants it. */
 import { check, scopes, unmet } from "../src/system/grants.ts";
 import net from "../src/system/net.ts";
+import secret from "../src/system/secret.ts";
 import time from "../src/system/time.ts";
 
 const raises = (fn, name, message) => {
@@ -35,11 +36,12 @@ Deno.test("system: a package asks under main and all, and only the root's grant 
 });
 
 Deno.test("system: a malformed permissions section says what it needs", () => {
-    const valid = { all: ["time:monotonic"], main: ["net:api.example.com", "net", "net:10.0.0.255", "net:api.example.com/v2/items", "net:a.test/", "net:a.test/v1.2/@dylan"] };
+    const valid = { all: ["time:monotonic"], main: ["net:api.example.com", "net", "net:10.0.0.255", "net:api.example.com/v2/items", "net:a.test/", "net:a.test/v1.2/@dylan", "secret", "secret:API_KEY", "secret:_V2"] };
     if (check(undefined) !== null || check(valid) !== null) throw new Error(`a valid section, ${check(valid)}`);
     const cases = [
         [{ main: "net:api.example.com" }, "permissions for 'main' must be a list of entries such as \"net:api.example.com\""],
-        [{ main: ["fs:/tmp"] }, "permissions for 'main' name 'fs', which is not a system module (net, time)"],
+        [{ main: ["fs:/tmp"] }, "permissions for 'main' name 'fs', which is not a system module (net, secret, time)"],
+        ...["api_key", "1KEY", "API-KEY", ""].map((name) => [{ main: [`secret:${name}`] }, `permissions for 'main' give secret the scope '${name}', which it does not have`]),
         [{ main: ["time:lunar"] }, "permissions for 'main' give time the scope 'lunar', which it does not have"],
         [{ main: ["net:https://api.example.com/"] }, "permissions for 'main' give net the scope 'https://api.example.com/', which it does not have"],
         [{ main: ["net:a.test;script-src"] }, "permissions for 'main' give net the scope 'a.test;script-src', which it does not have"],
@@ -63,6 +65,18 @@ Deno.test("system: time answers only the clocks a package holds", () => {
     denied(() => time("analytics", []).calls.zone(), "'analytics' has no time:zone, edge.json grants it nothing");
     const [name, offset] = time("main", ["zone"]).calls.zone();
     if (typeof name !== "string" || !Number.isInteger(offset)) throw new Error("the zone");
+});
+
+Deno.test("system: secret reads only the names a package holds, from what the host keeps", () => {
+    const kept = { API_KEY: "k-123", OTHER: "leak" };
+    const asked = [];
+    const host = { secret: (name) => (asked.push(name), kept[name] ?? null) };
+    const { read } = secret("main", ["API_KEY", "GONE"], host).calls;
+    if (read("API_KEY") !== "k-123") throw new Error("a granted name");
+    denied(() => read("OTHER"), "'main' has no secret:OTHER, edge.json grants it secret:API_KEY, secret:GONE");
+    raises(() => read("GONE"), "OSError", "the host holds no value for GONE");
+    raises(() => read(7), "ValueError", "secret.read takes a name as a str");
+    if (JSON.stringify(asked) !== '["API_KEY","GONE"]') throw new Error(`the host was asked for ${asked}`);
 });
 
 Deno.test("system: a batch answers many calls of a module in one crossing", async () => {

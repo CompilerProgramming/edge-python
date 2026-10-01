@@ -44,19 +44,21 @@ pub struct Host {
     // Each source is served under its own key, so a navigation never reads the page the last run left.
     pages: Arc<Mutex<HashMap<String, String>>>,
     next: AtomicUsize,
+    secrets: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Host {
     /// Launch a browser and serve the harness, the manifest and the embedded host on a loopback port.
     pub fn open(manifest: Option<&Path>) -> Result<Host> {
         // The declared modules keep their own addresses, resolved here so the page is never handed a version.
-        let imports = match manifest {
+        let (imports, secrets) = match manifest {
             Some(path) if path.exists() => {
                 let mut declared = crate::manifest::Manifest::load(path)?;
                 declared.imports = crate::lock::resolved(path, &declared.imports)?;
-                serde_json::to_vec(&declared).with_context(|| format!("serializing {}", path.display()))?
+                let declared = serde_json::to_value(&declared).with_context(|| format!("serializing {}", path.display()))?;
+                (declared.to_string().into_bytes(), kept(&declared["permissions"]))
             }
-            _ => b"{}".to_vec(),
+            _ => (b"{}".to_vec(), serde_json::Map::new()),
         };
 
         // Local imports answer from the directory the manifest sits in, and from nothing outside it.
@@ -66,13 +68,13 @@ impl Host {
         let browser = launch().context("launching headless Chromium")?;
         let tab = browser.new_tab().map_err(|e| anyhow!("opening a tab: {e}"))?;
 
-        Ok(Host { _browser: browser, tab, port, pages, next: AtomicUsize::new(0) })
+        Ok(Host { _browser: browser, tab, port, pages, next: AtomicUsize::new(0), secrets })
     }
 
     /// Run one source as the script `entry` on the browser host, returning its exit code.
     pub fn run(&self, src: &str, entry: &str) -> Result<i32> {
         let key = self.next.fetch_add(1, Ordering::Relaxed).to_string();
-        let page = page(src, entry)?;
+        let page = page(src, entry, &self.secrets)?;
         self.pages.lock().map_err(|e| anyhow!("staging the page: {e}"))?.insert(key.clone(), page);
 
         self.tab
@@ -93,8 +95,17 @@ pub fn run(src: &str, entry: &str, manifest: Option<&Path>) -> Result<i32> {
 }
 
 /* The harness for one run, filled in once so no program text is read as a placeholder. */
-fn page(src: &str, entry: &str) -> Result<String> {
-    Ok(HARNESS.replace("__EDGE_RUN__", &embed(&serde_json::json!({ "src": src, "entry": entry }))?))
+fn page(src: &str, entry: &str, secrets: &serde_json::Map<String, serde_json::Value>) -> Result<String> {
+    Ok(HARNESS.replace("__EDGE_RUN__", &embed(&serde_json::json!({ "src": src, "entry": entry, "secrets": secrets }))?))
+}
+
+/* The value of `EDGE_SECRET_<name>` for each name a `secret` entry grants, so the page holds no other variable. */
+fn kept(permissions: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    let entries = permissions.as_object().into_iter().flat_map(|holders| holders.values()).filter_map(|listed| listed.as_array()).flatten();
+    entries
+        .filter_map(|entry| entry.as_str()?.strip_prefix("secret:"))
+        .filter_map(|name| Some((name.to_string(), serde_json::Value::String(std::env::var(format!("EDGE_SECRET_{name}")).ok()?))))
+        .collect()
 }
 
 /* A value as a JS literal. JSON leaves `<` alone, so a script carrying a closing script tag would end the harness block and run as markup, and escaping it keeps the program's own text intact. */
@@ -276,13 +287,29 @@ mod tests {
     #[test]
     fn the_harness_cannot_be_escaped_by_a_script() {
         let hostile = "print('</script><script>alert(1)</script>')";
-        let page = page(hostile, "sub/main.py").unwrap();
+        let page = page(hostile, "sub/main.py", &serde_json::Map::new()).unwrap();
 
         assert!(!page.contains("<script>alert(1)"));
         assert!(page.contains("\\u003c/script"));
         // The program and its entry still read as written once the page decodes the literal.
         let run = serde_json::json!({ "src": hostile, "entry": "sub/main.py" });
         assert_eq!(serde_json::from_str::<serde_json::Value>(&embed(&run).unwrap()).unwrap(), run);
+    }
+
+    // The page carries a secret only when a grant names it, so no other variable reaches the browser.
+    #[test]
+    fn the_page_holds_only_the_secrets_a_grant_names() {
+        // SAFETY: names no other test reads or writes.
+        unsafe {
+            std::env::set_var("EDGE_SECRET_KEPT_GRANTED", "yes");
+            std::env::set_var("EDGE_SECRET_KEPT_OTHER", "no");
+        }
+        let permissions = serde_json::json!({ "main": ["secret:KEPT_GRANTED", "secret:KEPT_UNSET", "net:a.test"], "all": ["secret"] });
+        assert_eq!(serde_json::Value::Object(kept(&permissions)), serde_json::json!({ "KEPT_GRANTED": "yes" }));
+        unsafe {
+            std::env::remove_var("EDGE_SECRET_KEPT_GRANTED");
+            std::env::remove_var("EDGE_SECRET_KEPT_OTHER");
+        }
     }
 
     #[test]

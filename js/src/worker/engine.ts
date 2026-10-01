@@ -6,6 +6,7 @@ import { makeRt } from '../rt.ts';
 import type { Rt, EdgeValue } from '../rt.ts';
 import { nativeTable, resetNativeTable, waiting } from '../native.ts';
 import { SYSTEM } from '../system/index.ts';
+import type { Host } from '../system/index.ts';
 import { check, scopes } from '../system/grants.ts';
 import type { Permissions } from '../system/grants.ts';
 import type { CompilerExports } from '../wasm.ts';
@@ -36,6 +37,7 @@ let wasmModule: WebAssembly.Module | null = null;
 let compilerExports: CompilerExports | null = null;
 let importsMap: Record<string, string> | null = null;
 let permissionsMap: Permissions | null = null;
+let secretsMap: Record<string, string> | null = null;
 // The program's directory and the page's reader of its files, which a room cannot fetch itself.
 let programBase: string | null = null;
 let readFile: ((url: string) => Promise<Response>) | null = null;
@@ -73,10 +75,11 @@ const requireExports = (): CompilerExports => {
 const read = (url: string): Promise<Response> => (readFile && programBase && url.startsWith(programBase) ? readFile(url) : fetch(url));
 
 /* Engine orchestrator, internal to the Worker. Consumers use `createWorker` in `src/index.ts`. Lifecycle is `load` once -> many `run` cycles -> `dispose`, and each run instantiates the compiler fresh with no state leak. */
-export async function load({ wasmUrl, wasm = null, imports = null, permissions = null, baseUrl = null, limits: caps = null }: LoadOpts, reader: ((url: string) => Promise<Response>) | null = null): Promise<{ loadMs: number }> {
+export async function load({ wasmUrl, wasm = null, imports = null, permissions = null, secrets = null, baseUrl = null, limits: caps = null }: LoadOpts, reader: ((url: string) => Promise<Response>) | null = null): Promise<{ loadMs: number }> {
     const t0 = performance.now();
     importsMap = imports;
     permissionsMap = permissions;
+    secretsMap = secrets;
     programBase = baseUrl ? new URL('./', baseUrl).href : null;
     readFile = reader;
     limits = caps;
@@ -171,7 +174,15 @@ async function execute({ src, payload, start, entry = '', onLine, incremental = 
     return result;
 }
 
-/* Serves net and time to every package the walk met, each opened with its own scopes, or refused when the root grants it none. */
+// A secret leaves the embedder only when a granted name asks for it, and never as anything but text.
+const host: Host = {
+    secret: (name) => {
+        const value = secretsMap && Object.hasOwn(secretsMap, name) ? secretsMap[name] : undefined;
+        return typeof value === 'string' ? value : null;
+    },
+};
+
+/* Serves the system modules to every package the walk met, each opened with its own scopes, or refused when the root grants it none. */
 function serveSystem(exports: CompilerExports, packages: Packages): string[] {
     const problem = check(packages.permissions);
     if (problem) return [`edge.json at '${packages.root}edge.json': ${problem}`];
@@ -186,7 +197,7 @@ function serveSystem(exports: CompilerExports, packages: Packages): string[] {
                 exports.register_module_error(writeBytes(exports, spec), spec.length, writeBytes(exports, msg), msg.length);
                 continue;
             }
-            const system = open(pkg, held);
+            const system = open(pkg, held, host);
             opened.push(system);
             const calls = Object.entries(system.calls);
             const baseId = nativeTable.length;
@@ -425,6 +436,7 @@ export function dispose(): void {
     compilerExports = null;
     importsMap = null;
     permissionsMap = null;
+    secretsMap = null;
     programBase = null;
     readFile = null;
     fetchedSources.clear();

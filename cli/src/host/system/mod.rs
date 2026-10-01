@@ -189,15 +189,36 @@ mod tests {
 
     #[test]
     fn the_modules_and_their_grants_come_from_the_system_calls() {
-        assert_eq!(crate::web::SYSTEM_MODULES, ["net", "time"]);
+        assert_eq!(crate::web::SYSTEM_MODULES, ["net", "secret", "time"]);
         let permissions = json!({ "all": ["time:wall"], "main": ["net:api.example.com"], "http": ["net"] });
         assert_eq!(scopes(&permissions, "main", "time"), Some(vec!["wall".to_string()]));
         assert_eq!(scopes(&permissions, "http", "net"), Some(vec![]));
         assert_eq!(scopes(&permissions, "analytics", "net"), None);
         assert_eq!(check(&permissions), None);
-        assert_eq!(check(&json!({ "main": ["fs:/"] })).as_deref(), Some("permissions for 'main' name 'fs', which is not a system module (net, time)"));
+        assert_eq!(check(&json!({ "main": ["fs:/"] })).as_deref(), Some("permissions for 'main' name 'fs', which is not a system module (net, secret, time)"));
         let asks = json!({ "main": ["net", "time:wall"], "all": ["time:zone"], "other": ["net:evil.example"] });
         assert_eq!(unmet(&permissions, "http", &asks), ["time:zone"]);
+    }
+
+    #[test]
+    fn secret_reads_only_a_granted_name_from_its_own_variable() {
+        // SAFETY: names no other test reads or writes.
+        unsafe {
+            std::env::set_var("EDGE_SECRET_PIPE_GRANTED", "yes");
+            std::env::set_var("EDGE_SECRET_PIPE_OTHER", "no");
+        }
+        let run = run_id();
+        assert_eq!(open(run, "main", "secret", &["PIPE_GRANTED".to_string(), "PIPE_UNSET".to_string()]), ["read", "batch"]);
+        assert!(matches!(answered(run, "main", "secret", "read", &[text("PIPE_GRANTED")]), Ok(WireValue::Bytes(b)) if b == b"yes"));
+        let denied = answered(run, "main", "secret", "read", &[text("PIPE_OTHER")]).unwrap_err();
+        assert_eq!(denied, "PermissionError: 'main' has no secret:PIPE_OTHER, edge.json grants it secret:PIPE_GRANTED, secret:PIPE_UNSET");
+        let unset = answered(run, "main", "secret", "read", &[text("PIPE_UNSET")]).unwrap_err();
+        assert_eq!(unset, "OSError: the host holds no value for PIPE_UNSET");
+        close(run);
+        unsafe {
+            std::env::remove_var("EDGE_SECRET_PIPE_GRANTED");
+            std::env::remove_var("EDGE_SECRET_PIPE_OTHER");
+        }
     }
 
     #[test]

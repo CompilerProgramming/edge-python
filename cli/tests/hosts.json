@@ -100,6 +100,23 @@
   },
   {
     "given": {
+      "edge.json": "{ \"permissions\": { \"main\": [\"secret:API_KEY\"] } }\n",
+      "main.py": "import secret\nprint(secret.read(\"API_KEY\"))\ntry:\n    secret.read(\"OTHER\")\nexcept PermissionError as e:\n    print(e)\n"
+    },
+    "env": { "EDGE_SECRET_API_KEY": "k-123", "EDGE_SECRET_OTHER": "leak" },
+    "run": ["run", "main.py"],
+    "stdout": ["k-123", "'main' has no secret:OTHER, edge.json grants it secret:API_KEY"]
+  },
+  {
+    "given": {
+      "edge.json": "{ \"permissions\": { \"main\": [\"secret:API_KEY\"] } }\n",
+      "main.py": "import secret\nsecret.read(\"API_KEY\")\n"
+    },
+    "run": ["run", "main.py"],
+    "fails": ["OSError: the host holds no value for API_KEY"]
+  },
+  {
+    "given": {
       "edge.json": "{\"permissions\": {\"main\": [\"net:127.0.0.1/api\"]}}\n",
       "main.py": "import net\nfor path in ['/api/items', '/api/../secret', '/api/%2e%2e/secret', '/other']:\n    try:\n        net.request('GET', 'http://127.0.0.1:1' + path)\n        print('reached', path)\n    except PermissionError as e:\n        print(e)\n"
     },
