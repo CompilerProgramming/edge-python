@@ -213,28 +213,50 @@ fn eval_group_runs_a_bundled_project_over_the_wire() {
     assert_eq!(got, vec!["bundled and run"], "stdout was {got:?}, stderr {err:?}");
 }
 
-/* An eval bundle grants only within what the pool grants eval, and a snippet holds nothing. */
+/* A pool that grants eval nothing refuses a bundle that grants itself anything. */
 #[test]
-fn an_eval_bundle_grants_only_within_what_the_pool_grants_eval() {
+fn a_pool_that_grants_eval_nothing_refuses_a_bundle_that_grants() {
+    let payload = bundle("main.py", &[
+        ("main.py", "import time\nprint(time.now() > 0)\n"),
+        ("edge.json", "{ \"permissions\": { \"main\": [\"time:wall\"] } }\n"),
+    ]);
     let scratch = std::env::temp_dir().join(format!("edge-actor-grant-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&scratch);
     let manifest = scratch.join("actor.yml");
     std::fs::write(&manifest, "runtime:\n  listen: tcp://127.0.0.1:7812\n  control: tcp://127.0.0.1:9812\ngroups:\n  runners:\n    eval: true\n").unwrap();
+
+    let mut child = edge().args(["actor", manifest.to_str().unwrap()]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let reply = post_eval("127.0.0.1:9812", "/eval/runners", &format!("EDGEPKG:{}", base64_encode(&payload)));
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(reply.contains("the pool does not grant eval what this bundle grants") && reply.contains("main   time:wall"), "reply was {reply:?}");
+}
+
+/* A bundle holds what it grants within the eval grant of the pool, and a snippet holds nothing. */
+#[test]
+fn an_eval_bundle_grants_within_what_the_pool_grants_eval() {
+    let scratch = std::env::temp_dir().join(format!("edge-actor-ceiling-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&scratch);
+    let manifest = scratch.join("actor.yml");
+    std::fs::write(&manifest, "runtime:\n  listen: tcp://127.0.0.1:7813\n  control: tcp://127.0.0.1:9813\ngroups:\n  runners:\n    eval: true\n").unwrap();
     std::fs::write(scratch.join("edge.json"), r#"{ "permissions": { "main": ["time:wall"], "all": ["time:wall"], "eval": ["time:monotonic"] } }"#).unwrap();
-    let source = "import time\nprint(time.now('monotonic') > 0)\n";
-    let granting = |grant: &str| {
-        let manifest = format!(r#"{{ "permissions": {{ "main": ["{grant}"] }} }}"#);
-        let payload = bundle("main.py", &[("main.py", source), ("edge.json", manifest.as_str())]);
-        post_eval("127.0.0.1:9812", "/eval/runners", &format!("EDGEPKG:{}", base64_encode(&payload)))
+    let granting = |source: &str, grant: &str| {
+        let payload = bundle("main.py", &[("main.py", source), ("edge.json", &format!(r#"{{ "permissions": {{ "main": ["{grant}"] }} }}"#))]);
+        post_eval("127.0.0.1:9813", "/eval/runners", &format!("EDGEPKG:{}", base64_encode(&payload)))
     };
 
     let mut child = edge().args(["actor", manifest.to_str().unwrap()]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    let (held, beyond, snippet) = (granting("time:monotonic"), granting("time:wall"), post_eval("127.0.0.1:9812", "/eval/runners", source));
+    let held = granting("import time\nprint(time.now('monotonic') > 0)\n", "time:monotonic");
+    let outside = granting("import time\nprint(time.now())\n", "time:monotonic");
+    let beyond = granting("import time\nprint(time.now())\n", "time:wall");
+    let snippet = post_eval("127.0.0.1:9813", "/eval/runners", "import time\nprint(time.now('monotonic') > 0)\n");
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&scratch);
     assert!(held.contains(r#"{"ok":true,"stdout":"True\n"}"#), "held was {held:?}");
-    assert!(beyond.contains("the bundle grants time:wall, which the pool does not grant eval") && !beyond.contains("monotonic"), "beyond was {beyond:?}");
+    assert!(outside.contains("'main' has no time:wall, edge.json grants it time:monotonic"), "outside was {outside:?}");
+    assert!(beyond.contains("main   time:wall") && !beyond.contains("monotonic"), "beyond was {beyond:?}");
     assert!(snippet.contains("'main' imports time, which edge.json does not grant it"), "snippet was {snippet:?}");
 }
 
