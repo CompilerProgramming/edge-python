@@ -2,6 +2,7 @@
 import { env } from 'cloudflare:workers'
 import Base from '../layouts/base.astro'
 import Icon from '../components/ui/icon.astro'
+import LinkList from '../components/ui/link-list.astro'
 import Field from '../components/ui/field.astro'
 import PackageCard from '../components/package-card.astro'
 import Agent from '../components/agent.astro'
@@ -69,20 +70,7 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
     <section class="flex flex-col gap-2">
       <h2 class="ml-4">Get started</h2>
 
-      <ul class="bg-page border border-line-strong rounded-2xl overflow-hidden divide-y divide-line-strong">
-        {guides.map((guide) => (
-          <li>
-            <a href={guide.href} class="group flex items-center gap-3 px-4 py-3 transition hover:bg-surface focus-visible:outline-none focus-visible:bg-surface">
-              <Icon name={guide.icon} class="shrink-0 text-fg-subtle" />
-              <div class="min-w-0 flex-1">
-                <p class="text-sm">{guide.label}</p>
-                <p class="truncate font-mono text-2xs text-fg-hint">{guide.detail}</p>
-              </div>
-              <Icon name="arrow" size="sm" class="shrink-0 text-fg-hint opacity-0 -translate-x-1 transition group-hover:opacity-100 group-hover:translate-x-0 group-focus-visible:opacity-100 group-focus-visible:translate-x-0" />
-            </a>
-          </li>
-        ))}
-      </ul>
+      <LinkList links={guides} mono />
     </section>
 
     <section class="flex flex-col gap-3">
