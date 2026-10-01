@@ -128,6 +128,7 @@ impl<'a> VM<'a> {
         }
         if obj.is_heap() && let HeapObj::Func(_, _, _, attrs) = self.heap.get(obj) {
             set_member(attrs, &name, value);
+            self.templates.clear();
             self.push(Val::none());
             return Ok(());
         }
@@ -173,6 +174,7 @@ impl<'a> VM<'a> {
                 return Err(VmErr::Attribute(s!("'function' object has no attribute '", str name, "'")));
             }
             attrs.borrow_mut().retain(|(n, _)| n != name);
+            self.templates.clear();
             return Ok(());
         }
         if !obj.is_heap() || !matches!(self.heap.get(obj), HeapObj::Instance(..)) {

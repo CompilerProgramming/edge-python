@@ -261,6 +261,43 @@ impl<'a> VM<'a> {
         self.exec_call(operand, chunk, slots)
     }
 
+    /* Only the entry binds `bare`, once, so no caller local can stand in for it. */
+    fn bound_once(&self, bare: &str) -> bool {
+        let bound = |names: &crate::vm::NameVersionIndex| names.get(bare).map_or(0, |v| v.iter().filter(|(ver, _)| *ver >= 1).count());
+        self.chunk_name_versions.get(&(self.chunk as *const SSAChunk)).is_some_and(|names| bound(names) == 1)
+            && self.chunk_name_versions.iter().all(|(&chunk, names)| core::ptr::eq(chunk, self.chunk) || bound(names) == 0
+                || self.body_to_fi.get(&chunk).is_some_and(|&f| self.body_free_loads[f].iter().any(|(b, _, _)| b == bare)))
+    }
+
+    /* Each free name is an unbound builtin, or bound once to an immutable value or fixed function. */
+    fn memo_reads_fixed(&self, fi: usize, visiting: &mut Vec<usize>) -> bool {
+        if visiting.contains(&fi) { return true; }
+        let own = self.self_ref_slot[fi];
+        self.body_free_loads[fi].iter().filter(|(_, slot, _)| Some(*slot) != own).all(|(name, _, _)| match self.module_state.get(name.as_str()) {
+            None => self.builtins.contains_key(name.as_str()),
+            Some(&v) => self.bound_once(name) && (cache::deeply_immutable(v, &self.heap, 0) || matches!(self.heap.try_get(v),
+                Some(HeapObj::Func(f, defaults, captures, attrs)) if captures.is_empty() && attrs.borrow().is_empty()
+                    && defaults.iter().all(|&d| cache::deeply_immutable(d, &self.heap, 0))
+                    && self.memo_ok[*f] && self.functions[*f].1.is_pure
+                    && { visiting.push(fi); self.memo_reads_fixed(*f, visiting) })),
+        })
+    }
+
+    /* Caches `result` on the second run of its key, or turns `fi` off when it never can. */
+    fn memo_keep(&mut self, fi: usize, callee: Val, args: &[Val], defaults: &[Val], owner: Val, result: Val) {
+        let immutable = |v: &Val| !v.is_heap() || cache::deeply_immutable(*v, &self.heap, 0);
+        if !immutable(&result) || !args.iter().chain(defaults).all(immutable) {
+            // A body that sees a mutable value before any entry likely always does.
+            if !self.templates.holds(fi) { self.memo_ok[fi] = false; }
+            return;
+        }
+        let Some(h) = self.templates.admit(fi, args, owner, &self.heap) else { return };
+        // A function with attributes never memoizes, and reads found fixed stay so until the tables clear.
+        let keep = matches!(self.heap.get(callee), HeapObj::Func(.., attrs) if attrs.borrow().is_empty())
+            && (self.templates.holds(fi) || self.memo_reads_fixed(fi, &mut Vec::new()));
+        if keep { self.templates.insert(fi, args, owner, result, h); } else { self.memo_ok[fi] = false; }
+    }
+
     /* `Call` orchestrator. Only user `Func` callees build a fresh `fn_slots` and run the body inline, every other callee kind short-circuits in `try_dispatch_non_func_callable`. */
     pub(crate) fn exec_call(&mut self, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         // Taken so nested native calls see false.
@@ -291,13 +328,12 @@ impl<'a> VM<'a> {
             }
         };
 
-        // Pure-call memoisation. Disabled under impure outer frames (stale-view risk) or kwargs (cache key only spans positionals).
-        let outer_impure = self.observed_impure.last().copied().unwrap_or(false);
-        let memo_ok = self.memo_ok.get(fi).copied().unwrap_or(false);
-        if num_kw == 0 && !outer_impure && memo_ok
-            && let Some(cached) = self.templates.lookup(fi, &positional, &self.heap) {
-                self.push(cached);
-                return Ok(());
+        // Kwargs and closures reach past the key, and a function with defaults keys on itself.
+        let memo_ok = num_kw == 0 && captures.is_empty() && self.memo_ok.get(fi).copied().unwrap_or(false);
+        let owner = if defaults.is_empty() { Val::none() } else { callee };
+        if memo_ok && let Some(cached) = self.templates.lookup(fi, &positional, owner, &self.heap) {
+            self.push(cached);
+            return Ok(());
         }
 
         self.depth += 1;
@@ -365,9 +401,7 @@ impl<'a> VM<'a> {
             let val = self.heap.alloc(HeapObj::List(Rc::new(RefCell::new(fn_yields))))?;
             self.push(val);
         } else {
-            if num_kw == 0 && memo_ok && body.is_pure && !callee_impure {
-                self.templates.record(fi, &positional, result, &self.heap);
-            }
+            if memo_ok && body.is_pure && !callee_impure { self.memo_keep(fi, callee, &positional, &defaults, owner, result); }
             self.push(result);
         }
         // Recycle the frame buffer, error/suspend paths above just drop theirs.

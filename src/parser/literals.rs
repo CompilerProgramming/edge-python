@@ -704,40 +704,15 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             | OpCode::CallInput
             | OpCode::Global
             | OpCode::Nonlocal
-            | OpCode::LoadAttr
             | OpCode::Raise
             | OpCode::RaiseFrom
             | OpCode::Yield
-        )) && !Self::body_reads_free_name(&body, params);
+        ));
         // Pre-compute is_generator to avoid O(n) scan per `exec_call`.
         body.is_generator = body.instructions.iter().any(|i| matches!(
             i.opcode,
             OpCode::Yield
         ));
         body
-    }
-
-    /* A body is memoizable-pure only if every name it loads is bound locally, free names (globals, builtins) introduce mutable state, making memoization stale. */
-    fn body_reads_free_name(body: &SSAChunk, params: &[String]) -> bool {
-        // SSA names are `base_version`, strip the trailing `_<digits>` to compare bases.
-        fn base(n: &str) -> &str {
-            match n.rfind('_') {
-                Some(i) if i + 1 < n.len() && n[i + 1..].bytes().all(|b| b.is_ascii_digit()) => &n[..i],
-                _ => n,
-            }
-        }
-        let mut locals: crate::util::hash::FxHashSet<&str> =
-            params.iter().map(|p| super::types::param_base_name(p)).collect();
-        for ins in &body.instructions {
-            if ins.opcode == OpCode::StoreName
-                && let Some(n) = body.names.get(ins.operand as usize) {
-                locals.insert(base(n));
-            }
-        }
-        body.instructions.iter().any(|ins| match ins.opcode {
-            OpCode::LoadGlobal => true,
-            OpCode::LoadName => body.names.get(ins.operand as usize).is_none_or(|n| !locals.contains(base(n))),
-            _ => false,
-        })
     }
 }
