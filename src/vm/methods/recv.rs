@@ -12,6 +12,15 @@ pub(super) fn recv_str(vm: &VM, recv: Val) -> Result<String, VmErr> {
     }
 }
 
+/* The receiver string borrowed in place, for methods that only read it. */
+#[inline]
+pub(super) fn recv_str_ref<'v>(vm: &'v VM, recv: Val) -> Result<&'v str, VmErr> {
+    match vm.heap.try_get(recv) {
+        Some(HeapObj::Str(s)) => Ok(s),
+        _ => Err(cold_type("method requires a string receiver")),
+    }
+}
+
 #[inline]
 pub(super) fn recv_bytes(vm: &VM, recv: Val) -> Result<Vec<u8>, VmErr> {
     match vm.heap.try_get(recv) {

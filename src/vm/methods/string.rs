@@ -83,41 +83,48 @@ fn affixes(vm: &VM, v: Val) -> Result<Vec<String>, VmErr> {
 }
 
 pub fn startswith(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
     let prefixes = affixes(vm, pos[0])?;
+    let ascii = vm.heap.str_is_ascii(recv);
+    let s = recv_str_ref(vm, recv)?;
     // Optional start/stop window restricts where the prefix must begin.
-    let (chars, start, stop) = slice_window(&s, pos, 1);
-    let hay: String = chars[start..stop].iter().collect();
-    vm.push(Val::bool(prefixes.iter().any(|p| hay.starts_with(p.as_str()))));
+    let (lo, hi) = window(s, ascii, pos, 1);
+    let hit = prefixes.iter().any(|p| s[lo..hi].starts_with(p.as_str()));
+    vm.push(Val::bool(hit));
     Ok(())
 }
 
 pub fn endswith(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
     let suffixes = affixes(vm, pos[0])?;
-    let (chars, start, stop) = slice_window(&s, pos, 1);
-    let hay: String = chars[start..stop].iter().collect();
-    vm.push(Val::bool(suffixes.iter().any(|p| hay.ends_with(p.as_str()))));
+    let ascii = vm.heap.str_is_ascii(recv);
+    let s = recv_str_ref(vm, recv)?;
+    let (lo, hi) = window(s, ascii, pos, 1);
+    let hit = suffixes.iter().any(|p| s[lo..hi].ends_with(p.as_str()));
+    vm.push(Val::bool(hit));
     Ok(())
 }
 
-// Optional char-index `start`/`stop` window (pos[1], pos[2]), negatives count from the end.
-fn slice_window(s: &str, pos: &[Val], from: usize) -> (Vec<char>, usize, usize) {
-    let chars: Vec<char> = s.chars().collect();
-    let n = chars.len() as i64;
-    let norm = |i: i64| -> usize { (if i < 0 { (n + i).max(0) } else { i.min(n) }) as usize };
-    let start = pos.get(from).filter(|v| v.is_int()).map_or(0, |v| norm(v.as_int()));
-    let stop = pos.get(from + 1).filter(|v| v.is_int()).map_or(n as usize, |v| norm(v.as_int()));
-    (chars, start, stop.max(start))
+// Byte bounds of the optional char-index `start`/`stop` window (pos[from], pos[from + 1]), negatives count from the end.
+fn window(s: &str, ascii: bool, pos: &[Val], from: usize) -> (usize, usize) {
+    let arg = |k: usize| pos.get(k).filter(|v| v.is_int()).map(|v| v.as_int());
+    let len = s.len() as i64;
+    // ASCII has one char per byte, other text walks chars from the end the index counts from.
+    let byte = |i: i64| -> usize {
+        if ascii { (if i < 0 { (len + i).max(0) } else { i.min(len) }) as usize }
+        else if i < 0 { s.char_indices().rev().nth(usize::try_from(i.unsigned_abs() - 1).unwrap_or(usize::MAX)).map_or(0, |(b, _)| b) }
+        else { s.char_indices().nth(usize::try_from(i).unwrap_or(usize::MAX)).map_or(s.len(), |(b, _)| b) }
+    };
+    let lo = arg(from).map_or(0, byte);
+    (lo, arg(from + 1).map_or(s.len(), byte).max(lo))
 }
 
 fn find_impl(vm: &mut VM, recv: Val, pos: &[Val], last: bool, raise: bool) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
     let sub = val_to_str(vm, pos[0])?;
-    let (chars, start, stop) = slice_window(&s, pos, 1);
-    let hay: String = chars[start..stop].iter().collect();
+    let ascii = vm.heap.str_is_ascii(recv);
+    let s = recv_str_ref(vm, recv)?;
+    let (lo, hi) = window(s, ascii, pos, 1);
+    let hay = &s[lo..hi];
     let local = if last { hay.rfind(sub.as_str()) } else { hay.find(sub.as_str()) };
-    let idx = local.map(|b| (start + hay[..b].chars().count()) as i64).unwrap_or(-1);
+    let idx = local.map_or(-1, |b| if ascii { lo + b } else { s[..lo + b].chars().count() } as i64);
     if raise && idx < 0 { return Err(cold_value("substring not found")); }
     vm.push(Val::int(idx));
     Ok(())
@@ -128,10 +135,11 @@ pub fn index(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { find_im
 pub fn rindex(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { find_impl(vm, recv, pos, true, true) }
 
 pub fn count(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
     let sub = val_to_str(vm, pos[0])?;
-    let (chars, start, stop) = slice_window(&s, pos, 1);
-    let hay: String = chars[start..stop].iter().collect();
+    let ascii = vm.heap.str_is_ascii(recv);
+    let s = recv_str_ref(vm, recv)?;
+    let (lo, hi) = window(s, ascii, pos, 1);
+    let hay = &s[lo..hi];
     let c = if sub.is_empty() { hay.chars().count() + 1 } else { hay.matches(sub.as_str()).count() };
     vm.push(Val::int(c as i64));
     Ok(())
