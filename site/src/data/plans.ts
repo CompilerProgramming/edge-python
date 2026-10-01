@@ -31,7 +31,7 @@ export const plans: Plan[] = [
   {
     name: 'Session',
     mode: 'Individual',
-    price: '$5.49',
+    price: '$10',
     cadence: 'a month',
     who: 'For an agent that leaves tasks running and forks them.',
     features: [
@@ -45,7 +45,7 @@ export const plans: Plan[] = [
   {
     name: 'Team',
     mode: 'Individual',
-    price: '$54.9',
+    price: '$100',
     cadence: 'a month',
     who: 'For a product whose customers write the logic.',
     features: [
