@@ -224,7 +224,7 @@ impl<'a> VM<'a> {
             chunk,
             heap: HeapPool::new(limits.heap),
             globals: HashMap::default(),
-            builtins: HashMap::with_capacity_and_hasher(BUILTIN_TYPES.len() + NativeFnId::ALL.len() + 2, Default::default()),
+            builtins: HashMap::default(),
             module_state: HashMap::default(),
             live_slots: Vec::new(),
             templates: Templates::new(),
@@ -296,13 +296,6 @@ impl<'a> VM<'a> {
         };
         vm.build_function_table(chunk, None, None);
         vm.index_functions(0);
-        // Every builtin takes a heap slot, reserved at once rather than grown by doubling.
-        vm.heap.reserve(BUILTIN_TYPES.len() + NativeFnId::ALL.len() + 2);
-        for &name in BUILTIN_TYPES {
-            if let Ok(type_obj) = vm.heap.alloc(HeapObj::Type(name.to_string())) {
-                vm.builtins.insert(name, type_obj);
-            }
-        }
         // Entry chunk's `__name__` is "__main__", inserted before slot_templates is built.
         if let Ok(main_name) = vm.heap.alloc(HeapObj::Str("__main__".to_string())) {
             vm.builtins.insert("__name__", main_name);
@@ -310,14 +303,6 @@ impl<'a> VM<'a> {
         // `NotImplemented` singleton, dunders return it to delegate to the reflected operator.
         if let Ok(ni) = vm.heap.alloc(HeapObj::NotImplemented) {
             vm.builtins.insert("NotImplemented", ni);
-        }
-        // Builtins as first-class NativeFn values so they can be rebound/passed around.
-        for &id in NativeFnId::ALL {
-            let name = id.name();
-            if BUILTIN_TYPES.contains(&name) { continue; } // type names stay Type objects
-            if let Ok(v) = vm.heap.alloc(HeapObj::NativeFn(id)) {
-                vm.builtins.insert(name, v);
-            }
         }
         // Slot templates built after all globals are registered.
         vm.index_templates(0);
@@ -457,6 +442,20 @@ impl<'a> VM<'a> {
             .filter(|v| !v.is_undef() && seen.insert(v.0))
             .copied()
             .collect();
+    }
+
+    /* Gives `bare` a heap slot when it names a builtin, so a program pays only for the builtins it uses. */
+    pub(crate) fn register_builtin(&mut self, bare: &str) {
+        if self.builtins.contains_key(bare) { return; }
+        // Type names stay Type objects even when a NativeFn shares them.
+        let (name, obj) = if let Some(&name) = BUILTIN_TYPES.iter().find(|&&t| t == bare) {
+            (name, HeapObj::Type(name.to_string()))
+        } else if let Some(id) = NativeFnId::from_name(bare) {
+            (id.name(), HeapObj::NativeFn(id))
+        } else {
+            return;
+        };
+        if let Ok(v) = self.heap.alloc(obj) { self.builtins.insert(name, v); }
     }
 
     /* For the REPL, adopt `chunk` as the new entry module, state persists, only the new chunk executes. */

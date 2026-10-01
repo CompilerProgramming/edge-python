@@ -45,6 +45,7 @@ impl<'a> VM<'a> {
         // Bare-name index so the free-load fallback is O(1) instead of re-parsing per miss.
         let mut name_versions: super::NameVersionIndex = crate::util::hash::FxHashMap::default();
         for (si, sname) in chunk.names.iter().enumerate() {
+            self.register_builtin(crate::parser::SsaName::parse_or_bare(sname).0);
             if let Some(parsed) = crate::parser::SsaName::parse(sname) {
                 name_versions
                     .entry(parsed.bare.to_string())

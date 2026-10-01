@@ -52,6 +52,8 @@ impl<'a> VM<'a> {
         if args.len() > 255 {
             return Err(VmErr::TypeMsg(s!("call '", str name, "': too many arguments (max 255, got ", int args.len() as i64, ")")));
         }
+        // A name read at run time may be a builtin the program never wrote, give it its slot first.
+        self.register_builtin(name);
         let callee = self.module_state.get(name).copied()
             .or_else(|| self.global(name))
             .ok_or_else(|| VmErr::Name(name.into()))?;

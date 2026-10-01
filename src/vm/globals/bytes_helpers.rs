@@ -96,6 +96,8 @@ impl<'a> VM<'a> {
             HeapObj::Str(s) => s.clone(),
             _ => return Err(cold_type("import_module() argument must be a string")),
         };
+        // A name read at run time may be a builtin the program never wrote, give it its slot first.
+        self.register_builtin(&name);
         let val = self.global(&name)
             .ok_or_else(|| VmErr::Raised(s!("NameError: module '", str &name, "' not imported in this scope")))?;
         if !val.is_heap() || !matches!(self.heap.get(val), HeapObj::Module(..)) {
