@@ -444,6 +444,14 @@ impl<'a> VM<'a> {
             .collect();
     }
 
+    /* A builtin name the program binds or deletes voids every result memoized under the old binding. */
+    pub(crate) fn note_builtin_binding(&mut self, bare: &str) {
+        if NativeFnId::from_name(bare).is_some() {
+            self.builtins_rebound = true;
+            self.templates = Templates::new();
+        }
+    }
+
     /* Gives `bare` a heap slot when it names a builtin, so a program pays only for the builtins it uses. */
     pub(crate) fn register_builtin(&mut self, bare: &str) {
         if self.builtins.contains_key(bare) { return; }

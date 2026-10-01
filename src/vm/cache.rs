@@ -225,17 +225,21 @@ fn hash_args(args: &[Val]) -> u64 {
     h
 }
 
-/* Memoize only when every arg is immutable, mutable containers hash by heap idx and go stale. */
+/* Memoize only when every arg is immutable all the way down, anything reaching mutable state could change behind the cached result. */
 fn args_memoizable(args: &[Val], heap: &super::types::HeapPool) -> bool {
-    use super::types::HeapObj;
-    args.iter().all(|v| {
-        if !v.is_heap() { return true; }
-        // Post-call args aren't rooted, so the body may have freed one. A freed slot (None) is not memoizable, nor are mutable containers.
-        match heap.try_get(*v) {
-            Some(o) => !matches!(o, HeapObj::List(_) | HeapObj::Dict(_) | HeapObj::Set(_) | HeapObj::Instance(..)),
-            None => false,
-        }
-    })
+    args.iter().all(|&v| deeply_immutable(v, heap, 0))
+}
+
+fn deeply_immutable(v: Val, heap: &super::types::HeapPool, depth: usize) -> bool {
+    use super::types::{HeapObj, EQ_DEPTH_MAX};
+    if !v.is_heap() { return true; }
+    // Post-call args aren't rooted, so the body may have freed one, a freed slot (None) is not memoizable.
+    match heap.try_get(v) {
+        Some(HeapObj::Str(_) | HeapObj::Bytes(_) | HeapObj::LongInt(_) | HeapObj::Range(..) | HeapObj::NativeFn(_) | HeapObj::Type(_)) => true,
+        Some(HeapObj::Tuple(items)) => depth < EQ_DEPTH_MAX && items.iter().all(|&x| deeply_immutable(x, heap, depth + 1)),
+        Some(HeapObj::FrozenSet(items)) => depth < EQ_DEPTH_MAX && items.iter().all(|&x| deeply_immutable(x, heap, depth + 1)),
+        _ => false,
+    }
 }
 
 /* Memoize only immediates (int/float/bool/None) and immutable heap objects. Fresh mutable containers or tuples/sets wrapping them must stay per-call to avoid aliasing and falsifying `is`. */

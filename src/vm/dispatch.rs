@@ -473,7 +473,7 @@ impl<'a> VM<'a> {
                     && let Some(bare) = cache.bare(chunk, op as usize)
                 {
                     let v = slots[op as usize];
-                    if !self.builtins_rebound && NativeFnId::from_name(bare).is_some() { self.builtins_rebound = true; }
+                    self.note_builtin_binding(bare);
                     // A name already bound is overwritten in place, so only its first binding allocates a key.
                     match self.module_state.get_mut(bare) {
                         Some(slot) => *slot = v,
@@ -498,7 +498,7 @@ impl<'a> VM<'a> {
             OpCode::StoreGlobal => {
                 let v = self.pop()?;
                 let name = chunk.names.get(op as usize).ok_or(cold_runtime("StoreGlobal: name index out of bounds"))?;
-                if NativeFnId::from_name(name).is_some() { self.builtins_rebound = true; }
+                self.note_builtin_binding(name);
                 self.module_state.insert(name.clone(), v);
             }
             OpCode::LoadConst => {
