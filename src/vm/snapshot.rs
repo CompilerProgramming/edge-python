@@ -378,6 +378,10 @@ fn put_obj(w: &mut W, obj: &HeapObj) {
             w.seq(iters, put_iter_frame); w.seq(syncs, put_sync_frame); w.seq(excs, put_exc_frame);
         }
         HeapObj::Module(spec, attrs) => { w.u8(25); w.str(spec); w.seq(attrs, put_name_val); }
+        HeapObj::GenericAlias(o, a) => { w.u8(29); w.val(*o); w.val(*a); }
+        HeapObj::TypeAlias(n, f) => { w.u8(30); w.str(n); w.val(*f); }
+        HeapObj::Union(a) => { w.u8(31); w.val(*a); }
+        HeapObj::TypeVar(n) => { w.u8(32); w.str(n); }
         HeapObj::Extern(f) => { w.u8(26); w.str(&f.name); }
     }
 }
@@ -432,6 +436,10 @@ fn get_obj(r: &mut R, externs: &ExternMap, fills: &mut Vec<(u32, SetFill)>, slot
         }
         27 => HeapObj::ClassMethod(r.val()?),
         28 => HeapObj::Func(r.usz()?, r.vals()?, r.seq(get_slot_val)?, Rc::new(RefCell::new(r.seq(get_name_val)?))),
+        29 => HeapObj::GenericAlias(r.val()?, r.val()?),
+        30 => HeapObj::TypeAlias(r.str()?, r.val()?),
+        31 => HeapObj::Union(r.val()?),
+        32 => HeapObj::TypeVar(r.str()?),
         t => return Err(s_err("unknown heap tag", itoa::Buffer::new().format(t))),
     })
 }

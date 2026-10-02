@@ -10,7 +10,7 @@ pub fn encode(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
         match enc.as_str() {
             "utf-8" | "utf8" => {}
             "ascii" if !s.is_ascii() => {
-                return Err(cold_value("'ascii' codec can't encode non-ASCII characters"));
+                return Err(VmErr::Raised("UnicodeEncodeError: 'ascii' codec can't encode non-ASCII characters".into()));
             }
             "ascii" => {}
             _ => return Err(cold_value("unsupported encoding (expected 'utf-8' or 'ascii')")),

@@ -111,7 +111,7 @@ impl<'a> VM<'a> {
                 else { while i > e { out.push(range_int(&mut self.heap, i)?); match i.checked_add(st) { Some(n) => i = n, None => break } } }
                 out
             }
-            HeapObj::Coroutine(..) => return self.extract_iter(v),
+            HeapObj::Coroutine(..) | HeapObj::Str(_) | HeapObj::Bytes(_) | HeapObj::Dict(_) | HeapObj::FrozenSet(_) => return self.iter_to_vec_general(v),
             _ => return Err(VmErr::Type("argument after * must be an iterable")),
         })
     }

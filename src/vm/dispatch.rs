@@ -395,6 +395,16 @@ impl<'a> VM<'a> {
                 let encoded = ((kw_flat.len() as u16 / 2) << 8) | argc;
                 self.exec_call(encoded, chunk, slots)
             }
+            opcodes::attr_lookup::AttrLookup::Thunk(f) => {
+                // `X.__value__(...)` evaluates the value, then calls it.
+                self.push(f);
+                self.exec_call(0, chunk, slots)?;
+                for a in &positional { self.push(*a); }
+                for a in &kw_flat { self.push(*a); }
+                let argc = positional.len() as u16;
+                let encoded = ((kw_flat.len() as u16 / 2) << 8) | argc;
+                self.exec_call(encoded, chunk, slots)
+            }
             opcodes::attr_lookup::AttrLookup::PropertySetterRef(prop) => {
                 let v = self.heap.alloc(HeapObj::PropertySetter(prop))?;
                 self.push(v);
@@ -517,7 +527,7 @@ impl<'a> VM<'a> {
             | OpCode::Eq | OpCode::Lt | OpCode::NotEq
             | OpCode::Gt | OpCode::LtEq | OpCode::GtEq
             | OpCode::Div | OpCode::Pow | OpCode::Minus | OpCode::Pos | OpCode::InPlaceAdd | OpCode::InPlaceSub => {
-                self.exec_arith_or_compare(ins.opcode, rip, cache, chunk, slots)?;
+                self.exec_arith_or_compare(ins.opcode, ins.operand, rip, cache, chunk, slots)?;
             }
 
             OpCode::Jump => {
@@ -657,7 +667,19 @@ impl<'a> VM<'a> {
         match opcode {
             OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor
             | OpCode::BitNot | OpCode::Shl | OpCode::Shr
-            | OpCode::InPlaceBitOr | OpCode::InPlaceBitAnd | OpCode::InPlaceBitXor => self.handle_bitwise(opcode, chunk, slots)?,
+            | OpCode::InPlaceBitOr | OpCode::InPlaceBitAnd | OpCode::InPlaceBitXor => self.handle_bitwise(opcode, operand, chunk, slots)?,
+            OpCode::MatMul => self.handle_matmul(operand, chunk, slots)?,
+            OpCode::MakeTypeAlias => {
+                let value = self.pop()?;
+                let name = chunk.names.get(operand as usize).ok_or(cold_runtime("MakeTypeAlias: bad name index"))?.clone();
+                let alias = self.heap.alloc(HeapObj::TypeAlias(name, value))?;
+                self.push(alias);
+            }
+            OpCode::MakeTypeVar => {
+                let name = chunk.names.get(operand as usize).ok_or(cold_runtime("MakeTypeVar: bad name index"))?.clone();
+                let v = self.heap.alloc(HeapObj::TypeVar(name))?;
+                self.push(v);
+            }
             OpCode::In | OpCode::NotIn | OpCode::Is | OpCode::IsNot => self.handle_identity(opcode, chunk, slots)?,
 
             OpCode::BuildList | OpCode::BuildTuple | OpCode::BuildDict
@@ -686,6 +708,12 @@ impl<'a> VM<'a> {
                 let v = self.pop()?;
                 let is_seq = v.is_heap() && matches!(self.heap.get(v), HeapObj::List(_) | HeapObj::Tuple(_));
                 self.push(Val::bool(is_seq));
+            }
+            OpCode::MatchClass => self.match_class(operand as usize, chunk, slots)?,
+            OpCode::MatchMap => {
+                let v = self.pop()?;
+                let is_map = v.is_heap() && matches!(self.heap.get(v), HeapObj::Dict(_));
+                self.push(Val::bool(is_map));
             }
             OpCode::Dup2 => {
                 let b = self.pop()?; let a = self.pop()?;
@@ -876,7 +904,7 @@ impl<'a> VM<'a> {
     /* Heavy arms extracted out of `dispatch` so wasm-opt can dedup prologues and the dispatcher itself stays compact. */
 
     #[inline(never)]
-    fn exec_arith_or_compare(&mut self, opcode: OpCode, rip: usize, cache: &mut OpcodeCache, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+    fn exec_arith_or_compare(&mut self, opcode: OpCode, operand: u16, rip: usize, cache: &mut OpcodeCache, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         // Scalar IC fast-path (Div/Pow/Minus skip, Float-only / overflow-prone).
         if !matches!(opcode, OpCode::Div | OpCode::Pow | OpCode::Minus | OpCode::Pos)
             && let Some(fast) = cache.get_fast(rip)
@@ -898,7 +926,7 @@ impl<'a> VM<'a> {
         if matches!(opcode, OpCode::Eq | OpCode::Lt | OpCode::NotEq | OpCode::Gt | OpCode::LtEq | OpCode::GtEq) {
             self.handle_compare(opcode, rip, cache, chunk, slots)
         } else {
-            self.handle_arith(opcode, rip, cache, chunk, slots)
+            self.handle_arith(opcode, operand, rip, cache, chunk, slots)
         }
     }
 
@@ -988,7 +1016,7 @@ impl<'a> VM<'a> {
 
     /* The pre-registered value for a genuine builtin name, None for user names, so deleted user bindings stay deleted. */
     fn builtin_binding(&self, bare: &str) -> Option<Val> {
-        if NativeFnId::from_name(bare).is_none() && !crate::parser::BUILTIN_TYPES.contains(&bare) {
+        if NativeFnId::from_name(bare).is_none() && crate::parser::builtin_type(bare).is_none() {
             return None;
         }
         self.global(bare)

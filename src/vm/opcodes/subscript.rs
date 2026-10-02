@@ -3,9 +3,31 @@ use alloc::{rc::Rc, string::{String, ToString}, vec::Vec};
 
 use super::super::VM;
 use super::super::types::*;
+use crate::vm::eq::range_len;
+use crate::vm::globals::sequence::range_int;
 
 fn normalize_index(i: i64, len: usize) -> usize {
     (if i < 0 { len as i64 + i } else { i }) as usize
+}
+
+/* Slice bounds clamped to a sequence of `len` items, the triple `slice.indices(len)` returns. */
+pub(crate) fn slice_bounds(start: Val, stop: Val, step: Val, len: i64) -> Result<(i64, i64, i64), VmErr> {
+    let st = if step.is_none() { 1 } else if step.is_int() { step.as_int() } else {
+        return Err(cold_type("slice step must be an integer"));
+    };
+    if st == 0 { return Err(cold_value("slice step cannot be zero")); }
+    let clamp = |v: Val, def: i64| -> i64 {
+        if v.is_none() { def }
+        else if v.is_int() { let i = v.as_int(); if i < 0 { (len+i).max(0) } else { i.min(len) } }
+        else { def }
+    };
+    // Negative step bounds at [-1, len-1], an underflowing index floors at -1, not 0.
+    let clamp_neg = |v: Val, def: i64| -> i64 {
+        if v.is_none() { def }
+        else if v.is_int() { let i = v.as_int(); (if i < 0 { len + i } else { i }).clamp(-1, len - 1) }
+        else { def }
+    };
+    Ok(if st > 0 { (clamp(start, 0), clamp(stop, len), st) } else { (clamp_neg(start, len - 1), clamp_neg(stop, -1), st) })
 }
 
 impl<'a> VM<'a> {
@@ -23,11 +45,33 @@ impl<'a> VM<'a> {
         }
 
         let idx = self.coerce_index(obj, idx, chunk, slots)?;
-        self.get_item_builtin(obj, idx)
+        match self.get_item_builtin(obj, idx) {
+            Err(e) if obj.is_heap() && matches!(self.heap.get(obj), HeapObj::Class(..)) => self.class_getitem(obj, idx, e, chunk, slots),
+            r => r,
+        }
+    }
+
+    /* `A[int]` on a class calls its `__class_getitem__`, a class with type parameters builds a generic alias. */
+    fn class_getitem(&mut self, cls: Val, idx: Val, err: VmErr, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<bool, VmErr> {
+        if let Some((f, _)) = self.lookup_class_member(cls, "__class_getitem__") {
+            // An implicit classmethod, decorated or not.
+            let f = match self.heap.try_get(f) { Some(&HeapObj::ClassMethod(inner)) => inner, _ => f };
+            self.push(f);
+            self.push(cls);
+            self.push(idx);
+            self.exec_call(2, chunk, slots)?;
+            return Ok(false);
+        }
+        if self.lookup_class_member(cls, "__type_params__").is_none() { return Err(err); }
+        let alias = self.generic_alias(cls, idx)?;
+        self.push(alias);
+        Ok(false)
     }
 
     /* Instance indexes coerce via `__index__`, including slice bounds. Dict keys never coerce, they look up by hash and eq. */
     fn coerce_index(&mut self, cont: Val, idx: Val, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<Val, VmErr> {
+        // `xs[True]` indexes like `xs[1]`, a dict keeps the bool key.
+        if idx.is_bool() && !(cont.is_heap() && matches!(self.heap.get(cont), HeapObj::Dict(_))) { return Ok(Val::int(idx.as_bool() as i64)); }
         if !idx.is_heap() { return Ok(idx); }
         if cont.is_heap() && matches!(self.heap.get(cont), HeapObj::Dict(_)) { return Ok(idx); }
         match self.heap.get(idx).clone() {
@@ -112,10 +156,6 @@ impl<'a> VM<'a> {
 
     fn slice_val(&mut self, obj: Val, start: Val, stop: Val, step: Val) -> Result<Val, VmErr> {
         if !obj.is_heap() { return Err(cold_type("slice requires a sequence")); }
-        let st = if step.is_none() { 1 } else if step.is_int() { step.as_int() } else {
-            return Err(cold_type("slice step must be an integer"));
-        };
-        if st == 0 { return Err(cold_value("slice step cannot be zero")); }
 
         // Item count without materialising the source.
         let ascii = self.heap.str_is_ascii(obj);
@@ -124,26 +164,16 @@ impl<'a> VM<'a> {
             HeapObj::Tuple(v) => v.len() as i64,
             HeapObj::Str(s) => if ascii { s.len() as i64 } else { s.chars().count() as i64 },
             HeapObj::Bytes(b) => b.len() as i64,
+            // A range slices into another range.
+            &HeapObj::Range(rs, re, rst) => {
+                let (a, b, c) = slice_bounds(start, stop, step, range_len(rs, re, rst) as i64)?;
+                let at = |k: i64| i64::try_from(rs as i128 + k as i128 * rst as i128).map_err(|_| cold_overflow());
+                let r = HeapObj::Range(at(a)?, at(b)?, rst.checked_mul(c).ok_or(cold_overflow())?);
+                return self.heap.alloc(r);
+            }
             _ => return Err(cold_type("object is not sliceable")),
         };
-
-        let clamp = |v: Val, def: i64| -> i64 {
-            if v.is_none() { def }
-            else if v.is_int() { let i = v.as_int(); if i < 0 { (len+i).max(0) } else { i.min(len) } }
-            else { def }
-        };
-
-        // Negative step bounds at [-1, len-1], an underflowing index floors at -1, not 0.
-        let clamp_neg = |v: Val, def: i64| -> i64 {
-            if v.is_none() { def }
-            else if v.is_int() { let i = v.as_int(); (if i < 0 { len + i } else { i }).clamp(-1, len - 1) }
-            else { def }
-        };
-        let (s, e) = if st > 0 {
-            (clamp(start, 0), clamp(stop, len))
-        } else {
-            (clamp_neg(start, len - 1), clamp_neg(stop, -1))
-        };
+        let (s, e, st) = slice_bounds(start, stop, step, len)?;
 
         // Step 1 copies one contiguous range.
         let contiguous = st == 1;
@@ -185,7 +215,7 @@ impl<'a> VM<'a> {
         }
     }
 
-    pub fn getitem_val(&self, obj: Val, idx: Val) -> Result<Val, VmErr> {
+    pub fn getitem_val(&mut self, obj: Val, idx: Val) -> Result<Val, VmErr> {
         if !obj.is_heap() { return Err(cold_type("object is not subscriptable")); }
         match self.heap.get(obj) {
             HeapObj::List(v) => {
@@ -207,8 +237,24 @@ impl<'a> VM<'a> {
                     None => { self.require_hashable(idx)?; Err(VmErr::Raised(crate::s!("KeyError: ", str &self.repr(idx)))) }
                 }
             }
+            // `range(n)[i]` is computed, never materialised.
+            &HeapObj::Range(s, e, st) => {
+                if !idx.is_int() { return Err(cold_type("range indices must be integers")); }
+                let (i, len) = (idx.as_int(), range_len(s, e, st) as i64);
+                let i = if i < 0 { i + len } else { i };
+                if !(0..len).contains(&i) { return Err(cold_index("range object index out of range")); }
+                range_int(&mut self.heap, s + i * st)
+            }
+            // `list[int]` and `Pair[int]` build a generic alias, the args kept as one tuple.
+            HeapObj::Type(n) if matches!(n.as_str(), "list" | "tuple" | "dict" | "set" | "frozenset" | "type") => self.generic_alias(obj, idx),
+            HeapObj::TypeAlias(..) => self.generic_alias(obj, idx),
             _ => Err(cold_type("object is not subscriptable")),
         }
+    }
+
+    fn generic_alias(&mut self, origin: Val, idx: Val) -> Result<Val, VmErr> {
+        let args = if idx.is_heap() && matches!(self.heap.get(idx), HeapObj::Tuple(_)) { idx } else { self.heap.alloc(HeapObj::Tuple(alloc::vec![idx]))? };
+        self.heap.alloc(HeapObj::GenericAlias(origin, args))
     }
 
     /* Reject mutable types (list/dict/set) used as dict/set keys, plus instances that override `__eq__` without `__hash__`. */

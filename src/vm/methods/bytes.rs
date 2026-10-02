@@ -15,7 +15,7 @@ pub fn decode(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     };
     let text = match errors.as_str() {
         "strict" => alloc::string::String::from_utf8(buf)
-            .map_err(|_| cold_value("invalid UTF-8 in bytes.decode()"))?,
+            .map_err(|_| VmErr::Raised("UnicodeDecodeError: invalid UTF-8 in bytes.decode()".into()))?,
         "ignore" => decode_recover(&buf, false),
         "replace" => decode_recover(&buf, true),
         _ => return Err(cold_value("unknown error handler (expected 'strict', 'ignore', or 'replace')")),

@@ -10,41 +10,31 @@ pub mod io;
 pub mod numeric;
 pub mod sequence;
 
-/* Parent map for built-in exception types, walked by `matches_exc_class`. Only the standard tree is encoded, user classes stay flat. */
-const EXC_PARENTS: &[(&str, &str)] = &[
-    ("RuntimeError", "Exception"),
-    ("ValueError", "Exception"),
-    ("TypeError", "Exception"),
-    ("KeyError", "LookupError"),
-    ("IndexError", "LookupError"),
-    ("LookupError", "Exception"),
-    ("AttributeError", "Exception"),
-    ("ZeroDivisionError", "ArithmeticError"),
-    ("OverflowError", "ArithmeticError"),
-    ("ArithmeticError", "Exception"),
-    ("OSError", "Exception"),
-    ("PermissionError", "OSError"),
-    ("NameError", "Exception"),
-    ("StopIteration", "Exception"),
-    ("StopAsyncIteration", "Exception"),
-    ("AssertionError", "Exception"),
-    // `SystemExit` sits under `BaseException`, so `except Exception` does not swallow it.
-    ("SystemExit", "BaseException"),
-    ("NotImplementedError", "RuntimeError"),
-    ("RecursionError", "RuntimeError"),
-    ("MemoryError", "Exception"),
-    ("TimeoutError", "Exception"),
-    // Under `BaseException` so no `except Exception` or bare `except` can swallow a cancellation.
-    ("CancelledError", "BaseException"),
-    ("Exception", "BaseException"),
-];
+/* Parent of a built-in exception type, walked by `matches_exc_class`. Only the standard tree is encoded, user classes stay flat. */
+fn exc_parent(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "ValueError" | "TypeError" | "RuntimeError" | "LookupError" | "AttributeError" | "ArithmeticError"
+        | "OSError" | "NameError" | "StopIteration" | "StopAsyncIteration" | "AssertionError" | "MemoryError"
+        | "TimeoutError" | "ImportError" => "Exception",
+        "KeyError" | "IndexError" => "LookupError",
+        "ZeroDivisionError" | "OverflowError" => "ArithmeticError",
+        "PermissionError" => "OSError",
+        "NotImplementedError" | "RecursionError" => "RuntimeError",
+        "UnicodeError" => "ValueError",
+        "UnicodeEncodeError" | "UnicodeDecodeError" => "UnicodeError",
+        "ModuleNotFoundError" => "ImportError",
+        // `SystemExit` and `CancelledError` sit under `BaseException`, so `except Exception` swallows neither.
+        "SystemExit" | "CancelledError" | "Exception" => "BaseException",
+        _ => return None,
+    })
+}
 
 pub(in crate::vm) fn matches_exc_class(actual: &str, expected: &str) -> bool {
     let mut cur = actual;
     loop {
         if cur == expected { return true; }
-        match EXC_PARENTS.iter().find(|(c, _)| *c == cur) {
-            Some(&(_, p)) => cur = p,
+        match exc_parent(cur) {
+            Some(p) => cur = p,
             None => return false,
         }
     }

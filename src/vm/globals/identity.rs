@@ -99,9 +99,11 @@ impl<'a> VM<'a> {
         // instance dispatch, user `__hash__` wins, `__eq__` without `__hash__` makes the instance unhashable.
         if o.is_heap() && let HeapObj::Instance(cls, _) = self.heap.get(o) {
             let cls = *cls;
-            let has_hash = self.lookup_class_member(cls, "__hash__").is_some();
+            let hash_fn = self.lookup_class_member(cls, "__hash__").map(|(f, _)| f);
             let has_eq = self.lookup_class_member(cls, "__eq__").is_some();
-            if has_hash {
+            // `__hash__ = object.__hash__` keeps the identity hash below.
+            let inherited = hash_fn.is_some_and(|f| f.is_heap() && matches!(self.heap.get(f), HeapObj::BoundMethod(_, id) if id.name() == "__hash__"));
+            if hash_fn.is_some() && !inherited {
                 let r = self.try_call_dunder(o, "__hash__", &[], chunk, slots)?
                     .ok_or_else(|| cold_type("__hash__ returned NotImplemented"))?;
                 if !r.is_int() {
@@ -110,7 +112,7 @@ impl<'a> VM<'a> {
                 self.push(Val::int(r.as_int() & Val::INT_MAX));
                 return Ok(());
             }
-            if has_eq {
+            if hash_fn.is_none() && has_eq {
                 return Err(cold_type("unhashable type: instance defines __eq__ without __hash__"));
             }
             // Default fallback, pointer identity, mirroring Python's `object.__hash__`.
@@ -148,6 +150,7 @@ impl<'a> VM<'a> {
                 HeapObj::Str(s) => s.hash(&mut h),
                 HeapObj::Bytes(b) => b.hash(&mut h),
                 HeapObj::Tuple(items) => { for v in items { v.0.hash(&mut h); } }
+                HeapObj::GenericAlias(..) | HeapObj::Union(_) => crate::vm::eq::hash_val_with_heap(o, &self.heap).hash(&mut h),
                 _ => o.0.hash(&mut h),
             }
         }
@@ -218,6 +221,8 @@ impl<'a> VM<'a> {
     /* Shared `isinstance`/`issubclass` classinfo dispatch, a tuple matches if any member does, else a single check. `single` already emits the correct TypeError for non-heap / wrong-variant args. */
     fn check_classinfo<F>(&self, arg2: Val, single: F) -> Result<bool, VmErr>
     where F: Fn(Val, &HeapPool) -> Result<bool, VmErr> {
+        // `int | str` checks like the tuple of its members.
+        let arg2 = match self.heap.try_get(arg2) { Some(&HeapObj::Union(args)) => args, _ => arg2 };
         let result = if arg2.is_heap() && let HeapObj::Tuple(items) = self.heap.get(arg2) {
             // Propagate TypeError from a non-class member instead of silently ignoring it.
             let items: Vec<Val> = items.clone();

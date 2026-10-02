@@ -217,12 +217,12 @@ impl<'a> VM<'a> {
                 let exc = self.pop()?;
                 // Stash the Val for `except as e` binding, with non-Exc values using `display()`.
                 self.pending.exc_val = None;
-                // Extract owned (class name, first arg) so display() can run after the heap borrow ends.
+                // Extract owned (class name, instance with args) so display() can run after the heap borrow ends.
                 let info: Option<(alloc::string::String, Option<Val>)> = if exc.is_heap() {
                     match self.heap.get(exc) {
                         HeapObj::ExcInstance(n, args) => {
                             self.pending.exc_val = Some(exc);
-                            Some((n.clone(), args.first().copied()))
+                            Some((n.clone(), (!args.is_empty()).then_some(exc)))
                         }
                         HeapObj::Type(n) => {
                             // Bare `raise X` builds an empty ExcInstance so `e.args` is `()`.
@@ -237,7 +237,7 @@ impl<'a> VM<'a> {
                 } else {
                     None
                 };
-                // Append the first arg so an uncaught traceback reads "Class: message".
+                // Append the str of the instance so an uncaught traceback reads "Class: message".
                 let msg = match info {
                     Some((n, Some(arg))) => { let detail = self.display(arg); crate::s!(str &n, ": ", str &detail) }
                     Some((n, None)) => n,

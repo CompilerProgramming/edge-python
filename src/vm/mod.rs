@@ -19,7 +19,7 @@ mod helpers;
 mod init;
 
 use crate::s;
-use crate::parser::{SSAChunk, BUILTIN_TYPES};
+use crate::parser::{SSAChunk, builtin_type};
 use crate::util::hash::FxHashMap as HashMap;
 
 pub use types::{Val, HeapObj, HeapPool, VmErr, Limits};
@@ -460,7 +460,13 @@ impl<'a> VM<'a> {
     pub(crate) fn register_builtin(&mut self, bare: &str) {
         if self.builtins.contains_key(bare) { return; }
         // Type names stay Type objects even when a NativeFn shares them.
-        let (name, obj) = if let Some(&name) = BUILTIN_TYPES.iter().find(|&&t| t == bare) {
+        let (name, obj) = if let Some(name) = builtin_type(bare) {
+            // `IOError` is the `OSError` class under a second name.
+            if name == "IOError" {
+                self.register_builtin("OSError");
+                if let Some(&v) = self.builtins.get("OSError") { self.builtins.insert(name, v); }
+                return;
+            }
             (name, HeapObj::Type(name.to_string()))
         } else if let Some(id) = NativeFnId::from_name(bare) {
             (id.name(), HeapObj::NativeFn(id))

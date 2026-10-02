@@ -9,6 +9,7 @@ pub(crate) fn binary_dunder_names(op: OpCode) -> Option<(&'static str, &'static 
         OpCode::Mul => ("__mul__", "__rmul__"),
         OpCode::Div => ("__truediv__", "__rtruediv__"),
         OpCode::FloorDiv => ("__floordiv__", "__rfloordiv__"),
+        OpCode::MatMul => ("__matmul__", "__rmatmul__"),
         OpCode::Mod => ("__mod__", "__rmod__"),
         OpCode::Pow => ("__pow__", "__rpow__"),
         OpCode::BitAnd => ("__and__", "__rand__"),
@@ -16,6 +17,18 @@ pub(crate) fn binary_dunder_names(op: OpCode) -> Option<(&'static str, &'static 
         OpCode::BitXor => ("__xor__", "__rxor__"),
         OpCode::Shl => ("__lshift__", "__rlshift__"),
         OpCode::Shr => ("__rshift__", "__rrshift__"),
+        _ => return None,
+    })
+}
+
+/* The in-place dunder `a op= b` asks before the binary pair. */
+pub(crate) fn inplace_dunder_name(op: OpCode) -> Option<&'static str> {
+    Some(match op {
+        OpCode::Add => "__iadd__", OpCode::Sub => "__isub__", OpCode::Mul => "__imul__",
+        OpCode::Div => "__itruediv__", OpCode::FloorDiv => "__ifloordiv__", OpCode::Mod => "__imod__",
+        OpCode::Pow => "__ipow__", OpCode::MatMul => "__imatmul__", OpCode::BitAnd => "__iand__",
+        OpCode::BitOr => "__ior__", OpCode::BitXor => "__ixor__", OpCode::Shl => "__ilshift__",
+        OpCode::Shr => "__irshift__",
         _ => return None,
     })
 }
@@ -85,10 +98,20 @@ impl<'a> VM<'a> {
     }
 
     /* Binary arithmetic dunder dispatch with Python's subclass-first ordering, if `type(b)` is a strict subclass of `type(a)` the reflected op runs first so overrides win. */
-    pub(crate) fn try_binary_dunder(&mut self, op: OpCode, a: Val, b: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<Option<Val>, VmErr> {
+    pub(crate) fn try_binary_dunder(&mut self, op: OpCode, a: Val, b: Val, inplace: bool, chunk: &SSAChunk, slots: &mut [Val]) -> Result<Option<Val>, VmErr> {
         if self.instance_class(a).is_none() && self.instance_class(b).is_none() { return Ok(None); }
+        if inplace && let Some(name) = inplace_dunder_name(op)
+            && let Some(r) = self.try_call_dunder(a, name, &[b], chunk, slots)? {
+            return Ok(Some(r));
+        }
         let Some((lname, rname)) = binary_dunder_names(op) else { return Ok(None); };
         self.dispatch_reflected(a, b, lname, rname, chunk, slots)
+    }
+
+    /* The dunder an arithmetic site settles on for the IC, `__iop__` when the class of `a` defines it at an in-place site. */
+    pub(crate) fn site_dunder_name(&self, op: OpCode, a: Val, inplace: bool) -> Option<&'static str> {
+        let defines = |n: &&str| self.instance_class(a).is_some_and(|c| self.lookup_class_member(c, n).is_some());
+        inplace_dunder_name(op).filter(|n| inplace && defines(n)).or_else(|| binary_dunder_names(op).map(|(l, _)| l))
     }
 
     /* Comparison dunder dispatch. `__eq__` reflects to itself. `__ne__` falls back to `not __eq__`. `<` reflects to `>` and vice-versa. */

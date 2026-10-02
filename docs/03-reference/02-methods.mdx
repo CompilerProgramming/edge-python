@@ -193,7 +193,7 @@ x-y-x
 
 ### Encoding
 
-`s.encode([encoding])` returns bytes. The encodings are `"utf-8"` (the default), `"utf8"`, and `"ascii"`. ASCII raises `ValueError` on non-ASCII input, and any other encoding name raises `ValueError`.
+`s.encode([encoding])` returns bytes. The encodings are `"utf-8"` (the default), `"utf8"`, and `"ascii"`. ASCII raises `UnicodeEncodeError`, a `ValueError`, on non-ASCII input, and any other encoding name raises `ValueError`.
 
 ```edge-python
 print("café".encode())
@@ -207,7 +207,7 @@ b'hi'
 
 ## Bytes methods
 
-`decode([encoding[, errors]])` returns a string. The encodings match `str.encode`. The `errors` handler is `"strict"` (the default, raises `ValueError` on invalid UTF-8), `"ignore"` (drops bad bytes), or `"replace"` (substitutes U+FFFD).
+`decode([encoding[, errors]])` returns a string. The encodings match `str.encode`. The `errors` handler is `"strict"` (the default, raises `UnicodeDecodeError`, a `ValueError`, on invalid UTF-8), `"ignore"` (drops bad bytes), or `"replace"` (substitutes U+FFFD).
 
 `hex()` returns lowercase hex with no separator option. `startswith` and `endswith` take a single bytes value, no tuple form. `find` returns a byte offset or `-1`, and `index` raises `ValueError` on a miss. `count` counts non-overlapping occurrences. `replace(old, new)` has no count cap. `split(sep)` requires an explicit separator. `lower` and `upper` case-fold ASCII bytes only. `strip`, `lstrip`, `rstrip` trim ASCII whitespace or any byte in the optional argument. `join` concatenates an iterable of bytes. `bytes.fromhex(s)` parses a hex string, ignoring whitespace.
 

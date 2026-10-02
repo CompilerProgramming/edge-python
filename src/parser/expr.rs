@@ -20,7 +20,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
     /* Ternary, value was emitted first (single-pass), so reorder `[value][cond]` into `[cond][JumpIfFalse][value][Jump][else]` for Python evaluation order. */
     pub(super) fn ternary_tail(&mut self, val_start: usize) {
-        if self.saw_newline || !matches!(self.peek(), Some(TokenType::If)) { return; }
+        if self.saw_newline || !matches!(self.peek_same_line(), Some(TokenType::If)) { return; }
         self.advance();
         let cond_start = self.chunk.instructions.len();
         self.expr_bp(0);
@@ -88,8 +88,9 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         self.expr_depth -= 1;
     }
 
+    // An operator never continues past the logical line, so `@deco` on the next line stays a decorator.
     pub(super) fn infix_bp(&mut self, min_bp: u8) {
-        while let Some(tok) = self.peek() {
+        while let Some(tok) = self.peek_same_line() {
             if tok == TokenType::Is {
                 if 7 < min_bp { break; }
                 self.advance();
@@ -127,7 +128,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             self.expr_bp(r_bp);
 
             if matches!(op, OpCode::Eq | OpCode::NotEq | OpCode::Lt | OpCode::Gt | OpCode::LtEq | OpCode::GtEq)
-                && let Some(next_tok) = self.peek()
+                && let Some(next_tok) = self.peek_same_line()
                 && matches!(next_tok, TokenType::Less | TokenType::Greater | TokenType::LessEqual | TokenType::GreaterEqual | TokenType::EqEqual | TokenType::NotEqual)
             {
                 let ver = self.increment_version(super::SSA_TMP_CMP);
@@ -168,6 +169,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             TokenType::Slash => Some((19, 20, OpCode::Div)),
             TokenType::Percent => Some((19, 20, OpCode::Mod)),
             TokenType::DoubleSlash => Some((19, 20, OpCode::FloorDiv)),
+            TokenType::At => Some((19, 20, OpCode::MatMul)),
             TokenType::DoubleStar => Some((22, 21, OpCode::Pow)),
             _ => None,
         }
@@ -210,7 +212,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             TokenType::Bytes => {
                 // Adjacent bytes literals concat, mixing with str surfaces a diagnostic.
                 let mut buf = parse_bytes_literal(self.lexeme(&t));
-                while matches!(self.peek(), Some(TokenType::Bytes)) {
+                while matches!(self.peek_same_line(), Some(TokenType::Bytes)) {
                     let t = self.advance();
                     buf.extend_from_slice(&parse_bytes_literal(self.lexeme(&t)));
                 }
@@ -231,19 +233,15 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                     self.chunk.emit(OpCode::BuildTuple, 0);
                 } else {
                     let elem_start = self.chunk.instructions.len();
-                    self.expr();
-                    if self.maybe_comprehension(elem_start, OpCode::BuildList, OpCode::ListAppend) {
+                    // A leading `*it` starts a tuple, never a comprehension.
+                    let star = matches!(self.peek(), Some(TokenType::Star));
+                    if !star { self.expr(); }
+                    if !star && self.maybe_comprehension(elem_start, OpCode::BuildList, OpCode::ListAppend) {
                         self.advance();
-                    } else if self.eat_if(TokenType::Comma) {
-                        let mut count = 1u16;
-                        while !matches!(self.peek(), Some(TokenType::Rpar) | None) {
-                            self.expr();
-                            count += 1;
-                            if !self.eat_if(TokenType::Comma) { break; }
-                        }
-                        self.eat(TokenType::Rpar);
-                        self.chunk.emit(OpCode::BuildTuple, count);
                     } else {
+                        if star || matches!(self.peek(), Some(TokenType::Comma)) {
+                            self.tuple_rest(!star as u16, |s| matches!(s.peek(), Some(TokenType::Rpar) | None));
+                        }
                         self.eat(TokenType::Rpar);
                     }
                 }
@@ -279,7 +277,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 parts += self.fstring(tok.start, tok.end);
                 fstrings += 1;
             }
-            match self.peek() {
+            match self.peek_same_line() {
                 Some(TokenType::String | TokenType::FstringStart) => tok = self.advance(),
                 _ => break,
             }
@@ -303,7 +301,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     /* Name, assignment, walrus `:=`, call, or plain load. */
     pub(super) fn name(&mut self, t: Token) {
         let name = self.lexeme(&t).to_string();
-        match self.peek() {
+        match self.peek_same_line() {
             // In f-string context, `=` is the debug marker `f"{x=}"`, not assignment.
             Some(TokenType::Equal) if !self.in_fstring_expr && !self.in_target_list => {
                 self.assign(name.clone());
@@ -375,34 +373,44 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         }
     }
 
-    /* Subscript after `[` is a plain index or `a:b:c` slice with None defaults. Eats the closing `]`, emits BuildSlice for slices. Returns true when a slice was built. */
+    /* Subscript after `[`, comma-separated items build one tuple key. Eats the closing `]`, returns true for a lone slice. */
     pub(super) fn parse_subscript(&mut self) -> bool {
+        let slice = self.subscript_item();
+        if !matches!(self.peek(), Some(TokenType::Comma)) {
+            self.eat(TokenType::Rsqb);
+            return slice;
+        }
+        let mut n = 1u16;
+        while self.eat_if(TokenType::Comma) && !matches!(self.peek(), Some(TokenType::Rsqb)) {
+            self.subscript_item();
+            n += 1;
+        }
+        self.eat(TokenType::Rsqb);
+        self.chunk.emit(OpCode::BuildTuple, n);
+        false
+    }
+
+    /* One index or `a:b:c` slice with None defaults, emits BuildSlice and returns true for a slice. */
+    #[inline]
+    fn subscript_item(&mut self) -> bool {
         if matches!(self.peek(), Some(TokenType::Colon)) {
             self.chunk.emit(OpCode::LoadNone, 0);
         } else {
             self.expr();
         }
-        if self.eat_if(TokenType::Colon) {
-            let mut parts = 2u16;
-            if matches!(self.peek(), Some(TokenType::Colon | TokenType::Rsqb)) {
-                self.chunk.emit(OpCode::LoadNone, 0);
-            } else {
-                self.expr();
-            }
-            if self.eat_if(TokenType::Colon) {
-                parts = 3;
-                if matches!(self.peek(), Some(TokenType::Rsqb)) {
-                    self.chunk.emit(OpCode::LoadNone, 0);
-                } else {
-                    self.expr();
-                }
-            }
-            self.eat(TokenType::Rsqb);
-            self.chunk.emit(OpCode::BuildSlice, parts);
-            true
+        if !self.eat_if(TokenType::Colon) { return false; }
+        self.slice_bound();
+        let parts = if self.eat_if(TokenType::Colon) { self.slice_bound(); 3 } else { 2 };
+        self.chunk.emit(OpCode::BuildSlice, parts);
+        true
+    }
+
+    // An omitted bound loads None.
+    fn slice_bound(&mut self) {
+        if matches!(self.peek(), Some(TokenType::Colon | TokenType::Comma | TokenType::Rsqb)) {
+            self.chunk.emit(OpCode::LoadNone, 0);
         } else {
-            self.eat(TokenType::Rsqb);
-            false
+            self.expr();
         }
     }
 
@@ -414,14 +422,14 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                     self.advance();
                     self.parse_subscript();
                     // Subscript assignment, StoreItem, for slices runtime replaces the range.
-                    if !self.in_target_list && matches!(self.peek(), Some(TokenType::Equal)) {
+                    if !self.in_target_list && matches!(self.peek_same_line(), Some(TokenType::Equal)) {
                         self.advance();
                         self.expr();
                         self.chunk.emit(OpCode::StoreItem, 0);
                         self.chunk.emit(OpCode::LoadNone, 0);
                         return;
                     }
-                    if let Some(op) = self.peek().and_then(|t| Self::augmented_op(&t)) {
+                    if let Some(op) = self.peek_same_line().and_then(|t| Self::augmented_op(&t)) {
                         self.emit_augmented_subscript(op);
                         self.chunk.emit(OpCode::LoadNone, 0);
                         return;
@@ -434,19 +442,19 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                     let (start, end) = (t.start, t.end);
                     let idx = self.chunk.push_name(&self.source[start..end]);
                     // Attribute assignment, StoreAttr, mirroring the subscript case. In f-strings `=` is the debug marker.
-                    if !self.in_fstring_expr && !self.in_target_list && matches!(self.peek(), Some(TokenType::Equal)) {
+                    if !self.in_fstring_expr && !self.in_target_list && matches!(self.peek_same_line(), Some(TokenType::Equal)) {
                         self.advance();
                         self.expr();
                         self.chunk.emit(OpCode::StoreAttr, idx);
                         self.chunk.emit(OpCode::LoadNone, 0);
                         return;
                     }
-                    if let Some(op) = self.peek().and_then(|t| Self::augmented_op(&t)) {
+                    if let Some(op) = self.peek_same_line().and_then(|t| Self::augmented_op(&t)) {
                         self.advance();
                         self.chunk.emit(OpCode::Dup, 0);
                         self.chunk.emit(OpCode::LoadAttr, idx);
                         self.expr();
-                        self.chunk.emit(op, 0);
+                        self.emit_inplace(op);
                         self.chunk.emit(OpCode::StoreAttr, idx);
                         self.chunk.emit(OpCode::LoadNone, 0);
                         return;

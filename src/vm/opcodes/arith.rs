@@ -3,11 +3,6 @@ use super::*;
 use cache::OpcodeCache;
 use value_ops::cached_binop;
 
-/* IC keeps the forward dunder name only, reflected ops are handled by the slow path's `NotImplemented` deopt. */
-fn binary_dunder_name(op: OpCode) -> Option<&'static str> {
-    super::dunder::binary_dunder_names(op).map(|(l, _)| l)
-}
-
 /* IC, same for comparison opcodes, reflected pairs collapse to the forward name. */
 fn compare_dunder_name(op: OpCode) -> Option<&'static str> {
     super::dunder::compare_dunder_names(op).map(|(l, _)| l)
@@ -16,7 +11,7 @@ fn compare_dunder_name(op: OpCode) -> Option<&'static str> {
 impl<'a> VM<'a> {
 
     /* Add/Sub/Mul/Div with IC, Mod/Pow/FloorDiv on i128 with overflow trap, Minus is unary. */
-    pub(crate) fn handle_arith(&mut self, op: OpCode, rip: usize, cache: &mut OpcodeCache, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+    pub(crate) fn handle_arith(&mut self, op: OpCode, operand: u16, rip: usize, cache: &mut OpcodeCache, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         if op == OpCode::Minus {
             // -i128::MIN overflows, everything else fits.
             return self.exec_unary(rip, cache, chunk, slots, "__neg__", |v| Val::float(-v.as_float()), i128::checked_neg, "unary - requires a number");
@@ -27,6 +22,7 @@ impl<'a> VM<'a> {
         }
 
         let (a, b) = self.pop2()?;
+        let inplace = matches!(op, OpCode::InPlaceAdd | OpCode::InPlaceSub) || operand == crate::parser::INPLACE;
 
         // `name += rhs` extends a left list in place with any iterable (Python __iadd__). Other types behave as Add.
         let op = if op == OpCode::InPlaceAdd {
@@ -54,13 +50,13 @@ impl<'a> VM<'a> {
         let roots = self.temp_roots.len();
         self.temp_roots.push(a);
         self.temp_roots.push(b);
-        let dunder = self.try_binary_dunder(op, a, b, chunk, slots);
+        let dunder = self.try_binary_dunder(op, a, b, inplace, chunk, slots);
         self.temp_roots.truncate(roots);
 
         // instance dunder protocol, try user-defined operator before any builtin coercion.
         if let Some(r) = dunder? {
-            // record the resolved class+method so the IC can fire on subsequent iterations of a hot loop.
-            if let Some(name) = binary_dunder_name(op) {
+            // record the resolved class+method so the IC can fire on subsequent iterations of a hot loop. Reflected ops deopt through `NotImplemented`.
+            if let Some(name) = self.site_dunder_name(op, a, inplace) {
                 self.record_dunder_hit(rip, cache, a, name, 2);
             }
             self.push(r);
@@ -259,7 +255,7 @@ impl<'a> VM<'a> {
     }
 
     /* i128 bitwise + Shl/Shr (overflow trap), BitNot unary. Set/Set on |/&/^ means union/intersection/symmetric-diff, other types use the bitwise path. */
-    pub(crate) fn handle_bitwise(&mut self, op: OpCode, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+    pub(crate) fn handle_bitwise(&mut self, op: OpCode, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         // Augmented set bitwise reuses the plain path but mutates the left set in place.
         let inplace = matches!(op, OpCode::InPlaceBitOr | OpCode::InPlaceBitAnd | OpCode::InPlaceBitXor);
         let op = match op {
@@ -286,7 +282,7 @@ impl<'a> VM<'a> {
         let roots = self.temp_roots.len();
         self.temp_roots.push(a);
         self.temp_roots.push(b);
-        let dunder = self.try_binary_dunder(op, a, b, chunk, slots);
+        let dunder = self.try_binary_dunder(op, a, b, inplace || operand == crate::parser::INPLACE, chunk, slots);
         self.temp_roots.truncate(roots);
         if let Some(r) = dunder? { self.push(r); return Ok(()); }
 
@@ -305,13 +301,56 @@ impl<'a> VM<'a> {
         }
         let result = match op {
             OpCode::BitAnd => self.bitwise_op(a, b, |x, y| x & y)?,
-            OpCode::BitOr => self.bitwise_op(a, b, |x, y| x | y)?,
+            OpCode::BitOr => match self.bitwise_op(a, b, |x, y| x | y) {
+                // `int | str` between types builds a union instead.
+                Err(e) => self.type_union(a, b)?.ok_or(e)?,
+                ok => ok?,
+            },
             OpCode::BitXor => self.bitwise_op(a, b, |x, y| x ^ y)?,
             OpCode::Shl => self.exec_shl(a, b)?,
             OpCode::Shr => self.exec_shr(a, b)?,
             _ => return Err(cold_runtime("non-bitwise opcode in handle_bitwise")),
         };
         self.push(result);
+        Ok(())
+    }
+
+    /* `int | str` flattened and deduplicated, a lone member stands alone, None when an operand is not a type. */
+    fn type_union(&mut self, a: Val, b: Val) -> Result<Option<Val>, VmErr> {
+        if a.is_none() && b.is_none() { return Ok(None); }
+        let mut members: Vec<Val> = Vec::new();
+        for v in [a, b] {
+            if v.is_none() {
+                self.register_builtin("NoneType");
+                members.push(self.global("NoneType").ok_or(cold_runtime("NoneType is not registered"))?);
+                continue;
+            }
+            if !v.is_heap() { return Ok(None); }
+            match self.heap.get(v) {
+                HeapObj::Union(args) => if let HeapObj::Tuple(t) = self.heap.get(*args) { members.extend_from_slice(t) },
+                HeapObj::Type(_) | HeapObj::Class(..) | HeapObj::GenericAlias(..) | HeapObj::TypeAlias(..) | HeapObj::TypeVar(_) => members.push(v),
+                _ => return Ok(None),
+            }
+        }
+        let mut unique: Vec<Val> = Vec::new();
+        for m in members {
+            if !unique.iter().any(|&u| eq_vals_with_heap(u, m, &self.heap)) { unique.push(m); }
+        }
+        if unique.len() == 1 { return Ok(Some(unique[0])); }
+        let args = self.heap.alloc(HeapObj::Tuple(unique))?;
+        Ok(Some(self.heap.alloc(HeapObj::Union(args))?))
+    }
+
+    /* `a @ b` has no builtin meaning, only `__matmul__` or `__rmatmul__` answer it. */
+    pub(crate) fn handle_matmul(&mut self, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        let (a, b) = self.pop2()?;
+        let roots = self.temp_roots.len();
+        self.temp_roots.push(a);
+        self.temp_roots.push(b);
+        let dunder = self.try_binary_dunder(OpCode::MatMul, a, b, operand == crate::parser::INPLACE, chunk, slots);
+        self.temp_roots.truncate(roots);
+        let r = dunder?.ok_or_else(|| VmErr::TypeMsg(crate::s!("unsupported operand type(s) for @: '", str self.type_name(a), "' and '", str self.type_name(b), "'")))?;
+        self.push(r);
         Ok(())
     }
 

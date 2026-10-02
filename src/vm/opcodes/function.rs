@@ -60,6 +60,23 @@ fn fused_native(op: OpCode) -> Option<super::super::types::NativeFnId> {
 impl<'a> VM<'a> {
     /* Dispatch every function-shaped opcode (Call, MakeFunction, builtins). */
     pub(crate) fn handle_function(&mut self, op: OpCode, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        // Only a fused builtin carries the spread flag, `Call` and the make-ops use the bit as a count.
+        if operand & crate::parser::SPREAD_ARGS != 0
+            && !matches!(op, OpCode::Call | OpCode::CallExtern | OpCode::MakeFunction | OpCode::MakeCoroutine) {
+            let operand = operand & !crate::parser::SPREAD_ARGS;
+            // Ops that fold the spread counts themselves stay fused, the rest run as a plain call.
+            let r = if matches!(op, OpCode::CallPrint | OpCode::CallMin | OpCode::CallMax | OpCode::CallEnumerate | OpCode::CallRange) {
+                self.handle_function(op, operand, chunk, slots)
+            } else {
+                self.call_spread_builtin(op, operand, chunk, slots)
+            };
+            // Close the spread frame the first spread opened.
+            if let Some((p, k)) = self.pending.delta_save.pop() {
+                self.pending.pos_delta = p;
+                self.pending.kw_delta = k;
+            }
+            return r;
+        }
         // A module-scope rebind of a builtin name must win over call sites fused before it existed. Plain fused operands are a bare count, so counts past one byte fall back to the native (they cannot round-trip through `exec_call`'s packing).
         let packed_operand = matches!(op, OpCode::CallPrint | OpCode::CallDict | OpCode::CallMin | OpCode::CallMax | OpCode::CallEnumerate);
         if self.builtins_rebound
@@ -261,6 +278,14 @@ impl<'a> VM<'a> {
         self.exec_call(operand, chunk, slots)
     }
 
+    /* A fused builtin given `*` or `**` runs as a plain call through its binding, which decodes the spread. */
+    fn call_spread_builtin(&mut self, op: OpCode, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        let name = fused_builtin_name(op).or((op == OpCode::CallSorted).then_some("sorted")).ok_or(cold_runtime("spread on an unknown fused call"))?;
+        self.register_builtin(name);
+        let callee = self.module_state.get(name).copied().filter(|v| !v.is_undef()).or_else(|| self.global(name)).ok_or_else(|| VmErr::Name(name.into()))?;
+        self.call_rebound(callee, operand, chunk, slots)
+    }
+
     /* The entry binds `bare` once and no class or module body binds it. */
     fn bound_once(&self, bare: &str) -> bool {
         let bound = |names: &crate::vm::NameVersionIndex| names.get(bare).map_or(0, |v| v.iter().filter(|(ver, _)| *ver >= 1).count());
@@ -457,6 +482,10 @@ impl<'a> VM<'a> {
 
     /* Dispatch non-Func callees. Returns Ok(true) when handled here, Ok(false) means the caller falls through to the Func path. */
     fn try_dispatch_non_func_callable(&mut self, callee: Val, positional: &[Val], kw_flat: &[Val], num_kw: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<bool, VmErr> {
+        // `list[int](xs)` builds what its origin builds.
+        if let &HeapObj::GenericAlias(origin, _) = self.heap.get(callee) {
+            return self.try_dispatch_non_func_callable(origin, positional, kw_flat, num_kw, chunk, slots);
+        }
         if let HeapObj::BoundMethod(recv, id) = self.heap.get(callee) {
             let recv = *recv;
             let id = *id;

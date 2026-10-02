@@ -315,7 +315,7 @@ print(len(range(100)))
 
 ### range
 
-`range(stop)`, `range(start, stop)`, or `range(start, stop, step)`. Lazy. A zero step raises `ValueError` and non-integer arguments raise `TypeError`. Two ranges compare equal when they produce the same sequence of values.
+`range(stop)`, `range(start, stop)`, or `range(start, stop, step)`. Lazy. Indexing and slicing compute without materialising, so `range(10)[2:8:2]` is `range(2, 8, 2)`. A zero step raises `ValueError` and non-integer arguments raise `TypeError`. Two ranges compare equal when they produce the same sequence of values.
 
 ```edge-python
 print(list(range(5)))
@@ -457,7 +457,7 @@ False
 
 ### slice
 
-`slice(stop)`, `slice(start, stop)`, or `slice(start, stop, step)` builds a reusable slice object usable as a sequence index.
+`slice(stop)`, `slice(start, stop)`, or `slice(start, stop, step)` builds a reusable slice object usable as a sequence index. It exposes `start`, `stop` and `step`, and `s.indices(n)` returns the bounds clamped to a sequence of length `n`.
 
 ```edge-python
 xs = [10, 20, 30, 40, 50]

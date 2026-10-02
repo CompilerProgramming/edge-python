@@ -1,11 +1,25 @@
 use crate::s;
 
 use super::Parser;
+use super::stmt::UnpackTarget;
 use super::types::OpCode;
 
 use crate::lexer::{Token, TokenType};
 
 use alloc::{vec, vec::Vec, string::{String, ToString}};
+
+/* Positions of `kind` outside any bracket in `toks`. */
+fn depth0(toks: &[Token], kind: TokenType) -> Vec<usize> {
+    let mut depth = 0i32;
+    toks.iter().enumerate().filter_map(|(i, t)| {
+        match t.kind {
+            TokenType::Lpar | TokenType::Lsqb | TokenType::Lbrace => depth += 1,
+            TokenType::Rpar | TokenType::Rsqb | TokenType::Rbrace => depth -= 1,
+            _ => {}
+        }
+        (depth == 0 && t.kind == kind).then_some(i)
+    }).collect()
+}
 
 impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
@@ -90,6 +104,11 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
     /* Emits bytecode for one pattern, appends case-fail jumps to `fail_jumps`, reloads subject from subj. */
     pub(super) fn parse_pattern(&mut self, subj: u16, fail_jumps: &mut Vec<usize>) {
+        // `case *a, b:` opens a sequence at its first item.
+        if matches!(self.peek(), Some(TokenType::Star)) { return self.open_sequence(Vec::new(), subj, fail_jumps); }
+        let ins = self.chunk.instructions.len();
+        let (src, line) = self.tokens.peek().map_or((0, 0), |t| (t.start, t.line));
+
         // OR pattern, each alt gets a success-jump landing past all alts.
         let mut alts: Vec<Vec<usize>> = Vec::new();
         let mut succ_jumps: Vec<usize> = Vec::new();
@@ -97,6 +116,12 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         loop {
             let mut this_alt_fails: Vec<usize> = Vec::new();
             self.parse_simple_pattern(subj, &mut this_alt_fails);
+            // `case a, b:` is a sequence, so its first item is read again from the source.
+            if alts.is_empty() && matches!(self.peek(), Some(TokenType::Comma)) {
+                self.chunk.truncate_to(ins);
+                let head = self.relex(src, self.last_end, line);
+                return self.open_sequence(head, subj, fail_jumps);
+            }
             // On match, jump past remaining alts.
             succ_jumps.push(self.emit_jump(OpCode::Jump));
             // On mismatch, redirect fails to next alt, only last alt propagates to case-fail.
@@ -120,6 +145,13 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
         // All success jumps land here, past the OR.
         for j in succ_jumps { self.patch(j); }
+
+        // `p as name` binds the subject once `p` matched.
+        if self.eat_if(TokenType::As) {
+            let name = self.advance_text();
+            self.chunk.emit(OpCode::LoadName, subj);
+            self.emit_store_new(&name);
+        }
     }
 
     /* Dispatches single pattern alternative by token, wildcard, capture (StoreName), or literal equality. */
@@ -127,11 +159,37 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         match self.peek() {
             // Wildcard always succeeds, no binding.
             Some(TokenType::Underscore) => { self.advance(); }
-            // Sequence pattern.
-            Some(TokenType::Lsqb) => { self.parse_sequence_pattern(subj, fail_jumps); }
+            // Sequence pattern, or a group when parentheses hold no comma.
+            Some(open @ (TokenType::Lsqb | TokenType::Lpar)) => {
+                self.advance();
+                let close = if open == TokenType::Lpar { TokenType::Rpar } else { TokenType::Rsqb };
+                let toks = self.pattern_tokens(Vec::new(), |k| k == close);
+                self.eat(close);
+                self.bracket_pattern(open == TokenType::Lpar, &toks, subj, fail_jumps);
+            }
+            Some(TokenType::Lbrace) => {
+                self.advance();
+                let toks = self.pattern_tokens(Vec::new(), |k| k == TokenType::Rbrace);
+                self.eat(TokenType::Rbrace);
+                self.mapping_pattern(&toks, subj, fail_jumps);
+            }
             // Capture binds subject to name, always succeeds.
             Some(TokenType::Name) => {
                 let t = self.advance();
+                // `Color.RED` or `Point(x, y)` buffers the primary and matches it as tokens.
+                if matches!(self.peek_same_line(), Some(TokenType::Dot | TokenType::Lpar)) {
+                    let mut toks = vec![t];
+                    while matches!(self.peek_same_line(), Some(TokenType::Dot)) {
+                        toks.push(self.advance());
+                        toks.push(self.advance());
+                    }
+                    if matches!(self.peek_same_line(), Some(TokenType::Lpar)) {
+                        toks.push(self.advance());
+                        toks = self.pattern_tokens(toks, |k| k == TokenType::Rpar);
+                        toks.push(self.advance());
+                    }
+                    return self.sub_pattern(&toks, subj, fail_jumps);
+                }
                 let name = self.lexeme(&t).to_string();
                 self.chunk.emit(OpCode::LoadName, subj);
                 self.emit_store_new(&name);
@@ -146,45 +204,52 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         }
     }
 
-    /* Sequence pattern length-checks subject, indexes items into fresh slots, star captures middle slice. */
-    fn parse_sequence_pattern(&mut self, subj: u16, fail_jumps: &mut Vec<usize>) {
-        self.advance(); // consume `[`
+    /* The rest of `case a, b:` after `head`, up to the guard or the colon. */
+    fn open_sequence(&mut self, head: Vec<crate::lexer::Token>, subj: u16, fail_jumps: &mut Vec<usize>) {
+        let toks = self.pattern_tokens(head, |k| matches!(k, TokenType::Colon | TokenType::If));
+        self.sequence_items(&toks, subj, fail_jumps);
+    }
 
-        // Pass 1 buffers tokens to count items and locate the star.
-        let mut buffered: Vec<crate::lexer::Token> = Vec::new();
-        let mut depth: i32 = 0;
-        let mut commas = 0;
-        let mut empty = true;
-        let mut star_count = 0;
-        loop {
-            match self.peek() {
-                Some(TokenType::Rsqb) if depth == 0 => break,
-                None => break,
-                Some(TokenType::Lpar | TokenType::Lsqb | TokenType::Lbrace) => {
-                    depth += 1; empty = false;
-                    buffered.push(self.advance());
-                }
-                Some(TokenType::Rpar | TokenType::Rsqb | TokenType::Rbrace) => {
-                    depth -= 1;
-                    buffered.push(self.advance());
-                }
-                Some(TokenType::Comma) if depth == 0 => {
-                    commas += 1; empty = false;
-                    buffered.push(self.advance());
-                }
-                Some(TokenType::Star) if depth == 0 => {
-                    star_count += 1; empty = false;
-                    buffered.push(self.advance());
-                }
-                _ => { empty = false; buffered.push(self.advance()); }
+    /* Tokens of `source[start..end]` lexed again at their offsets, for a pattern item read twice. */
+    fn relex(&self, start: usize, end: usize, line: usize) -> Vec<crate::lexer::Token> {
+        crate::lexer::lex(&self.source[start..end]).0.into_iter()
+            .filter(|t| !matches!(t.kind, TokenType::Newline | TokenType::Nl | TokenType::Comment | TokenType::Indent | TokenType::Dedent | TokenType::Endmarker))
+            .map(|t| crate::lexer::Token { kind: t.kind, line: t.line + line - 1, start: t.start + start, end: t.end + start })
+            .collect()
+    }
+
+    /* Buffers tokens until `end` at depth 0, so a sequence pattern counts its items before emitting. */
+    fn pattern_tokens(&mut self, mut toks: Vec<crate::lexer::Token>, end: impl Fn(TokenType) -> bool) -> Vec<crate::lexer::Token> {
+        let mut depth = 0i32;
+        while let Some(k) = self.peek() {
+            if depth == 0 && end(k) { break; }
+            match k {
+                TokenType::Lpar | TokenType::Lsqb | TokenType::Lbrace => depth += 1,
+                TokenType::Rpar | TokenType::Rsqb | TokenType::Rbrace => depth -= 1,
+                _ => {}
             }
+            toks.push(self.advance());
         }
-        let item_count = if empty { 0 } else { commas + 1 };
-        self.eat(TokenType::Rsqb);
+        toks
+    }
 
-        if star_count > 1 {
-            self.error_at(buffered[0].start, buffered.last().unwrap().end, "multiple stars in sequence pattern");
+    /* Sequence pattern length-checks subject, indexes items into fresh slots, star captures middle slice. */
+    fn sequence_items(&mut self, toks: &[crate::lexer::Token], subj: u16, fail_jumps: &mut Vec<usize>) {
+        // Items split at depth-0 commas as (starred, start, end), a trailing comma adds none.
+        let mut items: Vec<(bool, usize, usize)> = Vec::new();
+        let mut lo = 0;
+        for hi in depth0(toks, TokenType::Comma).into_iter().chain(core::iter::once(toks.len())) {
+            if lo < hi {
+                let star = toks[lo].kind == TokenType::Star;
+                items.push((star, lo + star as usize, hi));
+            }
+            lo = hi + 1;
         }
+        let stars = items.iter().filter(|it| it.0).count();
+        if stars > 1 {
+            self.error_at(toks[0].start, toks.last().unwrap().end, "multiple stars in sequence pattern");
+        }
+        let n = items.len() as i64;
 
         // Type guard, a non-sequence subject fails the pattern instead of erroring on len().
         self.chunk.emit(OpCode::LoadName, subj);
@@ -192,133 +257,248 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
 
         // Length check, exact without star, >= (count-1) with star.
-        let len_min = if star_count > 0 { item_count - 1 } else { item_count };
         self.chunk.emit(OpCode::LoadName, subj);
         self.chunk.emit(OpCode::CallLen, 1);
-        let ci = self.chunk.push_const(super::types::Value::Int(len_min as i64));
+        let ci = self.chunk.push_const(super::types::Value::Int(n - (stars > 0) as i64));
         self.chunk.emit(OpCode::LoadConst, ci);
-        let cmp = if star_count > 0 { OpCode::GtEq } else { OpCode::Eq };
-        self.chunk.emit(cmp, 0);
+        self.chunk.emit(if stars > 0 { OpCode::GtEq } else { OpCode::Eq }, 0);
         fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
 
-        // Pass 2 walks buffered tokens, emitting per-item bytecode.
-        let saved: Vec<crate::lexer::Token> = buffered;
-        let mut idx = 0usize;
-        let total = saved.len();
-
         // Fresh slot to use as the per-item sub-subject.
-        let item_ver = self.increment_version(super::SSA_TMP_MATCH_ITEM);
-        let item_subj = self.chunk.push_name(&s!(str super::SSA_TMP_MATCH_ITEM, int item_ver));
+        let item_subj = self.pattern_slot();
 
-        // Walk items, split on top-level commas.
-        let mut item_idx: i64 = 0;
-        let mut star_idx_seen: Option<i64> = None;
-        while idx < total {
-            // Check for star prefix.
-            let is_star = matches!(saved.get(idx), Some(t) if t.kind == TokenType::Star);
-            if is_star { idx += 1; }
-            // Find item end at next depth-0 comma or EOF.
-            let item_start = idx;
-            let mut d: i32 = 0;
-            while idx < total {
-                let k = saved[idx].kind;
-                if d == 0 && k == TokenType::Comma { break; }
-                if matches!(k, TokenType::Lpar | TokenType::Lsqb | TokenType::Lbrace) { d += 1; }
-                if matches!(k, TokenType::Rpar | TokenType::Rsqb | TokenType::Rbrace) { d -= 1; }
-                idx += 1;
-            }
-            let item_end = idx;
-            // Consume trailing comma.
-            if idx < total && saved[idx].kind == TokenType::Comma { idx += 1; }
-
-            // Index, positive before star, star gets slice, negative after.
-            if is_star {
-                star_idx_seen = Some(item_idx);
-                // Slice subj[item_idx : len-suffix]
-                let suffix = (item_count as i64) - item_idx - 1;
+        let mut seen_star = false;
+        for (k, &(star, lo, hi)) in items.iter().enumerate() {
+            let k = k as i64;
+            if star {
+                seen_star = true;
+                // Slice subj[k : len-suffix]
                 self.chunk.emit(OpCode::LoadName, subj);
-                let cs = self.chunk.push_const(super::types::Value::Int(item_idx));
+                let cs = self.chunk.push_const(super::types::Value::Int(k));
                 self.chunk.emit(OpCode::LoadConst, cs);
                 self.chunk.emit(OpCode::LoadName, subj);
                 self.chunk.emit(OpCode::CallLen, 1);
-                let cend = self.chunk.push_const(super::types::Value::Int(suffix));
+                let cend = self.chunk.push_const(super::types::Value::Int(n - k - 1));
                 self.chunk.emit(OpCode::LoadConst, cend);
                 self.chunk.emit(OpCode::Sub, 0);
                 self.chunk.emit(OpCode::LoadNone, 0);
                 self.chunk.emit(OpCode::BuildSlice, 3);
                 self.chunk.emit(OpCode::GetItem, 0);
                 self.chunk.emit(OpCode::CallList, 1);
-                self.chunk.emit(OpCode::StoreName, item_subj);
             } else {
                 // Negative index for items after the star.
-                let physical_idx: i64 = if star_idx_seen.is_some() {
-                    -((item_count as i64) - item_idx)
-                } else {
-                    item_idx
-                };
                 self.chunk.emit(OpCode::LoadName, subj);
-                let cidx = self.chunk.push_const(super::types::Value::Int(physical_idx));
+                let cidx = self.chunk.push_const(super::types::Value::Int(if seen_star { k - n } else { k }));
                 self.chunk.emit(OpCode::LoadConst, cidx);
                 self.chunk.emit(OpCode::GetItem, 0);
-                self.chunk.emit(OpCode::StoreName, item_subj);
             }
+            self.chunk.emit(OpCode::StoreName, item_subj);
+            self.sub_pattern(&toks[lo..hi], item_subj, fail_jumps);
+        }
+    }
 
-            // Dispatch wildcard, capture, or literal. No nested sequences, use if/match instead.
-            let toks = &saved[item_start..item_end];
-            if toks.is_empty() || (toks.len() == 1 && toks[0].kind == TokenType::Underscore) {
-                // Wildcard discards stored `item_subj`.
-            } else if toks.len() == 1 && toks[0].kind == TokenType::Name {
-                let name = self.source[toks[0].start..toks[0].end].to_string();
-                if name != "_" {
-                    self.chunk.emit(OpCode::LoadName, item_subj);
-                    self.emit_store_new(&name);
-                }
-            } else {
-                // Literal replays tokens, supports Int/Float/Str/Bool/None/negation, else error.
-                let mut pos = 0;
-                let mut neg = false;
-                if pos < toks.len() && toks[pos].kind == TokenType::Minus { neg = true; pos += 1; }
-                if pos < toks.len() {
-                    let t = &toks[pos];
-                    let raw = &self.source[t.start..t.end];
-                    let val = match t.kind {
-                        TokenType::Int => {
-                            let cleaned = raw.replace('_', "");
-                            // i64 first, fall back to i128 when literal is wider.
-                            cleaned.parse::<i64>().ok().map(super::types::Value::Int)
-                                .or_else(|| cleaned.parse::<i128>().ok().map(super::types::Value::LongInt))
-                        }
-                        TokenType::Float => raw.replace('_', "").parse::<f64>().ok().map(super::types::Value::Float),
-                        TokenType::String => Some(super::types::Value::Str(super::types::parse_string(raw))),
-                        TokenType::True => Some(super::types::Value::Bool(true)),
-                        TokenType::False => Some(super::types::Value::Bool(false)),
-                        TokenType::None => Some(super::types::Value::None),
-                        _ => None,
-                    };
-                    if let Some(mut v) = val {
-                        if neg {
-                            v = match v {
-                                super::types::Value::Int(i) => super::types::Value::Int(-i),
-                                // i128::MIN.neg() overflows, trap as parse error to keep sub-pattern semantics aligned with literal materialisation.
-                                super::types::Value::LongInt(i) => match i.checked_neg() {
-                                    Some(n) => super::types::Value::LongInt(n),
-                                    None => super::types::Value::LongInt(i),
-                                },
-                                super::types::Value::Float(f) => super::types::Value::Float(-f),
-                                other => other,
-                            };
-                        }
-                        self.chunk.emit(OpCode::LoadName, item_subj);
-                        let ci = self.chunk.push_const(v);
-                        self.chunk.emit(OpCode::LoadConst, ci);
-                        self.chunk.emit(OpCode::Eq, 0);
-                        fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
-                    } else {
-                        self.error_at(toks[0].start, toks.last().unwrap().end, "unsupported sub-pattern in sequence (use literals, names, or _)");
-                    }
-                }
+    /* `[p, ...]` or `(p, ...)` is a sequence, parentheses without a comma only group. */
+    fn bracket_pattern(&mut self, paren: bool, inner: &[crate::lexer::Token], subj: u16, fail_jumps: &mut Vec<usize>) {
+        let group = paren && !inner.is_empty()
+            && depth0(inner, TokenType::Comma).is_empty() && depth0(inner, TokenType::Star).is_empty();
+        if group { self.sub_pattern(inner, subj, fail_jumps); } else { self.sequence_items(inner, subj, fail_jumps); }
+    }
+
+    /* One buffered pattern against `subj`, an `as` capture, an OR, a nested sequence, a wildcard, a capture, or a literal. */
+    fn sub_pattern(&mut self, toks: &[crate::lexer::Token], subj: u16, fail_jumps: &mut Vec<usize>) {
+        // `p as name` binds the subject once `p`, OR included, matched.
+        if let Some(&at) = depth0(toks, TokenType::As).last() && let Some(t) = toks.get(at + 1) {
+            self.sub_pattern(&toks[..at], subj, fail_jumps);
+            let name = self.source[t.start..t.end].to_string();
+            self.chunk.emit(OpCode::LoadName, subj);
+            self.emit_store_new(&name);
+            return;
+        }
+        // Each alternative of `p | q` sends its failure on to the next one.
+        let bars = depth0(toks, TokenType::Vbar);
+        if !bars.is_empty() {
+            let (mut lo, mut succ) = (0, Vec::new());
+            for hi in bars.into_iter().chain(core::iter::once(toks.len())) {
+                if hi == toks.len() { self.sub_pattern(&toks[lo..], subj, fail_jumps); break; }
+                let mut alt_fails = Vec::new();
+                self.sub_pattern(&toks[lo..hi], subj, &mut alt_fails);
+                succ.push(self.emit_jump(OpCode::Jump));
+                for j in alt_fails { self.patch(j); }
+                lo = hi + 1;
             }
-            item_idx += 1;
+            for j in succ { self.patch(j); }
+            return;
+        }
+        if let (Some(first), Some(last)) = (toks.first(), toks.last()) {
+            match (first.kind, last.kind) {
+                (TokenType::Lsqb, TokenType::Rsqb) | (TokenType::Lpar, TokenType::Rpar) =>
+                    return self.bracket_pattern(first.kind == TokenType::Lpar, &toks[1..toks.len() - 1], subj, fail_jumps),
+                (TokenType::Lbrace, TokenType::Rbrace) => return self.mapping_pattern(&toks[1..toks.len() - 1], subj, fail_jumps),
+                _ => {}
+            }
+        }
+        if toks.is_empty() || (toks.len() == 1 && toks[0].kind == TokenType::Underscore) { return; }
+        if toks.len() == 1 && toks[0].kind == TokenType::Name {
+            let name = self.source[toks[0].start..toks[0].end].to_string();
+            self.chunk.emit(OpCode::LoadName, subj);
+            self.emit_store_new(&name);
+            return;
+        }
+        // `a.b.c` is a value pattern, `a.b(...)` a class pattern.
+        let path = toks.iter().enumerate().take_while(|&(i, t)| t.kind == if i % 2 == 0 { TokenType::Name } else { TokenType::Dot }).count();
+        if path % 2 == 1 && path == toks.len() {
+            self.chunk.emit(OpCode::LoadName, subj);
+            self.emit_dotted(&toks[..path]);
+            self.chunk.emit(OpCode::Eq, 0);
+            fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
+            return;
+        }
+        if path % 2 == 1 && toks.get(path).is_some_and(|t| t.kind == TokenType::Lpar) && toks.last().is_some_and(|t| t.kind == TokenType::Rpar) {
+            return self.class_pattern(&toks[..path], &toks[path + 1..toks.len() - 1], subj, fail_jumps);
+        }
+        let Some(v) = self.pattern_literal(toks) else {
+            self.error_at(toks[0].start, toks.last().unwrap().end, "unsupported sub-pattern (use literals, names, _, sequences, mappings or classes)");
+            return;
+        };
+        self.chunk.emit(OpCode::LoadName, subj);
+        let ci = self.chunk.push_const(v);
+        self.chunk.emit(OpCode::LoadConst, ci);
+        self.chunk.emit(OpCode::Eq, 0);
+        fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
+    }
+
+    /* A literal pattern, one token after an optional minus. */
+    fn pattern_literal(&self, toks: &[crate::lexer::Token]) -> Option<super::types::Value> {
+        use super::types::Value;
+        let neg = toks.first()?.kind == TokenType::Minus;
+        let [t] = &toks[neg as usize..] else { return None };
+        let raw = &self.source[t.start..t.end];
+        let v = match t.kind {
+            TokenType::Int => {
+                let cleaned = raw.replace('_', "");
+                // i64 first, fall back to i128 when literal is wider.
+                cleaned.parse::<i64>().ok().map(Value::Int)
+                    .or_else(|| cleaned.parse::<i128>().ok().map(Value::LongInt))?
+            }
+            TokenType::Float => Value::Float(raw.replace('_', "").parse::<f64>().ok()?),
+            TokenType::String => Value::Str(super::types::parse_string(raw)),
+            TokenType::True => Value::Bool(true),
+            TokenType::False => Value::Bool(false),
+            TokenType::None => Value::None,
+            _ => return None,
+        };
+        Some(if !neg { v } else {
+            match v {
+                Value::Int(i) => Value::Int(-i),
+                // i128::MIN.neg() overflows, the literal keeps its magnitude.
+                Value::LongInt(i) => Value::LongInt(i.checked_neg().unwrap_or(i)),
+                Value::Float(f) => Value::Float(-f),
+                other => other,
+            }
+        })
+    }
+
+    /* Loads a dotted name such as `Color.RED` from its tokens. */
+    fn emit_dotted(&mut self, path: &[crate::lexer::Token]) {
+        self.emit_load_ssa(self.source[path[0].start..path[0].end].to_string());
+        for t in path.iter().skip(2).step_by(2) {
+            let idx = self.chunk.push_name(&self.source[t.start..t.end]);
+            self.chunk.emit(OpCode::LoadAttr, idx);
+        }
+    }
+
+    /* A fresh slot for a value a sub-pattern matches against. */
+    fn pattern_slot(&mut self) -> u16 {
+        let ver = self.increment_version(super::SSA_TMP_MATCH_ITEM);
+        self.chunk.push_name(&s!(str super::SSA_TMP_MATCH_ITEM, int ver))
+    }
+
+    /* `C(p, k=q)` asks MatchClass for the attribute values, then matches each against its sub-pattern. */
+    fn class_pattern(&mut self, path: &[crate::lexer::Token], inner: &[crate::lexer::Token], subj: u16, fail_jumps: &mut Vec<usize>) {
+        let (mut positional, mut keywords) = (Vec::new(), Vec::new());
+        let mut lo = 0;
+        for hi in depth0(inner, TokenType::Comma).into_iter().chain(core::iter::once(inner.len())) {
+            let item = &inner[lo..hi];
+            match item {
+                [] => {}
+                [k, eq, rest @ ..] if k.kind == TokenType::Name && eq.kind == TokenType::Equal => keywords.push((&self.source[k.start..k.end], rest)),
+                _ => positional.push(item),
+            }
+            lo = hi + 1;
+        }
+        self.chunk.emit(OpCode::LoadName, subj);
+        self.emit_dotted(path);
+        for &(k, _) in &keywords {
+            let ci = self.chunk.push_const(super::types::Value::Str(k.to_string()));
+            self.chunk.emit(OpCode::LoadConst, ci);
+        }
+        self.chunk.emit(OpCode::BuildTuple, keywords.len() as u16);
+        self.chunk.emit(OpCode::MatchClass, positional.len() as u16);
+        let values = self.pattern_slot();
+        self.chunk.emit(OpCode::StoreName, values);
+        self.chunk.emit(OpCode::LoadName, values);
+        self.chunk.emit(OpCode::LoadNone, 0);
+        self.chunk.emit(OpCode::IsNot, 0);
+        fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
+        let subs: Vec<&[crate::lexer::Token]> = positional.into_iter().chain(keywords.into_iter().map(|(_, p)| p)).collect();
+        for (i, sub) in subs.into_iter().enumerate() {
+            self.chunk.emit(OpCode::LoadName, values);
+            let ci = self.chunk.push_const(super::types::Value::Int(i as i64));
+            self.chunk.emit(OpCode::LoadConst, ci);
+            self.chunk.emit(OpCode::GetItem, 0);
+            let item = self.pattern_slot();
+            self.chunk.emit(OpCode::StoreName, item);
+            self.sub_pattern(sub, item, fail_jumps);
+        }
+    }
+
+    /* `{"k": p, **rest}` needs a dict holding every literal key, each value matching its sub-pattern. */
+    fn mapping_pattern(&mut self, inner: &[crate::lexer::Token], subj: u16, fail_jumps: &mut Vec<usize>) {
+        self.chunk.emit(OpCode::LoadName, subj);
+        self.chunk.emit(OpCode::MatchMap, 0);
+        fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
+        let (mut keys, mut rest) = (Vec::new(), None);
+        let mut lo = 0;
+        for hi in depth0(inner, TokenType::Comma).into_iter().chain(core::iter::once(inner.len())) {
+            let item = &inner[lo..hi];
+            lo = hi + 1;
+            if item.is_empty() { continue; }
+            if let [star, name] = item && star.kind == TokenType::DoubleStar {
+                rest = Some(self.source[name.start..name.end].to_string());
+                continue;
+            }
+            let Some(&colon) = depth0(item, TokenType::Colon).first() else {
+                self.error_at(item[0].start, item.last().unwrap().end, "mapping pattern items are `key: pattern`");
+                continue;
+            };
+            let Some(key) = self.pattern_literal(&item[..colon]) else {
+                self.error_at(item[0].start, item[colon].end, "mapping pattern keys must be literals");
+                continue;
+            };
+            let ki = self.chunk.push_const(key);
+            self.chunk.emit(OpCode::LoadConst, ki);
+            self.chunk.emit(OpCode::LoadName, subj);
+            self.chunk.emit(OpCode::In, 0);
+            fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
+            self.chunk.emit(OpCode::LoadName, subj);
+            self.chunk.emit(OpCode::LoadConst, ki);
+            self.chunk.emit(OpCode::GetItem, 0);
+            let slot = self.pattern_slot();
+            self.chunk.emit(OpCode::StoreName, slot);
+            self.sub_pattern(&item[colon + 1..], slot, fail_jumps);
+            keys.push(ki);
+        }
+        // `**rest` binds a copy without the matched keys.
+        if let Some(name) = rest {
+            self.chunk.emit(OpCode::BuildDict, 0);
+            self.chunk.emit(OpCode::LoadName, subj);
+            self.chunk.emit(OpCode::DictUpdate, 0);
+            let slot = self.emit_store_new(&name);
+            for ki in keys {
+                self.chunk.emit(OpCode::LoadName, slot);
+                self.chunk.emit(OpCode::LoadConst, ki);
+                self.chunk.emit(OpCode::DelItem, 0);
+            }
         }
     }
 
@@ -365,24 +545,10 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     pub(super) fn for_stmt_inner(&mut self, is_async: bool) {
         self.advance();
 
-        let parens = self.eat_if(TokenType::Lpar);
-        let mut vars = Vec::new();
-        let mut star_pos: Option<usize> = None;
-        loop {
-            if self.eat_if(TokenType::Star) { star_pos = Some(vars.len()); }
-            vars.push(self.advance_text());
-            if !self.eat_if(TokenType::Comma) { break; }
-            if matches!(self.peek(), Some(TokenType::In | TokenType::Rpar)) { break; }
-        }
-        if parens {
-            self.eat(TokenType::Rpar);
-        }
-
+        let (targets, star, comma) = self.target_list(|s| matches!(s.peek(), Some(TokenType::In)));
         self.eat(TokenType::In);
-        self.expr();
         // Unparenthesized tuple iterable, `for x in 1, 2:` iterates the tuple.
-        let n = self.tuple_rest(1, |s| matches!(s.peek(), Some(TokenType::Colon) | None));
-        if n > 1 { self.chunk.emit(OpCode::BuildTuple, n); }
+        self.expr_or_tuple(|s| matches!(s.peek(), Some(TokenType::Colon) | None));
         self.chunk.emit(OpCode::GetIter, is_async as u16);
 
         self.enter_block();
@@ -395,11 +561,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
         let fi = self.emit_jump(OpCode::ForIter);
 
-        if vars.len() == 1 && star_pos.is_none() {
-            self.store_name(vars[0].clone());
-        } else {
-            self.emit_unpack_stores(&vars, star_pos);
-        }
+        self.store_targets(&targets, star, comma);
 
         self.eat(TokenType::Colon);
         self.compile_block();
@@ -422,6 +584,34 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         for pos in breaks { self.patch(pos); }
 
         self.commit_block();
+    }
+
+    /* `for` targets until `end`, returns them, the starred index, and whether a comma was seen. */
+    pub(super) fn target_list(&mut self, end: impl Fn(&mut Self) -> bool) -> (Vec<UnpackTarget>, Option<usize>, bool) {
+        let (mut targets, mut star, mut comma) = (Vec::new(), None, false);
+        loop {
+            if self.eat_if(TokenType::Star) { star = Some(targets.len()); }
+            targets.push(self.for_target());
+            if !self.eat_if(TokenType::Comma) { break; }
+            comma = true;
+            if end(self) { break; }
+        }
+        (targets, star, comma)
+    }
+
+    /* A name, or a parenthesized or bracketed target list, `(a)` stays the bare name. */
+    fn for_target(&mut self) -> UnpackTarget {
+        let close = match self.peek() {
+            Some(TokenType::Lpar) => TokenType::Rpar,
+            Some(TokenType::Lsqb) => TokenType::Rsqb,
+            _ => return UnpackTarget::Name(self.advance_text()),
+        };
+        self.advance();
+        let (mut targets, star, comma) = self.target_list(|s| s.peek() == Some(close));
+        self.eat(close);
+        if star.is_some() { self.error("starred target must be at the top level"); }
+        if close == TokenType::Rpar && !comma && targets.len() == 1 { return targets.pop().unwrap(); }
+        UnpackTarget::Nested(targets)
     }
 
     /* try / except / else / finally with exception arm chaining. */

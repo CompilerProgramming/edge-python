@@ -182,8 +182,8 @@ A user `raise X` re-raises whatever class or instance `X` is. Raising a value th
 `except` walks parent links in a curated tree rooted at `BaseException`:
 
 - `Exception` sits under `BaseException`. Everything catchable in normal code derives from `Exception`.
-- `LookupError` groups `IndexError` and `KeyError`. `ArithmeticError` groups `OverflowError` and `ZeroDivisionError`. `RuntimeError` parents `RecursionError` and `NotImplementedError`. `OSError` parents `PermissionError`, what a system call raises outside its package's grant.
-- `OSError`, `NameError`, `StopIteration`, `StopAsyncIteration`, `AssertionError`, `MemoryError`, and `TimeoutError` sit directly under `Exception`.
+- `LookupError` groups `IndexError` and `KeyError`. `ArithmeticError` groups `OverflowError` and `ZeroDivisionError`. `RuntimeError` parents `RecursionError` and `NotImplementedError`. `OSError`, also named `IOError`, parents `PermissionError`, what a system call raises outside its package's grant. `ValueError` parents `UnicodeError`, which parents `UnicodeEncodeError` and `UnicodeDecodeError`. `ImportError` parents `ModuleNotFoundError`.
+- `OSError`, `ImportError`, `NameError`, `StopIteration`, `StopAsyncIteration`, `AssertionError`, `MemoryError`, and `TimeoutError` sit directly under `Exception`.
 - `SystemExit` and `CancelledError` sit directly under `BaseException`, so `except Exception` does not catch them. Use their own name or a bare `except`.
 
 ```edge-python

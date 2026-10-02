@@ -105,7 +105,8 @@ impl<'a> VM<'a> {
             | HeapObj::Super(..) | HeapObj::Property(..) | HeapObj::PropertySetter(..)
             | HeapObj::StaticMethod(..) | HeapObj::ClassMethod(..) | HeapObj::Instance(..) | HeapObj::Coroutine(..)
             | HeapObj::Module(..) | HeapObj::Extern(_) | HeapObj::ExcInstance(..)
-            | HeapObj::Ellipsis | HeapObj::NotImplemented => true,
+            | HeapObj::Ellipsis | HeapObj::NotImplemented | HeapObj::GenericAlias(..) | HeapObj::TypeAlias(..)
+            | HeapObj::Union(_) | HeapObj::TypeVar(_) => true,
         }
     }
 
@@ -233,6 +234,10 @@ impl<'a> VM<'a> {
             HeapObj::ExcInstance(..) => "exception",
             HeapObj::Ellipsis => "ellipsis",
             HeapObj::NotImplemented => "NotImplementedType",
+            HeapObj::GenericAlias(..) => "GenericAlias",
+            HeapObj::TypeAlias(..) => "TypeAliasType",
+            HeapObj::Union(_) => "UnionType",
+            HeapObj::TypeVar(_) => "TypeVar",
         }}
     }
 
@@ -292,6 +297,32 @@ impl<'a> VM<'a> {
             HeapObj::Coroutine(..) => "<coroutine>".into(),
             HeapObj::Module(name, _) => s!("<module '", str name, "'>"),
             HeapObj::Extern(f) => s!("<extern function ", str &f.name, ">"),
+            HeapObj::GenericAlias(origin, args) => {
+                let mut o = self.alias_arg(*origin, seen);
+                o.push('[');
+                match self.heap.get(*args) {
+                    HeapObj::Tuple(t) if !t.is_empty() => for (i, &a) in t.iter().enumerate() {
+                        if i > 0 { o.push_str(", "); }
+                        o.push_str(&self.alias_arg(a, seen));
+                    },
+                    _ => o.push_str("()"),
+                }
+                o.push(']');
+                o
+            }
+            HeapObj::TypeAlias(name, _) | HeapObj::TypeVar(name) => name.clone(),
+            HeapObj::Union(args) => {
+                let mut o = String::new();
+                if let HeapObj::Tuple(t) = self.heap.get(*args) {
+                    for (i, &m) in t.iter().enumerate() {
+                        if i > 0 { o.push_str(" | "); }
+                        // A union stores `None` as its type and spells it back as `None`.
+                        let none = m.is_heap() && matches!(self.heap.get(m), HeapObj::Type(n) if n == "NoneType");
+                        o.push_str(&if none { "None".into() } else { self.alias_arg(m, seen) });
+                    }
+                }
+                o
+            }
             HeapObj::ExcInstance(name, args) => {
                 // `str(E("x"))` -> "x", KeyError is special, stringifying as the key's repr.
                 if args.len() == 1 {
@@ -299,8 +330,13 @@ impl<'a> VM<'a> {
                 } else if args.is_empty() {
                     // Bare exceptions stringify to an empty string, like Python.
                     String::new()
+                } else if matches!(args.len(), 2 | 3) && super::globals::matches_exc_class(name, "OSError") {
+                    // `OSError(errno, strerror[, filename])` reads `[Errno 2] missing: 'f'`.
+                    let mut o = s!("[Errno ", str &self.display_d(args[0], seen), "] ", str &self.display_d(args[1], seen));
+                    if let Some(&f) = args.get(2) { o.push_str(": "); o.push_str(&self.repr_d(f, seen)); }
+                    o
                 } else {
-                    let mut o = s!(cap: 32; str name, "(");
+                    let mut o = s!(cap: 32; "(");
                     self.append_reprs(&mut o, args.iter(), seen);
                     o.push(')');
                     o
@@ -334,8 +370,33 @@ impl<'a> VM<'a> {
 
     pub fn repr(&self, v: Val) -> String { self.repr_d(v, &mut Vec::new()) }
 
+    /* An alias argument as Python spells it, a type by its name and anything else by repr. */
+    fn alias_arg(&self, v: Val, seen: &mut Vec<u32>) -> String {
+        if v.is_heap() {
+            match self.heap.get(v) {
+                HeapObj::Type(n) | HeapObj::TypeAlias(n, _) | HeapObj::TypeVar(n) => return n.clone(),
+                HeapObj::Class(n, ..) => return s!("__main__.", str n),
+                HeapObj::Ellipsis => return "...".into(),
+                _ => {}
+            }
+        }
+        self.repr_d(v, seen)
+    }
+
     fn repr_d(&self, v: Val, seen: &mut Vec<u32>) -> String {
-        if v.is_heap() && let HeapObj::Str(s) = self.heap.get(v) { return repr_str(s); }
+        if v.is_heap() {
+            match self.heap.get(v) {
+                HeapObj::Str(s) => return repr_str(s),
+                // `repr(E("x"))` is the constructor call, `ValueError('x')`.
+                HeapObj::ExcInstance(name, args) => {
+                    let mut o = s!(cap: 32; str name, "(");
+                    self.append_reprs(&mut o, args.iter(), seen);
+                    o.push(')');
+                    return o;
+                }
+                _ => {}
+            }
+        }
         self.display_d(v, seen)
     }
 

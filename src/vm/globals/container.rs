@@ -218,7 +218,7 @@ impl<'a> VM<'a> {
                     "utf-8" | "utf8" => text.into_bytes(),
                     "ascii" => {
                         if !text.is_ascii() {
-                            return Err(cold_value("'ascii' codec can't encode non-ASCII characters"));
+                            return Err(VmErr::Raised("UnicodeEncodeError: 'ascii' codec can't encode non-ASCII characters".into()));
                         }
                         text.into_bytes()
                     }

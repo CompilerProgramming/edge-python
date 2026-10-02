@@ -152,7 +152,6 @@ NameError
 
 - No complex numbers. `1j` lexes as `1` followed by the name `j`.
 - No metaclasses, descriptors, `__slots__`, `__new__`, `__init_subclass__` or `__set_name__`. Some parse but are never dispatched.
-- No augmented assignment dunders. `a += b` desugars to `a = a + b` for user classes, except list `+=` and set `|=`, `&=`, `^=`, `-=` which mutate in place.
 - No `bytearray` and no `memoryview`.
 - No exception chaining. `raise X from Y` evaluates `Y` but the cause is discarded.
 - No `gen.send`, `gen.throw` or `gen.close`. Generators are one-way producers.
@@ -219,7 +218,7 @@ OverflowError
 
 ### Reduced pattern matching
 
-`match` supports literal patterns, captures, the `_` wildcard, OR patterns with `|`, guards with `if`, and flat sequence patterns like `[x, y]` or `[first, *rest]`. Sequence patterns match only list and tuple subjects. There are no nested sequence patterns, no mapping patterns, no class patterns and no `as` captures.
+`match` supports literal patterns, captures, the `_` wildcard, OR patterns with `|`, guards with `if`, `as` captures, and sequence patterns like `[x, y]`, `(x, (y, z))`, `x, y` or `[first, *rest]` whose items nest any of these. Sequence patterns match only list and tuple subjects. Mapping patterns `{"k": v, **rest}` take literal keys, class patterns `Point(x, y=0)` read `__match_args__` and `int(n)` binds the subject, and `Color.RED` compares by value.
 
 ```python
 def describe(value):
@@ -387,7 +386,7 @@ b'\xff\x00' 1
 
 ### Exceptions
 
-The catchable tree under `Exception` is `ArithmeticError` with `OverflowError` and `ZeroDivisionError`, `LookupError` with `IndexError` and `KeyError`, `RuntimeError` with `RecursionError` and `NotImplementedError`, `OSError` with `PermissionError`, plus `ValueError`, `TypeError`, `AttributeError`, `NameError`, `StopIteration`, `StopAsyncIteration`, `AssertionError`, `MemoryError` and `TimeoutError`. Under `BaseException` sit `SystemExit` and `CancelledError`, which `except Exception` does not catch.
+The catchable tree under `Exception` is `ArithmeticError` with `OverflowError` and `ZeroDivisionError`, `LookupError` with `IndexError` and `KeyError`, `RuntimeError` with `RecursionError` and `NotImplementedError`, `OSError`, also named `IOError`, with `PermissionError`, `ValueError` with `UnicodeError` and its `UnicodeEncodeError` and `UnicodeDecodeError`, `ImportError` with `ModuleNotFoundError`, plus `TypeError`, `AttributeError`, `NameError`, `StopIteration`, `StopAsyncIteration`, `AssertionError`, `MemoryError` and `TimeoutError`. Under `BaseException` sit `SystemExit` and `CancelledError`, which `except Exception` does not catch.
 
 Handlers name one class, a tuple or nothing, and a bare `except` must come last. `except X as e` binds the exception and `e.args` is its argument tuple. `finally` runs on every exit path including `return`, `break` and `continue`.
 
@@ -515,7 +514,7 @@ hi edge?
 
 Classes support single and multiple inheritance with C3 linearization, zero-argument `super()`, `property` with setters, `staticmethod` and `classmethod`, and class decorators. There is no two-argument `super()` form. Dunders are looked up on the class, assigning one on an instance has no effect.
 
-The supported dunders are `__init__`, `__call__`, `__repr__`, `__str__`, `__format__`, `__bool__`, `__len__`, `__hash__`, `__iter__`, `__next__`, `__getitem__`, `__setitem__`, `__delitem__`, `__contains__`, `__getattr__`, `__enter__`, `__exit__`, `__index__`, `__int__`, `__float__`, `__abs__`, the arithmetic and bitwise operators with their reflected forms, and the six comparisons. Returning `NotImplemented` from an arithmetic dunder triggers the reflected fallback.
+The supported dunders are `__init__`, `__call__`, `__repr__`, `__str__`, `__format__`, `__bool__`, `__len__`, `__hash__`, `__iter__`, `__next__`, `__getitem__`, `__setitem__`, `__delitem__`, `__contains__`, `__getattr__`, `__enter__`, `__exit__`, `__index__`, `__int__`, `__float__`, `__abs__`, the arithmetic and bitwise operators with their reflected and in-place forms including `@` through `__matmul__`, and the six comparisons. Returning `NotImplemented` from an arithmetic dunder triggers the reflected fallback.
 
 ```python
 class Vector:
@@ -865,7 +864,7 @@ print(a is b)
 True
 ```
 
-List `+=` and set `|=`, `&=`, `^=`, `-=` mutate in place and aliases see the change. Every other augmented assignment rebinds.
+List `+=` and set `|=`, `&=`, `^=`, `-=` mutate in place and aliases see the change. A user class gets `__iadd__` and the other in-place dunders first, then the binary operator. Every other augmented assignment rebinds.
 
 ```python
 a = [1]

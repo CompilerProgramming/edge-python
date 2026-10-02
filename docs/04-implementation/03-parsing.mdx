@@ -59,11 +59,11 @@ Lambda                   -> parse_lambda()
 
 After an atom, `postfix_tail()` handles trailers (subscript, attribute, call), iterating until none apply, plus store tails on the last trailer (`xs[0].v = 7`, `xs[0][1] += 1`). So `fns[0](-3)`, `obj.method()`, `(lambda x: x)(3)`, and `compose(f, g)(x)` all parse uniformly.
 
-`*args` and `**kwargs` are accepted in call position. Starred unpacking also works in list (`[*a, *b]`), set (`{*s}`), and dict (`{**d1, **d2}`) literals, lowering via `ListExtend` / `SetUpdate` / `DictUpdate`. Tuple-literal unpacking (`(1, *xs, 2)`) is not supported.
+`*args` and `**kwargs` are accepted in call position. Starred unpacking also works in list (`[*a, *b]`), set (`{*s}`), and dict (`{**d1, **d2}`) literals, lowering via `ListExtend` / `SetUpdate` / `DictUpdate`. Tuple displays such as `(1, *xs, 2)` or `x = *a, b` build a list the same way and close with `CallTuple`.
 
 ## Operator precedence
 
-Each binary operator declares `(l_bp, r_bp, OpCode)` in `binding_power`. Higher binding pulls tighter. Only `**` is right-associative (`r_bp < l_bp`). Everything else is left-associative.
+Each binary operator declares `(l_bp, r_bp, OpCode)` in `binding_power`. Higher binding pulls tighter. Only `**` is right-associative (`r_bp < l_bp`). Everything else is left-associative. An operator never continues past the end of a logical line, so `@deco` on the next line stays a decorator.
 
 | Level | Operators | Notes |
 |-------|------------------------------------------|----------------------|
@@ -76,7 +76,7 @@ Each binary operator declares `(l_bp, r_bp, OpCode)` in `binding_power`. Higher 
 | 13/14 | `&` | bitwise |
 | 15/16 | `<<` `>>` | shifts |
 | 17/18 | `+` `-` | additive |
-| 19/20 | `*` `/` `%` `//` | multiplicative |
+| 19/20 | `*` `/` `%` `//` `@` | multiplicative |
 | 21 | unary `-` `~` `await` | prefix |
 | 22/21 | `**` | right-associative |
 

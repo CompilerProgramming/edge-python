@@ -357,7 +357,7 @@ ok
 
 ## Unpacking in literals
 
-`*` spreads an iterable into a list or set literal. `**` spreads a mapping into a dict literal. Both mix freely with regular elements. For dicts, later keys win.
+`*` spreads an iterable into a list, set or tuple literal, so `x = *xs, 3` builds a tuple. `**` spreads a mapping into a dict literal. Both mix freely with regular elements. For dicts, later keys win.
 
 ```edge-python
 xs = [1, 2]

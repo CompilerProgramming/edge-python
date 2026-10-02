@@ -1,6 +1,7 @@
 use crate::s;
 
 use super::Parser;
+use super::stmt::UnpackTarget;
 use super::types::builtin;
 use super::types::{OpCode, Value, SSAChunk, Instruction};
 
@@ -8,6 +9,17 @@ use crate::lexer::{Token, TokenType};
 use crate::util::hash::FxHashMap as HashMap;
 
 use alloc::{string::{String, ToString}, vec::Vec};
+
+// Every name bound by `targets`, nested ones included.
+fn target_names(targets: &[UnpackTarget], out: &mut Vec<String>) {
+    for t in targets {
+        match t {
+            UnpackTarget::Name(n) => out.push(n.clone()),
+            UnpackTarget::Nested(inner) => target_names(inner, out),
+            _ => {}
+        }
+    }
+}
 
 impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
@@ -145,13 +157,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         let mut all_vars: Vec<String> = Vec::new();
 
         while self.eat_if(TokenType::For) {
-            let mut vars: Vec<String> = Vec::new();
-            loop {
-                vars.push(self.advance_text());
-                if !self.eat_if(TokenType::Comma) { break; }
-                if matches!(self.peek(), Some(TokenType::In)) { break; }
-            }
-
+            let (targets, star, comma) = self.target_list(|s| matches!(s.peek(), Some(TokenType::In)));
             self.eat(TokenType::In);
             self.expr_bp(1);
             self.chunk.emit(OpCode::GetIter, 0);
@@ -159,12 +165,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             let ls = self.chunk.instructions.len() as u16;
             let fi = self.emit_jump(OpCode::ForIter);
 
-            if vars.len() == 1 {
-                self.store_name(vars[0].clone());
-            } else {
-                self.emit_unpack_stores(&vars, None);
-            }
-            for v in &vars { all_vars.push(v.clone()); }
+            self.store_targets(&targets, star, comma);
+            target_names(&targets, &mut all_vars);
 
             while self.eat_if(TokenType::If) {
                 self.expr_bp(1);
@@ -280,10 +282,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                     self.in_fstring_expr = true;
                     self.expr();
                     // Bare tuple in a replacement field, `f"{1,}"` builds (1,).
-                    if matches!(self.peek(), Some(TokenType::Comma)) {
-                        let n = self.tuple_rest(1, |s| matches!(s.peek(), Some(TokenType::Rbrace | TokenType::Colon | TokenType::Exclamation | TokenType::Equal) | None));
-                        self.chunk.emit(OpCode::BuildTuple, n);
-                    }
+                    self.tuple_rest(1, |s| matches!(s.peek(), Some(TokenType::Rbrace | TokenType::Colon | TokenType::Exclamation | TokenType::Equal) | None));
                     self.in_fstring_expr = saved_in_fstring;
                     let expr_end_byte = self.last_end;
                     /* FormatValue operand, bit0=has-spec, bits1-2=conversion (0=none,1=!r,2=!s,3=!a). */
@@ -376,9 +375,9 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             return true;
         }
         if name == "print" {
-            let (pos, kw) = self.parse_args();
+            let (pos, kw, spread) = self.fused_args();
             // Same packed layout as Call so the VM can split sep/end kwargs from positionals.
-            self.chunk.emit(OpCode::CallPrint, super::pack_call(pos, kw));
+            self.chunk.emit(OpCode::CallPrint, super::pack_call(pos, kw) | spread);
             self.chunk.record_call_pos(call_pos);
             return false;
         }
@@ -408,8 +407,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             "enumerate" => Some(OpCode::CallEnumerate),
             _ => None,
         } {
-            let (pos, kw) = self.parse_args();
-            self.chunk.emit(op, super::pack_call(pos, kw));
+            let (pos, kw, spread) = self.fused_args();
+            self.chunk.emit(op, super::pack_call(pos, kw) | spread);
             self.chunk.record_call_pos(call_pos);
             return true;
         }
@@ -440,15 +439,16 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 self.chunk.record_call_pos(call_pos);
                 return true;
             }
-            let (pos, kw) = self.parse_args_body();
-            self.chunk.emit(if find_true { OpCode::CallAny } else { OpCode::CallAll }, pos + kw);
+            let (pos, kw, spread) = self.args_body(true);
+            let operand = if spread { super::pack_call(pos, kw) | super::SPREAD_ARGS } else { pos + kw };
+            self.chunk.emit(if find_true { OpCode::CallAny } else { OpCode::CallAll }, operand);
             self.chunk.record_call_pos(call_pos);
             return true;
         }
 
         if let Some((op, leaves_value)) = builtin(name.as_str()) {
-            let (pos, kw) = self.parse_args();
-            self.chunk.emit(op, pos + kw);
+            let (pos, kw, spread) = self.fused_args();
+            self.chunk.emit(op, if spread != 0 { super::pack_call(pos, kw) | spread } else { pos + kw });
             self.chunk.record_call_pos(call_pos);
             return leaves_value;
         }
@@ -467,14 +467,19 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         let call_pos = self.last_end as u32;
         self.advance();
         let mut argc = 0u16;
+        let mut spread = 0u16;
         self.comma_list(|t| t == TokenType::Rpar, |s| {
-            // Allow `range(*args)`, UnpackArgs spreads the iterable at runtime.
-            if s.eat_if(TokenType::Star) { s.expr(); s.chunk.emit(OpCode::UnpackArgs, 1); }
-            else { s.expr(); }
+            // `range(*args)` opens a spread frame and runs as a plain call.
+            if s.eat_if(TokenType::Star) {
+                if spread == 0 { s.chunk.emit(OpCode::BeginArgs, 0); }
+                spread = super::SPREAD_ARGS;
+                s.expr();
+                s.chunk.emit(OpCode::UnpackArgs, 1);
+            } else { s.expr(); }
             argc = argc.saturating_add(1);
         });
         self.eat(TokenType::Rpar);
-        self.chunk.emit(OpCode::CallRange, argc);
+        self.chunk.emit(OpCode::CallRange, argc | spread);
         self.chunk.record_call_pos(call_pos);
     }
 
@@ -483,21 +488,38 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         self.parse_args_body()
     }
 
-    // Parse args after `(` already consumed. Depth-guarded since the name-led arg path recurses through `name`/`call` without passing `expr_bp`.
     pub(super) fn parse_args_body(&mut self) -> (u16, u16) {
+        let (pos, kw, _) = self.args_body(false);
+        (pos, kw)
+    }
+
+    /* Args of a fused builtin, the third value is `SPREAD_ARGS` when a `*` or `**` asks for a plain call. */
+    fn fused_args(&mut self) -> (u16, u16, u16) {
+        self.advance();
+        let (pos, kw, spread) = self.args_body(true);
+        if kw > 0x7F { self.error("too many keyword arguments in call (max 127)"); }
+        (pos, kw, if spread { super::SPREAD_ARGS } else { 0 })
+    }
+
+    // Parse args after `(` already consumed. Depth-guarded since the name-led arg path recurses through `name`/`call` without passing `expr_bp`.
+    fn args_body(&mut self, fused: bool) -> (u16, u16, bool) {
         self.expr_depth += 1;
         if self.expr_depth > super::types::MAX_EXPR_DEPTH {
             self.expr_depth -= 1;
             self.error("expression too deeply nested");
-            return (0, 0);
+            return (0, 0, false);
         }
         let mut pos = 0u16;
         let mut kw = 0u16;
+        let mut spread = false;
         self.comma_list(|t| t == TokenType::Rpar, |s| {
             let unpack = if s.eat_if(TokenType::DoubleStar) { Some(2u16) }
                 else if s.eat_if(TokenType::Star) { Some(1u16) }
                 else { None };
             if let Some(kind) = unpack {
+                // A fused call opens its own spread frame at the first spread, as a plain call does up front.
+                if fused && !spread { s.chunk.emit(OpCode::BeginArgs, 0); }
+                spread = true;
                 s.expr();
                 // High bits carry preceding kw-pair count so the VM keeps positionals contiguous.
                 s.chunk.emit(OpCode::UnpackArgs, (kw << 2) | kind);
@@ -531,7 +553,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         self.eat(TokenType::Rpar);
         self.expr_depth -= 1;
         if pos > 0xFF || kw > 0xFF { self.error("too many arguments in call (max 255 positional and 255 keyword)"); }
-        (pos, kw)
+        (pos, kw, spread)
     }
 
     /* class compiles body into fresh chunk, emits MakeClass+decorators+StoreName. */
@@ -559,6 +581,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     pub(super) fn class_def_with(&mut self, decorators: u16) {
         // Missing name, non-syncing diagnostic + synthetic name so body still parses.
         let cname = self.ident_or_missing("expected class name");
+        let params = self.type_params();
 
         // Bases are pushed left-to-right, `MakeClass` pops `num_bases` and stores them in the Class.
         let mut num_bases: u16 = 0;
@@ -573,7 +596,18 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
         self.eat(TokenType::Colon);
 
-        let body = self.with_fresh_chunk(|s| s.compile_block());
+        let body = self.with_fresh_chunk(|s| {
+            // `class Box[T]` keeps its parameters in `__type_params__`, which makes `Box[int]` an alias.
+            if !params.is_empty() {
+                for p in &params {
+                    let idx = s.chunk.push_name(p);
+                    s.chunk.emit(OpCode::MakeTypeVar, idx);
+                }
+                s.chunk.emit(OpCode::BuildTuple, params.len() as u16);
+                s.store_name("__type_params__".into());
+            }
+            s.compile_block();
+        });
 
         let ci = self.chunk.classes.len() as u16;
         // Operand packs `(num_bases << 8) | class_idx`, each field is one byte to keep the dispatch decode cheap.
@@ -592,6 +626,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     pub(super) fn func_def_inner(&mut self, decorators: u16, is_async: bool) {
         // Missing name, non-syncing diagnostic + synthetic name so signature+body still parse.
         let fname = self.ident_or_missing("expected function name");
+        self.type_params();
         let (params, defaults) = self.parse_params();
         let body = self.compile_body(&params);
 
@@ -601,6 +636,25 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         self.emit_decorator_calls(decorators);
 
         self.emit_store_new(&fname);
+    }
+
+    /* Names of a `[T, *Ts, **P]` type parameter list, bounds and defaults skipped since the engine is dynamically typed. */
+    pub(super) fn type_params(&mut self) -> Vec<String> {
+        let mut names = Vec::new();
+        if !self.eat_if(TokenType::Lsqb) { return names; }
+        let (mut depth, mut expect_name) = (1, true);
+        while depth > 0 {
+            match self.peek() {
+                Some(TokenType::Lsqb | TokenType::Lpar | TokenType::Lbrace) => depth += 1,
+                Some(TokenType::Rsqb | TokenType::Rpar | TokenType::Rbrace) => depth -= 1,
+                Some(TokenType::Comma) if depth == 1 => expect_name = true,
+                Some(TokenType::Name) if depth == 1 && expect_name => { names.push(self.advance_text()); expect_name = false; continue; }
+                None => return names,
+                _ => {}
+            }
+            self.advance();
+        }
+        names
     }
 
     pub(super) fn parse_params(&mut self) -> (Vec<String>, u16) {

@@ -95,7 +95,7 @@ print(a, b, h, i, j)
 3 4 5 6 7
 ```
 
-A starred target such as `*middle` must be a plain name.
+`for` loops and comprehensions take the same nested targets, as in `for i, (k, v) in enumerate(d.items())`. A starred target such as `*middle` must be a plain name.
 
 ### Walrus operator
 
@@ -249,7 +249,7 @@ print(-5, +5)
 -5 5
 ```
 
-`/` always yields a float. `//` and `%` use floored division, so the result of `%` takes the sign of the divisor. With a string on the left, `%` is printf-style formatting (see [Methods](/docs/reference/methods)).
+`/` always yields a float. `@` has no builtin meaning and calls `__matmul__`. `//` and `%` use floored division, so the result of `%` takes the sign of the divisor. With a string on the left, `%` is printf-style formatting (see [Methods](/docs/reference/methods)).
 
 ```edge-python
 print("%d of %s" % (3, "pies"))
@@ -336,7 +336,7 @@ True
 
 ### Augmented assignment
 
-`+= -= *= /= //= %= **= &= |= ^= <<= >>=`
+`+= -= *= /= //= %= **= @= &= |= ^= <<= >>=`. On a user class `a op= b` calls the in-place dunder such as `__iadd__` first.
 
 ```edge-python
 x = 10
@@ -421,7 +421,7 @@ Generator expressions: [Functions](/docs/language/functions).
 
 ## Type annotations
 
-Annotations parse on variables, parameters, and return positions. They have no runtime effect. There is no `__annotations__` and no runtime check. Treat them as documentation for humans and static analyzers.
+Annotations parse on variables, parameters, and return positions. They have no runtime effect. There is no `__annotations__` and no runtime check. Treat them as documentation for humans and static analyzers. Type parameters such as `def f[T]` are discarded the same way, and `class Box[T]` keeps them in `__type_params__` so `Box[int]` is a generic alias, as is any class defining `__class_getitem__`. `type X = v` binds a lazy alias whose `__value__` evaluates `v`, `list[int]` is a generic alias that prints as `list[int]` and builds a `list` when called, and `int | None` is a union that `isinstance` accepts.
 
 ```edge-python
 counter: int = 0

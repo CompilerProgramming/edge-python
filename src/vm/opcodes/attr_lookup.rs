@@ -21,9 +21,17 @@ pub(crate) enum AttrLookup {
     PropertySetterRef(Val),
     // `__name__` on a function, type, or class, and `LoadAttr` materialises the str.
     Name(String),
+    // `X.__value__` of a type alias, `LoadAttr` calls the zero-argument function that evaluates it.
+    Thunk(Val),
 }
 
 impl<'a> VM<'a> {
+    // What a class or instance inherits from `object`, the name test keeps a miss off the method scan.
+    pub(crate) fn object_attr(&self, obj: Val, name: &str) -> Option<BuiltinMethodId> {
+        let inherits = obj.is_heap() && matches!(self.heap.get(obj), HeapObj::Instance(..) | HeapObj::Class(..));
+        if name == "__hash__" && inherits { lookup_method("object", name) } else { None }
+    }
+
     // The cached C3 linearization of `cls`, or `[cls]` when uncached (native classes, or an inconsistent hierarchy that `c3_merge` declined to cache).
     fn mro_of(&self, c: Val) -> alloc::vec::Vec<Val> {
         match self.mro_cache.get(&c.0) {
@@ -166,7 +174,7 @@ impl<'a> VM<'a> {
             let resolved = match self.heap.get(obj) {
                 HeapObj::Func(fi, ..) => self.function_names.get(*fi).cloned(),
                 HeapObj::Type(n) => Some(n.clone()),
-                HeapObj::Class(n, _, _) => Some(n.clone()),
+                HeapObj::Class(n, _, _) | HeapObj::TypeAlias(n, _) => Some(n.clone()),
                 _ => None,
             };
             if let Some(n) = resolved { return Ok(AttrLookup::Name(n)); }
@@ -186,6 +194,7 @@ impl<'a> VM<'a> {
                     }
                     return Ok(AttrLookup::ClassMember(v));
                 }
+                if let Some(id) = self.object_attr(obj, name) { return Ok(AttrLookup::BuiltinMethod(id)); }
                 let cls_name = cls_name.clone();
                 return Err(VmErr::Attribute(s!("type object '", str &cls_name, "' has no attribute '", str name, "'")));
             }
@@ -201,6 +210,7 @@ impl<'a> VM<'a> {
                 if let Some((mv, defining)) = self.lookup_class_member(cls_val, name) {
                     return Ok(self.bind_member(mv, obj, defining));
                 }
+                if let Some(id) = self.object_attr(obj, name) { return Ok(AttrLookup::BuiltinMethod(id)); }
                 let ty = self.type_name(obj);
                 return Err(VmErr::Attribute(s!("'", str ty, "' object has no attribute '", str name, "'")));
             }
@@ -227,19 +237,68 @@ impl<'a> VM<'a> {
                 return Ok(AttrLookup::PropertySetterRef(obj));
             }
 
-        // Builtin classmethods accessed on the type object (e.g. dict.fromkeys, bytes.fromhex, int.from_bytes) resolve under the type's own name rather than "type".
+        // Builtin classmethods accessed on the type object (e.g. dict.fromkeys, bytes.fromhex, int.from_bytes, object.__hash__) resolve under the type's own name rather than "type".
         if obj.is_heap()
             && let HeapObj::Type(n) = self.heap.get(obj)
-            && matches!(name, "fromkeys" | "fromhex" | "from_bytes") {
+            && matches!(name, "fromkeys" | "fromhex" | "from_bytes" | "__hash__") {
                 let n = n.clone();
                 if let Some(id) = lookup_method(&n, name) { return Ok(AttrLookup::BuiltinMethod(id)); }
             }
 
         // Builtin type method.
         let ty = self.type_name(obj);
-        lookup_method(ty, name)
-            .map(AttrLookup::BuiltinMethod)
-            .ok_or_else(|| VmErr::Attribute(s!("'", str ty, "' object has no attribute '", str name, "'")))
+        if let Some(id) = lookup_method(ty, name) { return Ok(AttrLookup::BuiltinMethod(id)); }
+        // Plain fields, `slice.start`, `.stop` and `.step`, an alias `__origin__` and `__args__`, and the lazy `__value__`.
+        if obj.is_heap() {
+            match (self.heap.get(obj), name) {
+                (&HeapObj::Slice(v, _, _), "start") | (&HeapObj::Slice(_, v, _), "stop") | (&HeapObj::Slice(_, _, v), "step")
+                | (&HeapObj::GenericAlias(v, _), "__origin__") | (&HeapObj::GenericAlias(_, v), "__args__")
+                | (&HeapObj::Union(v), "__args__") => return Ok(AttrLookup::ClassMember(v)),
+                (&HeapObj::TypeAlias(_, f), "__value__") => return Ok(AttrLookup::Thunk(f)),
+                _ => {}
+            }
+        }
+        Err(VmErr::Attribute(s!("'", str ty, "' object has no attribute '", str name, "'")))
+    }
+
+    /* `case C(p, k=q)` checks `isinstance(subj, C)`, then pushes a tuple of the values its sub-patterns match, or None on a miss. */
+    pub(crate) fn match_class(&mut self, npos: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        let names = self.pop()?;
+        let cls = self.pop()?;
+        let subj = self.pop()?;
+        self.push(subj);
+        self.push(cls);
+        self.call_isinstance()?;
+        if !self.pop()?.as_bool() { self.push(Val::none()); return Ok(()); }
+        let mut attrs: Vec<String> = Vec::new();
+        let base = self.stack.len();
+        // A builtin type matches its one positional sub-pattern against the subject itself.
+        let self_match = matches!(self.heap.get(cls), HeapObj::Type(n)
+            if matches!(n.as_str(), "bool" | "bytes" | "dict" | "float" | "frozenset" | "int" | "list" | "set" | "str" | "tuple"));
+        if self_match && npos > 0 {
+            if npos > 1 { return Err(VmErr::TypeMsg(s!(str self.type_name(subj), "() accepts 1 positional sub-pattern"))); }
+            self.push(subj);
+        } else if npos > 0 {
+            let order = self.lookup_class_member(cls, "__match_args__").map(|(v, _)| v);
+            let Some(HeapObj::Tuple(order)) = order.and_then(|v| self.heap.try_get(v)) else {
+                return Err(VmErr::TypeMsg("class pattern accepts no positional sub-patterns without __match_args__".into()));
+            };
+            if npos > order.len() { return Err(VmErr::TypeMsg("class pattern got more positional sub-patterns than __match_args__".into())); }
+            for &n in &order[..npos] { attrs.push(self.display(n)); }
+        }
+        if let HeapObj::Tuple(kw) = self.heap.get(names) { for &n in kw { attrs.push(self.display(n)); } }
+        for a in &attrs {
+            match self.load_attr(subj, a, chunk, slots) {
+                Ok(()) => {}
+                // A missing attribute fails the pattern instead of raising.
+                Err(VmErr::Attribute(_)) => { self.stack.truncate(base); self.push(Val::none()); return Ok(()); }
+                Err(e) => return Err(e),
+            }
+        }
+        let values = self.stack.split_off(base);
+        let t = self.heap.alloc(HeapObj::Tuple(values))?;
+        self.push(t);
+        Ok(())
     }
 
     /* instance fallback via `__getattr__(name)`. Called by `LoadAttr` / `CallMethod` after the normal lookup raises `AttributeError`. */
@@ -253,6 +312,11 @@ impl<'a> VM<'a> {
         // Borrow, don't clone, `chunk` outlives every `&mut self` call below.
         let name = chunk.names.get(name_idx as usize).ok_or(VmErr::Runtime("LoadAttr: bad name index"))?;
         let obj = self.pop()?;
+        self.load_attr(obj, name, chunk, slots)
+    }
+
+    /* Pushes `obj.name`, shared by LoadAttr and class patterns. */
+    pub(crate) fn load_attr(&mut self, obj: Val, name: &str, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let lookup = match self.resolve_attr(obj, name) {
             Ok(l) => l,
             Err(VmErr::Attribute(msg)) => {
@@ -302,6 +366,10 @@ impl<'a> VM<'a> {
                 let v = self.heap.alloc(HeapObj::Str(s))?;
                 self.push(v);
                 Ok(())
+            }
+            AttrLookup::Thunk(f) => {
+                self.push(f);
+                self.exec_call(0, chunk, slots)
             }
         }
     }

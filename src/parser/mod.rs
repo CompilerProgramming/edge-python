@@ -39,6 +39,12 @@ pub(super) const fn pack_call(pos: u16, kw: u16) -> u16 {
     ((kw & 0xFF) << 8) | (pos & 0xFF)
 }
 
+// Operand of a binary op written as `op=`, so the VM asks `__iop__` first.
+pub const INPLACE: u16 = 1;
+
+// Marks a fused builtin call given `*` or `**`, whose packed operand the VM runs as a plain call.
+pub const SPREAD_ARGS: u16 = 0x8000;
+
 // Shared spec -> compiled-chunk cache, a Vec (linear scan) avoids a hashbrown monomorphization.
 pub(crate) type ModuleCache = alloc::rc::Rc<core::cell::RefCell<Vec<(String, alloc::rc::Rc<SSAChunk>)>>>;
 

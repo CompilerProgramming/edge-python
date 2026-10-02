@@ -181,6 +181,14 @@ pub enum HeapObj {
     Module(String, Vec<(String, Val)>),
     /* A native binding lifted to a first-class callable. */
     Extern(ExternFn),
+    // `list[int]`, the origin type or alias and its args tuple.
+    GenericAlias(Val, Val),
+    // `type X = v`, the name and a zero-argument function that evaluates `v` on `X.__value__`.
+    TypeAlias(String, Val),
+    // `int | str`, the member types as one tuple.
+    Union(Val),
+    // `T` of a `class Box[T]` type parameter list.
+    TypeVar(String),
 }
 
 pub use crate::vm::methods::BuiltinMethodId;
@@ -424,10 +432,13 @@ pub(crate) fn for_each_val(obj: &HeapObj, mut f: impl FnMut(Val)) {
         }
         HeapObj::Module(_, attrs) => for (_, v) in attrs { f(*v); },
         HeapObj::ExcInstance(_, args) => for &v in args { f(v); },
+        HeapObj::GenericAlias(origin, args) => { f(*origin); f(*args); }
+        HeapObj::TypeAlias(_, value) => f(*value),
+        HeapObj::Union(args) => f(*args),
         // Variants without Val payloads, terminal, nothing to trace.
         HeapObj::Str(_) | HeapObj::Bytes(_) | HeapObj::LongInt(_)
         | HeapObj::Type(_) | HeapObj::NativeFn(_) | HeapObj::Range(..)
-        | HeapObj::Extern(_) | HeapObj::Ellipsis | HeapObj::NotImplemented => {}
+        | HeapObj::Extern(_) | HeapObj::Ellipsis | HeapObj::NotImplemented | HeapObj::TypeVar(_) => {}
     }
 }
 
@@ -727,6 +738,10 @@ impl HeapPool {
                 Some(HeapObj::PropertySetter(..)) => 30,
                 Some(HeapObj::StaticMethod(..)) => 31,
                 Some(HeapObj::ClassMethod(..)) => 32,
+                Some(HeapObj::GenericAlias(..)) => 33,
+                Some(HeapObj::TypeAlias(..)) => 34,
+                Some(HeapObj::TypeVar(_)) => 35,
+                Some(HeapObj::Union(_)) => 36,
                 None => 0,
             }
         } else { 0 }

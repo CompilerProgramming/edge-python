@@ -284,10 +284,11 @@ Dunders are looked up on the class chain. The instance dict is skipped, so assig
 | `a // b` | `__floordiv__` | `__rfloordiv__` |
 | `a % b` | `__mod__` | `__rmod__` |
 | `a ** b` | `__pow__` | `__rpow__` |
+| `a @ b` | `__matmul__` | `__rmatmul__` |
 | `-a` | `__neg__` | - |
 | `+a` | `__pos__` | - |
 
-Return `NotImplemented` from the forward op to make the VM try the reflected op on the other operand. If both return `NotImplemented` (or neither is defined), the operation raises `TypeError`.
+Return `NotImplemented` from the forward op to make the VM try the reflected op on the other operand. If both return `NotImplemented` (or neither is defined), the operation raises `TypeError`. An augmented assignment such as `a += b` first calls the in-place dunder (`__iadd__`, `__imatmul__`, ...) and falls back to this pair when it is missing or returns `NotImplemented`.
 
 Subclass-first ordering applies here. When `type(b)` is a strict subclass of `type(a)`, `b.__radd__` runs before `a.__add__`. This lets a subclass override an inherited reflected op without touching the base.
 
@@ -489,7 +490,7 @@ True
 
 `hash(x)` calls `__hash__`. It must return an `int`, which is masked to `INT_MAX`.
 
-Eq/hash invariant. A class that defines `__eq__` without `__hash__` is unhashable. `hash(x)` and `{x: 1}` raise `TypeError`. This prevents inconsistent dict keys.
+Eq/hash invariant. A class that defines `__eq__` without `__hash__` is unhashable. `hash(x)` and `{x: 1}` raise `TypeError`. This prevents inconsistent dict keys. `object.__hash__` is the identity hash every instance inherits, so `__hash__ = object.__hash__` keeps such a class hashable.
 
 ```edge-python
 class K:
@@ -599,7 +600,6 @@ Parsed for compatibility but never invoked on user classes:
 
 - `__init_subclass__`, `__set_name__`, descriptors (`__get__` / `__set__` / `__delete__`)
 - `__new__`. The VM constructs the instance and `__init__` runs user logic.
-- Augmented-assignment dunders (`__iadd__`, ...). `a += b` desugars to `a = a + b`, so `__add__` covers it. Exception: list `+=` extends in place (alias-visible). See [Data types](/docs/language/data-types#list).
 - Async dunders (`__aenter__` / `__aexit__` / `__aiter__` / `__anext__`). `async with` and `async for` use the sync paths. See [Async](/docs/language/async).
 
 ## What classes do not support

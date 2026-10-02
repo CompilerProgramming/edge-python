@@ -51,6 +51,9 @@ fn hash_depth(v: Val, heap: &HeapPool, depth: usize) -> u64 {
         // Order-independent so equal frozensets hash equal, and a set probes like the frozenset it equals.
         HeapObj::FrozenSet(s) => { h.write_u8(4); let acc = s.iter().fold(0u64, |a, &e| a.wrapping_add(hash_depth(e, heap, depth + 1))); h.write_u64(acc); }
         HeapObj::Set(s) => { h.write_u8(4); let acc = s.borrow().iter().fold(0u64, |a, &e| a.wrapping_add(hash_depth(e, heap, depth + 1))); h.write_u64(acc); }
+        HeapObj::GenericAlias(o, a) => { h.write_u8(5); h.write_u64(hash_depth(*o, heap, depth + 1)); h.write_u64(hash_depth(*a, heap, depth + 1)); }
+        // Order-independent, `int | str` and `str | int` are one union.
+        HeapObj::Union(a) => if let HeapObj::Tuple(t) = heap.get(*a) { h.write_u8(6); h.write_u64(t.iter().fold(0u64, |acc, &e| acc.wrapping_add(hash_depth(e, heap, depth + 1)))); },
         _ => h.write_u64(v.0),
     }
     h.finish()
@@ -132,6 +135,11 @@ fn eq_vals_depth(a: Val, b: Val, heap: &HeapPool, depth: usize) -> bool {
         (HeapObj::FrozenSet(x), HeapObj::Set(y)) => eq_set(x, &y.borrow(), |a,b| eq_vals_depth(a, b, heap, d)),
         (HeapObj::Dict(x), HeapObj::Dict(y)) => eq_dict(&x.borrow(), &y.borrow(), heap, |a,b| eq_vals_depth(a, b, heap, d)),
         (HeapObj::Type(x), HeapObj::Type(y)) => x == y, // by name, interning also makes `is` hold
+        (HeapObj::GenericAlias(o1, a1), HeapObj::GenericAlias(o2, a2)) => eq_vals_depth(*o1, *o2, heap, d) && eq_vals_depth(*a1, *a2, heap, d),
+        (HeapObj::Union(a1), HeapObj::Union(a2)) => match (heap.get(*a1), heap.get(*a2)) {
+            (HeapObj::Tuple(x), HeapObj::Tuple(y)) => x.len() == y.len() && x.iter().all(|&m| y.iter().any(|&n| eq_vals_depth(m, n, heap, d))),
+            _ => false,
+        },
         (HeapObj::Range(s1,e1,t1), HeapObj::Range(s2,e2,t2)) => {
             // Python semantics, equal length, then matching start/step only when non-empty.
             let (l1, l2) = (range_len(*s1,*e1,*t1), range_len(*s2,*e2,*t2));
@@ -143,7 +151,7 @@ fn eq_vals_depth(a: Val, b: Val, heap: &HeapPool, depth: usize) -> bool {
 }
 
 /* Count of values range(start, stop, step) yields, step is never zero. */
-fn range_len(s: i64, e: i64, t: i64) -> i128 {
+pub(crate) fn range_len(s: i64, e: i64, t: i64) -> i128 {
     let (lo, hi, step) = if t > 0 { (s as i128, e as i128, t as i128) } else { (e as i128, s as i128, -(t as i128)) };
     if hi > lo { (hi - lo + step - 1) / step } else { 0 }
 }

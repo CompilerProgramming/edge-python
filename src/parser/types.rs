@@ -57,6 +57,16 @@ pub enum OpCode {
     Swap,
     // Lift the third stack value to the top.
     Rot3,
+    // `a @ b`, answered only by `__matmul__` or `__rmatmul__`.
+    MatMul,
+    // Wraps the value function on the stack in a type alias, operand indexes its name.
+    MakeTypeAlias,
+    // Pushes a type parameter, operand indexes its name.
+    MakeTypeVar,
+    /* `case C(p, k=q)`, pops subject, class and keyword names, pushes the matched attribute values or None. Operand is the positional count. */
+    MatchClass,
+    // Pop a value, push whether it matches a mapping pattern (dict).
+    MatchMap,
 }
 
 // Python builtin name -> (specialised OpCode, `leaves_value_on_stack`).
@@ -548,16 +558,24 @@ pub(super) fn push_escape(out: &mut String, chars: &mut core::iter::Peekable<cor
     }
 }
 
-// Builtin types registered as Type heap objects at VM init.
-pub const BUILTIN_TYPES: &[&str] = &[
+// Builtin types registered as Type heap objects at VM init, a match so a user name misses without a scan.
+macro_rules! builtin_types {
+    ($($name:literal),* $(,)?) => {
+        pub fn builtin_type(name: &str) -> Option<&'static str> {
+            match name { $($name => Some($name),)* _ => None }
+        }
+    };
+}
+builtin_types! {
     "int", "float", "str", "bytes", "bool", "list",
     "tuple", "dict", "set", "frozenset", "range", "slice", "type", "NoneType", "object",
     "Exception", "BaseException",
     "ValueError", "TypeError", "NameError", "KeyError",
+    "UnicodeError", "UnicodeEncodeError", "UnicodeDecodeError",
     "IndexError", "AttributeError", "RuntimeError",
     "ZeroDivisionError", "OverflowError", "MemoryError",
     "RecursionError", "StopIteration", "NotImplementedError",
     "OSError", "PermissionError", "IOError", "ImportError", "ModuleNotFoundError",
     "AssertionError", "ArithmeticError", "LookupError",
     "CancelledError", "TimeoutError", "SystemExit",
-];
+}

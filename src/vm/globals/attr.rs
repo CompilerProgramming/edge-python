@@ -72,7 +72,7 @@ impl<'a> VM<'a> {
             return Ok(());
         }
         let ty = self.type_name(obj);
-        if let Some(method_id) = crate::vm::methods::lookup_method(ty, &name) {
+        if let Some(method_id) = crate::vm::methods::lookup_method(ty, &name).or_else(|| self.object_attr(obj, &name)) {
             let bound = self.heap.alloc(HeapObj::BoundMethod(obj, method_id))?;
             self.push(bound);
             return Ok(());
@@ -110,7 +110,7 @@ impl<'a> VM<'a> {
             _ => false,
         };
         let ty = self.type_name(obj);
-        let exists = is_class_attr || is_func_attr || is_module_attr || is_bound_attr || crate::vm::methods::lookup_method(ty, &name).is_some();
+        let exists = is_class_attr || is_func_attr || is_module_attr || is_bound_attr || self.object_attr(obj, &name).is_some() || crate::vm::methods::lookup_method(ty, &name).is_some();
         self.push(Val::bool(exists));
         Ok(())
     }

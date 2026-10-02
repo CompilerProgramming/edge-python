@@ -4,7 +4,9 @@ pub mod bytes;
 pub mod dict;
 pub mod list;
 pub mod numeric;
+pub mod object;
 pub mod set;
+pub mod slice;
 pub mod string;
 
 use prelude::{VM, Val, VmErr, cold_type};
@@ -162,9 +164,15 @@ pub static ALL_METHODS: &[MethodDesc] = methods! {
     "float" {
         "is_integer" => numeric::is_integer, ro, 0..0;
     }
-    // Appended group, keeps snapshot method ids stable.
+    // Appended groups, keep snapshot method ids stable.
     "dict" {
         "clear" => dict::clear, rw, 0..0;
+    }
+    "slice" {
+        "indices" => slice::indices, ro, 1..1;
+    }
+    "object" {
+        "__hash__" => object::hash, ro, 0..1;
     }
 };
 
