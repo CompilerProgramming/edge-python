@@ -22,8 +22,7 @@ const arrow = 'absolute top-0 flex size-7 items-center justify-center rounded-fu
 const edge = 'pointer-events-none absolute inset-y-0 w-16 from-page to-transparent opacity-0 backdrop-blur-[2px] transition-opacity data-shown:opacity-100'
 ---
 
-{/* The whole page a tenth larger than the rest of the site. */}
-<html lang="en" style="--zoom: 1.1; zoom: var(--zoom)">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -38,10 +37,9 @@ const edge = 'pointer-events-none absolute inset-y-0 w-16 from-page to-transpare
     document.documentElement.dataset.theme = localStorage.getItem('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
   </script>
 </head>
-{/* A zoomed page counts the screen a tenth taller too, so the body takes it back to stay one screen. */}
-<body class="bg-page text-fg flex min-h-[calc(100dvh/var(--zoom))] items-center justify-center p-3.5">
-  {/* The site header out of the flow like the footer, and at the size the rest of the site draws it. */}
-  <div class="fixed inset-x-0 top-0 z-10" style="zoom: calc(1 / var(--zoom))">
+<body class="bg-page text-fg flex min-h-dvh items-center justify-center p-3.5">
+  {/* The site header out of the flow like the footer, so the bar keeps the middle of the screen. */}
+  <div class="fixed inset-x-0 top-0 z-10">
     <Header />
     <SignIn />
   </div>
