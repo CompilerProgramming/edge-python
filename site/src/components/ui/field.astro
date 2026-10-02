@@ -38,6 +38,8 @@ const { name, label, hideLabel = false, type = 'text', placeholder, required = f
       aria-describedby={error ? `${name}-error` : undefined}
       class="peer bg-surface focus:outline-none placeholder:text-fg-placeholder w-full"
     />
+    {/* What a page sets at the end of the field, a later sibling of the input so it can answer to it. */}
+    <slot />
     {clearable && (
       <button type="button" aria-label="Clear" data-clear class="shrink-0 text-fg-placeholder hover:text-fg transition peer-placeholder-shown:hidden">
         <Icon name="close" size="sm" />

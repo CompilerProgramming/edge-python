@@ -1,0 +1,156 @@
+---
+import { env } from 'cloudflare:workers'
+import Base from '../../layouts/base.astro'
+import Icon from '../../components/ui/icon.astro'
+import Field from '../../components/ui/field.astro'
+import Avatar from '../../components/ui/avatar.astro'
+import LinkList from '../../components/ui/link-list.astro'
+import { gallery, papers, type Program } from '../../data/gallery'
+import { avatarFor } from '../../lib/account/avatar'
+import { publicUser, userByHandle } from '../../lib/server/users'
+
+// A query arrives in the url, so the shelf reads right before any script runs.
+const asked = (Astro.url.searchParams.get('q') ?? '').trim().slice(0, 64)
+
+// What a filter reads of a program, the name and what it says about itself.
+const text = (program: Program) => `${program.name} ${program.description}`.toLowerCase()
+const matches = (program: Program) => text(program).includes(asked.toLowerCase())
+
+const total = gallery.length
+
+// The start opens the newest program, which the list holds first.
+const latest = gallery[0]!
+const guides = [{ icon: latest.icon, label: latest.name, detail: 'The newest program in the gallery', href: `/gallery/${latest.slug}` }]
+
+// Each author with the avatar their profile shows, one read however many programs they wrote.
+const authors = new Map(await Promise.all([...new Set(gallery.map((program) => program.author))].map(async (handle) => {
+  const found = await userByHandle(env.DB, handle)
+  return [handle, found ? (publicUser(found).avatar ?? avatarFor(found.id)) : avatarFor(handle)] as const
+})))
+---
+
+<Base title="Gallery" description="Programs that run on Edge Python, each one a page to try.">
+  <div class="flex w-full flex-col gap-9">
+    <div class="flex items-start gap-4">
+      <div class="flex flex-col gap-2">
+        <h1 class="text-xl font-semibold">Gallery</h1>
+        <span class="flex items-center gap-1.5 text-2xs text-fg-hint"><Icon name="microscope" size="xs" />{total} {total === 1 ? 'program' : 'programs'}</span>
+      </div>
+
+      <button type="button" popovertarget="papers" class="ml-auto flex items-center gap-2 rounded-full border border-line px-4 py-1 text-sm text-fg-hint transition hover:text-fg"><Icon name="lectern" />Papers</button>
+    </div>
+
+    <section class="flex flex-col gap-2">
+      <h2 class="ml-4">Get started</h2>
+      <LinkList links={guides} />
+    </section>
+
+    <section class="flex flex-col gap-3">
+      <h2 class="ml-4">Programs</h2>
+
+      <form data-gallery-filter role="search" class="w-full text-sm sm:w-[341px]">
+        <Field name="q" label="Filter the gallery" hideLabel type="search" placeholder="Filter the gallery" icon="search" value={asked} class="[&>span]:h-8.5 [&>span]:py-0 [&>span]:transition-shadow [&>span]:focus-within:border-link/60 [&>span]:focus-within:ring-2 [&>span]:focus-within:ring-link/20" />
+      </form>
+
+      {/* Each card laid out as a package is, without the downloads a package counts. */}
+      <ul data-gallery class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        {gallery.map((program) => (
+          <li data-text={text(program)} hidden={!matches(program)} class="relative rounded-2xl border border-line-strong bg-page p-4 has-[a:focus-visible]:ring-1 has-[a:focus-visible]:ring-line-emphasis">
+            <div class="mb-3">
+              <h3 class="mb-1 text-sm font-semibold">
+                <a href={`/gallery/${program.slug}`} class="after:absolute after:inset-0 after:rounded-2xl hover:underline focus-visible:outline-none">{program.name}</a>
+              </h3>
+              <p class="text-fg-muted">{program.description}</p>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <Avatar {...authors.get(program.author)!} />
+              <p><a href={`/@${program.author}`} class="relative underline">@{program.author}</a></p>
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      <p data-gallery-empty hidden={gallery.some(matches)} class="ml-4 text-sm text-fg-hint">Nothing in the gallery matches that.</p>
+    </section>
+  </div>
+
+  {/* Laid out as the search palette is, and dismissed the same way, with Escape or a click outside. */}
+  <div popover id="papers" data-papers class="m-auto w-full max-w-[600px] max-h-[calc(100dvh-3.5rem)] border-0 bg-transparent p-3.5 opacity-0 backdrop:bg-scrim backdrop:backdrop-blur-[1px] transition-all transition-discrete open:opacity-100 starting:open:opacity-0">
+    <div class="overflow-hidden rounded-2xl border border-line bg-surface text-xs">
+      <span class="flex h-11 items-center gap-2 border-b border-line-strong px-4 text-fg-subtle">
+        <Icon name="search" size="sm" class="shrink-0" />
+        <input
+          type="search" aria-label="Filter the papers" placeholder="Filter the papers" autocomplete="off"
+          class="w-full bg-transparent text-sm placeholder:text-fg-placeholder focus:outline-none"
+        />
+        <kbd class="shrink-0 rounded border border-line-strong px-1 font-sans text-2xs text-fg-hint">Esc</kbd>
+      </span>
+
+      {/* As tall as the search palette with nothing typed, so the two read as one. */}
+      <div class="h-[309px] max-h-[calc(100dvh-8rem)] overflow-y-auto overscroll-contain py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <ul>
+          {papers.map((paper) => (
+            <li data-text={`${paper.title} ${paper.detail}`.toLowerCase()}>
+              <a href={paper.href} class="flex w-full items-center gap-2 px-4 py-2 text-left transition hover:bg-line-strong focus-visible:bg-line-strong focus-visible:outline-none">
+                <span class="min-w-0">
+                  <span class="block truncate">{paper.title}</span>
+                  <span class="block truncate text-2xs text-fg-hint">{paper.detail}</span>
+                </span>
+              </a>
+            </li>
+          ))}
+        </ul>
+
+        <p data-papers-empty hidden class="px-4 py-1.5 text-fg-hint">Nothing matches that.</p>
+      </div>
+    </div>
+  </div>
+</Base>
+
+<script>
+  import { offer } from '../../lib/account/form'
+
+  // Both lists are short and already on the page, so filtering is hiding.
+  const filter = (rows: NodeListOf<HTMLElement>, empty: HTMLElement, asked: string) => {
+    rows.forEach((row) => { row.hidden = !row.dataset.text!.includes(asked.toLowerCase()) })
+    empty.hidden = [...rows].some((row) => !row.hidden)
+  }
+
+  const form = document.querySelector<HTMLFormElement>('[data-gallery-filter]')!
+  const input = form.querySelector('input')!
+  const cards = document.querySelectorAll<HTMLElement>('[data-gallery] > li')
+  const empty = document.querySelector<HTMLElement>('[data-gallery-empty]')!
+
+  // The query stays in the url, so a filtered gallery can be shared.
+  form.addEventListener('submit', (event) => event.preventDefault())
+  input.addEventListener('input', () => {
+    const asked = input.value.trim()
+    filter(cards, empty, asked)
+
+    const params = new URLSearchParams(location.search)
+    if (asked) params.set('q', asked)
+    else params.delete('q')
+    history.replaceState(null, '', params.size ? `?${params}` : location.pathname)
+  })
+
+  const papers = document.querySelector<HTMLElement>('[data-papers]')!
+  const search = papers.querySelector('input')!
+  const rows = papers.querySelectorAll<HTMLElement>('li')
+  const none = papers.querySelector<HTMLElement>('[data-papers-empty]')!
+
+  // Each opening starts from the whole list, as the search palette does.
+  papers.addEventListener('toggle', (event) => {
+    if ((event as ToggleEvent).newState !== 'open') return
+    search.value = ''
+    filter(rows, none, '')
+    offer(search)
+  })
+
+  search.addEventListener('input', () => filter(rows, none, search.value.trim()))
+  search.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    papers.querySelector<HTMLAnchorElement>('li:not([hidden]) a')?.click()
+  })
+</script>

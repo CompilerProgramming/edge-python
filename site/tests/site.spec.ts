@@ -4,6 +4,7 @@ import { test, unique } from './helpers'
 const routes = [
   { path: '/', group: 'Explore', label: 'Packages' },
   { path: '/templates', group: 'Explore', label: 'Templates' },
+  { path: '/gallery', group: 'Explore', label: 'Gallery' },
   { path: '/docs/getting-started/introduction', group: 'Docs', label: 'Getting started' }
 ]
 

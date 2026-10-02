@@ -1,0 +1,116 @@
+---
+import { Font } from 'astro:assets'
+import '../../styles/global.css'
+import Field from '../../components/ui/field.astro'
+import Icon from '../../components/ui/icon.astro'
+import Mark from '../../assets/mark.svg'
+
+// Repos a visitor may know, each a tag that fills the bar.
+const examples = [
+  ['linux', 'torvalds/linux'], ['npm', 'npm/cli'], ['react', 'facebook/react'], ['node', 'nodejs/node'], ['rust', 'rust-lang/rust'],
+  ['go', 'golang/go'], ['kubernetes', 'kubernetes/kubernetes'], ['vscode', 'microsoft/vscode'], ['next.js', 'vercel/next.js'], ['vue', 'vuejs/core'],
+  ['svelte', 'sveltejs/svelte'], ['deno', 'denoland/deno'], ['django', 'django/django'], ['flask', 'pallets/flask'], ['pytorch', 'pytorch/pytorch'],
+  ['express', 'expressjs/express'], ['rails', 'rails/rails'], ['curl', 'curl/curl'], ['openssl', 'openssl/openssl'], ['git', 'git/git']
+]
+
+// Taller than a form field, lit while the pointer rests on it and held lit while it has the focus.
+const bar ='[&>span]:py-2.5 [&>span]:transition-shadow [&>span]:hover:border-link/60 [&>span]:hover:ring-2 [&>span]:hover:ring-link/20 [&>span]:focus-within:border-link/60 [&>span]:focus-within:ring-2 [&>span]:focus-within:ring-link/20'
+const tag = 'shrink-0 whitespace-nowrap rounded-full border border-line-strong px-3 py-1 text-xs text-fg-faint transition hover:text-fg'
+const arrow = 'absolute top-0 flex size-7 items-center justify-center rounded-full border border-line bg-page text-fg-subtle transition enabled:hover:text-fg disabled:text-fg-disabled'
+const edge = 'pointer-events-none absolute inset-y-0 w-16 from-page to-transparent opacity-0 backdrop-blur-[2px] transition-opacity data-shown:opacity-100'
+---
+
+{/* The whole page a tenth larger than the rest of the site. */}
+<html lang="en" style="--zoom: 1.1; zoom: var(--zoom)">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rails cracker on Edge Python</title>
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <Font cssVariable="--font-inter" preload />
+  <Font cssVariable="--font-jetbrains-mono" />
+  {/* The theme the rest of the site chose, or the device when nobody chose one. */}
+  <script is:inline>
+    document.documentElement.dataset.theme = localStorage.getItem('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (event) => {
+      if (!localStorage.getItem('theme')) document.documentElement.dataset.theme = event.matches ? 'dark' : 'light'
+    })
+  </script>
+</head>
+{/* A zoomed page counts the screen a tenth taller too, so the body takes it back to stay one screen. */}
+<body class="bg-page text-fg flex min-h-[calc(100dvh/var(--zoom))] items-center justify-center p-3.5">
+  {/* Lines from both edges into the bar, left out on a phone. */}
+  <canvas data-flow aria-hidden="true" class="pointer-events-none fixed inset-0 hidden size-full md:block"></canvas>
+
+  {/* The hidden label keeps its row, so its gap goes too or the bar sits low. */}
+  <form role="search" class="relative w-full max-w-[600px] text-base [&>div]:gap-0">
+    {/* Above and below the bar out of the flow, so the bar keeps the middle of the screen. */}
+    <div class="absolute inset-x-0 bottom-full mb-8 text-center">
+      <h1 class="text-xl text-fg">Trace a repo to its vulnerabilities</h1>
+      <p class="mt-1 text-fg-hint">Edge Python reads its code as a graph, not as text.</p>
+    </div>
+
+    <Field name="repo" label="GitHub repo" hideLabel placeholder="Paste a GitHub repo" icon="search" autocomplete="off" autocapitalize="off" spellcheck="false" class={bar}>
+      {/* Solid in the colour of the text, shown only once the bar holds something to send. */}
+      <button type="submit" aria-label="Trace" class="-my-1.5 -mr-2.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-fg text-page transition hover:bg-solid-hover peer-placeholder-shown:hidden">
+        <Icon name="up" size="sm" />
+      </button>
+    </Field>
+
+    {/* As wide as the bar, the tags running under the round arrows, which cut them on their own curve. */}
+    <div class="absolute inset-x-0 top-full mt-4 h-7">
+      <div data-examples class="flex h-full items-center gap-2 overflow-x-auto scroll-smooth px-9 motion-reduce:scroll-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {examples.map(([label, repo]) => <button type="button" data-repo={repo} class={tag}>{label}</button>)}
+      </div>
+
+      {/* A soft edge on each side, shown while tags hide behind its arrow. */}
+      <span aria-hidden="true" data-edge="-1" class:list={[edge, 'left-0 bg-linear-to-r [mask-image:linear-gradient(to_right,black_45%,transparent)]']}></span>
+      <span aria-hidden="true" data-edge="1" class:list={[edge, 'right-0 bg-linear-to-l [mask-image:linear-gradient(to_left,black_45%,transparent)]']}></span>
+
+      <button type="button" data-scroll="-1" aria-label="Earlier examples" class:list={[arrow, 'left-0']}><Icon name="next" size="sm" class="rotate-180" /></button>
+      <button type="button" data-scroll="1" aria-label="More examples" class:list={[arrow, 'right-0']}><Icon name="next" size="sm" /></button>
+    </div>
+  </form>
+
+  <footer class="fixed inset-x-0 bottom-0 flex justify-center py-6 text-xs text-fg-disabled">
+    <a href="/" class="flex items-center gap-2 hover:underline"><Mark class="h-3.5 w-auto" aria-hidden="true" />Edge Python</a>
+  </footer>
+
+  <script>
+    import { flow } from '../../lib/gallery/flow'
+
+    const canvas = document.querySelector<HTMLCanvasElement>('[data-flow]')!
+    const input = document.querySelector<HTMLInputElement>('input[name="repo"]')!
+    const examples = document.querySelector<HTMLElement>('[data-examples]')!
+    const arrows = document.querySelectorAll<HTMLButtonElement>('[data-scroll]')
+    const edges = document.querySelectorAll<HTMLElement>('[data-edge]')
+
+    flow(canvas, input.parentElement!)
+
+    // Nothing runs a trace yet, so sending keeps the page where it is.
+    document.querySelector('form')!.addEventListener('submit', (event) => event.preventDefault())
+
+    // An arrow rests and its edge clears once nothing is left on its side.
+    const ends = () => {
+      const left = examples.scrollLeft > 0
+      const right = examples.scrollLeft + examples.clientWidth < examples.scrollWidth - 1
+      arrows.forEach((each) => { each.disabled = !(each.dataset.scroll === '-1' ? left : right) })
+      edges.forEach((each) => each.toggleAttribute('data-shown', each.dataset.edge === '-1' ? left : right))
+    }
+
+    arrows.forEach((each) => each.addEventListener('click', () => examples.scrollBy({ left: Number(each.dataset.scroll) * examples.clientWidth * 0.8 })))
+    examples.addEventListener('scroll', ends, { passive: true })
+    addEventListener('resize', ends)
+    ends()
+
+    // A tag puts its repo in the bar, ready to send.
+    examples.addEventListener('click', (event) => {
+      const repo = (event.target as HTMLElement).closest<HTMLElement>('[data-repo]')?.dataset.repo
+      if (!repo) return
+      input.value = repo
+      input.focus()
+    })
+  </script>
+</body>
+</html>
