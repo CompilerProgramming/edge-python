@@ -179,6 +179,18 @@ const worker = await createWorker({
 
 Every worker lives in a sandboxed frame with an origin of its own, so a program holds none of the page's cookies or storage and cannot reach its DOM, even one the page did not write. The page hands the frame the engine and reads the program's files for it, and the browser lets the frame connect only to the origins its imports name and the hosts its permissions grant, so a request the grants would miss still never leaves.
 
+### Trace
+
+A worker created with `trace: true` reports every system call of a run through `onTrace`, timed in milliseconds from the start of the run, which the first event gives as milliseconds since the epoch. An event names the package, the call, what it reached and how it ended, which for `net` is the method, host and path, for `secret` the name and for `time` the clock. It never carries a secret value, a body, a header or a query. A `print` and a wait on the wall clock arrive in the same stream.
+
+```js
+const worker = await createWorker({ trace: true, permissions: { main: ["net:api.example.com"] } });
+worker.onTrace((event) => console.log(event));
+// { kind: "call", at: 2.4, ms: 181, pkg: "main", call: "net.response", scope: "", outcome: "ok", id: 1, status: 200 }
+```
+
+A `batch` reports as one call. The calls inside it are not listed one by one.
+
 ## See also
 
 - [Modules](/docs/reference/modules), edge.json and where each package's manifest sits.

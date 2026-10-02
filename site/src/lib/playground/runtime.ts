@@ -1,3 +1,5 @@
+import type { TraceEvent } from '../../../../js/src/system/trace'
+
 const TIMEOUT_MS = 10000
 const LOAD_MS = 7000
 
@@ -28,6 +30,8 @@ async function lock(imports: Record<string, string>): Promise<Record<string, str
 type Worker = {
   run(source: string, opts?: { entry?: string }): Promise<{ out: string; ms: number }>
   onOutput(handler: (chunk: string) => void): void
+  // Missing from a host built before runs reported what they reached.
+  onTrace?(handler: (event: TraceEvent) => void): void
   dispose(): void
 }
 
@@ -35,6 +39,7 @@ type Worker = {
 const rooms = new Map<string, Promise<Worker>>()
 const ready = new Set<string>()
 let sink: ((chunk: string) => void) | null = null
+let tracer: ((event: TraceEvent) => void) | null = null
 let queue: Promise<unknown> = Promise.resolve()
 
 async function kill(key: string) {
@@ -42,6 +47,7 @@ async function kill(key: string) {
   rooms.delete(key)
   ready.delete(key)
   sink = null
+  tracer = null
 
   try {
     ;(await pending)?.dispose()
@@ -58,8 +64,9 @@ function spawn(cdn: string, key: string, manifest: Manifest, onPhase?: (phase: P
     const { createWorker } = await import(/* @vite-ignore */ `${cdn}/js/src/index.js`)
 
     onPhase?.('worker')
-    const spawned: Worker = await createWorker({ wasmUrl: `${cdn}/compiler.wasm`, imports, permissions: manifest.permissions ?? {} })
+    const spawned: Worker = await createWorker({ wasmUrl: `${cdn}/compiler.wasm`, imports, permissions: manifest.permissions ?? {}, trace: true })
     spawned.onOutput((chunk) => sink?.(chunk))
+    spawned.onTrace?.((event) => tracer?.(event))
     ready.add(key)
 
     return spawned
@@ -95,8 +102,9 @@ export async function run(
   cdn: string,
   manifest: Manifest,
   onChunk: (chunk: string) => void,
-  onPhase?: (phase: Phase) => void
-): Promise<{ error: string; ms: number }> {
+  onPhase?: (phase: Phase) => void,
+  onTrace?: (event: TraceEvent) => void
+): Promise<{ error: string; ms: number; traced: boolean }> {
   // Two examples whose manifests read the same share one room.
   const key = JSON.stringify(manifest)
 
@@ -104,6 +112,7 @@ export async function run(
     const active = await spawn(cdn, key, manifest, ready.has(key) ? undefined : onPhase)
     onPhase?.('running')
     sink = onChunk
+    tracer = onTrace ?? null
 
     let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -119,13 +128,14 @@ export async function run(
       })
 
       const { out, ms } = await Promise.race([running, timeout])
-      return { error: out || '', ms }
+      return { error: out || '', ms, traced: typeof active.onTrace === 'function' }
     } catch (error) {
       await kill(key)
       throw error
     } finally {
       clearTimeout(timer)
       sink = null
+      tracer = null
     }
   }
 

@@ -23,14 +23,9 @@ Every runnable example in these docs executes on the real engine through the JS 
 ```edge-python
 import net
 
-url = "https://api.github.com/repos/dylan-sutton-chavez/edge-python"
-
-try:
-  r = net.request("GET", url, {}, None)
-  status, headers = net.response(r)
-  print(status)
-except PermissionError as e:
-  print(e)
+r = net.request("GET", "https://api.github.com/repos/dylan-sutton-chavez/edge-python", {}, None)
+status, headers = net.response(r)
+print(status)
 ```
 
 ```output

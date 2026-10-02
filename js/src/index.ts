@@ -1,5 +1,8 @@
 import type { Limits, RunOpts, ExecResult, WorkerRequest, WorkerMessage } from './protocol.ts';
 import type { Permissions } from './system/grants.ts';
+import type { TraceEvent } from './system/trace.ts';
+
+export type { TraceEvent };
 
 export interface CreateWorkerOpts {
     // The program's directory, the page reads its files and its edge.json for the room.
@@ -8,6 +11,7 @@ export interface CreateWorkerOpts {
     imports?: Record<string, string>
     permissions?: Permissions
     secrets?: Record<string, string>
+    trace?: boolean
     limits?: Limits | null
 }
 
@@ -25,6 +29,7 @@ export interface WorkerHandle {
     clearCache(): Promise<void>
     pushEvent(message: unknown): void
     onOutput(handler: (text: string) => void): void
+    onTrace(handler: (event: TraceEvent) => void): void
     dispose(): void
 }
 
@@ -53,6 +58,7 @@ export async function createWorker(opts: CreateWorkerOpts = {}): Promise<WorkerH
     let reqIdCounter = 0;
     const pending = new Map<number, Pending>();
     let outputHandler: ((text: string) => void) | null = null;
+    let traceHandler: ((event: TraceEvent) => void) | null = null;
 
     const tell = (msg: WorkerRequest) => port.postMessage(msg);
 
@@ -83,6 +89,9 @@ export async function createWorker(opts: CreateWorkerOpts = {}): Promise<WorkerH
         switch (data.type) {
             case 'line':
                 if (outputHandler) outputHandler(data.text);
+                return;
+            case 'trace':
+                traceHandler?.(data.event);
                 return;
             case 'read':
                 void read(data.id, data.url);
@@ -135,6 +144,8 @@ export async function createWorker(opts: CreateWorkerOpts = {}): Promise<WorkerH
         pushEvent,
 
         onOutput(handler: (text: string) => void) { outputHandler = handler; },
+        /* What each run reaches, reported only by a worker created with `trace: true`. */
+        onTrace(handler: (event: TraceEvent) => void) { traceHandler = handler; },
 
         dispose() {
             tell({ type: 'dispose' });

@@ -1,6 +1,7 @@
 /* Shapes crossing the main-thread/worker postMessage boundary. Plain data only, no DOM or WebWorker globals, so both the `dom` and `webworker` lib scopes can import it without mixing libs in one program. */
 
 import type { Permissions } from './system/grants.ts';
+import type { TraceEvent } from './system/trace.ts';
 
 /* Caps a run boots under, a field left out keeps the engine's sandbox value. */
 export interface Limits {
@@ -18,6 +19,8 @@ export interface LoadOpts {
     permissions?: Permissions | null
     // What secret reads, each value only under a name the permissions grant.
     secrets?: Record<string, string> | null
+    // Whether each run reports what it reached, which only an embedder that listens pays for.
+    trace?: boolean | null
     // The program's directory, where its files and its edge.json live.
     baseUrl?: string | null
     limits?: Limits | null
@@ -59,6 +62,7 @@ export type WorkerRequest =
 /* Pushes worker to main. 'response' answers a request's reqId, the rest are unsolicited. */
 export type WorkerMessage =
     | { type: 'line', text: string }
+    | { type: 'trace', event: TraceEvent }
     | { type: 'read', id: number, url: string }
     | { type: 'response', reqId?: number, result: unknown }
     | { type: 'error', reqId?: number, message: string };

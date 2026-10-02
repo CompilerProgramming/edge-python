@@ -1,9 +1,11 @@
 import * as engine from './engine.ts';
 import { errMsg } from '../util.ts';
 import type { WorkerRequest, WorkerMessage } from '../protocol.ts';
+import type { TraceEvent } from '../system/trace.ts';
 
 const post = (msg: WorkerMessage) => self.postMessage(msg);
 const onLine = (text: string) => post({ type: 'line', text });
+const onTrace = (event: TraceEvent) => post({ type: 'trace', event });
 
 /* Fire-and-forget messages return this instead of a result, no 'response' is posted for them. */
 const NO_REPLY: unique symbol = Symbol('no-reply');
@@ -22,7 +24,7 @@ const readFile = (url: string): Promise<Response> => new Promise((resolve, rejec
 function dispatch(req: WorkerRequest): unknown {
     switch (req.type) {
         case 'load': return engine.load(req.opts, readFile);
-        case 'run': return engine.run({ src: req.src, repl: req.repl, entry: req.entry, incremental: req.incremental, input: req.input }, onLine);
+        case 'run': return engine.run({ src: req.src, repl: req.repl, entry: req.entry, incremental: req.incremental, input: req.input }, onLine, onTrace);
         case 'set-preempt-interval': return engine.setPreemptInterval(req.interval);
         case 'pause': return engine.pause();
         case 'resume': return engine.resume();

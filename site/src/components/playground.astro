@@ -20,18 +20,34 @@ const { manifest: written = '{}', code, name, output = '', placeholder, minLines
 
 const rows = Math.min(Math.max(code.split('\n').length, minLines), maxLines)
 
-/* What the example runs under, shown as the file it would be in a project, the page's own package beside its imports. */
+/* A value opened `open` levels deep and kept on one line below that, a list of plain values never split across lines. */
+function layout(value: unknown, open: number, pad = ''): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  const inner = `${pad}  `
+  if (Array.isArray(value)) {
+    if (open <= 0 || value.every((each) => each === null || typeof each !== 'object')) return `[${value.map((each) => layout(each, 0)).join(', ')}]`
+    return `[\n${value.map((each) => `${inner}${layout(each, open - 1, inner)}`).join(',\n')}\n${pad}]`
+  }
+  const entries = Object.entries(value)
+  if (entries.length === 0) return '{}'
+  if (open <= 0) return `{ ${entries.map(([key, each]) => `${JSON.stringify(key)}: ${layout(each, 0)}`).join(', ')} }`
+  return `{\n${entries.map(([key, each]) => `${inner}${JSON.stringify(key)}: ${layout(each, open - 1, inner)}`).join(',\n')}\n${pad}}`
+}
+
+/* What the example runs under, shown as the file it would be in a project, the page's own package beside its imports, as open as the height of the code allows. */
 const manifest = (() => {
   try {
     const declared = JSON.parse(written)
-    return JSON.stringify(imports ? { ...declared, imports: { ...declared.imports, ...imports } } : declared, null, 2)
+    const shown = imports ? { ...declared, imports: { ...declared.imports, ...imports } } : declared
+    for (let open = 8; open > 0; open--) {
+      const text = layout(shown, open)
+      if (text.split('\n').length <= rows) return text
+    }
+    return layout(shown, 0)
   } catch {
     return written
   }
 })()
-
-// Each file keeps its own height, so a short edge.json never sits in the box the code needed.
-const manifestRows = Math.min(manifest.split('\n').length, maxLines)
 
 const panel = 'bg-panel rounded-2xl mb-6'
 const card = 'bg-page border border-line-strong rounded-2xl overflow-hidden p-4'
@@ -46,9 +62,11 @@ const paint = 'pointer-events-none col-start-1 row-start-1 m-0 whitespace-pre p-
 const colors = '[&_span]:text-(--shiki-light) dark:[&_span]:text-(--shiki-dark)'
 const field = 'col-start-1 row-start-1 w-full resize-none overflow-hidden whitespace-pre border-0 bg-transparent p-4 font-mono leading-code text-transparent caret-fg outline-none placeholder:text-fg-placeholder selection:bg-link/30 selection:text-transparent'
 const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
+// The output and the trace share one box, so switching between them never moves the page.
+const box = `min-height:calc(${minLines} * var(--leading-code) + 2rem);max-height:calc(${outputMaxLines} * var(--leading-code) + 2rem)`
 ---
 
-<div data-playground data-cdn={env.CDN} data-min={minLines} data-expected={output}>
+<div data-playground data-cdn={env.CDN} data-min={minLines} data-rows={rows} data-expected={output}>
   <div class={panel}>
     <div class:list={[card, 'text-xs']}>
       <div class={pane} style={tall}>
@@ -60,7 +78,7 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
 
       <div data-manifest hidden class={pane} style={tall}>
         <pre aria-hidden="true" class={paint}><code class={colors}></code></pre>
-        <textarea rows={manifestRows} spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="edge.json" class={field}>{manifest}</textarea>
+        <textarea rows={rows} spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="edge.json" class={field}>{manifest}</textarea>
       </div>
     </div>
 
@@ -79,6 +97,10 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
           </div>
         </div>
       </div>
+
+      <button type="button" data-rerun aria-label="Run" class="flex text-fg-hint transition hover:text-fg-muted">
+        <Icon name="rotate" size="xs" />
+      </button>
     </div>
   </div>
 
@@ -87,12 +109,21 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
       <pre
         data-output
         class="-m-4 p-4 overflow-auto whitespace-pre font-mono leading-code [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        style={`min-height:calc(${minLines} * var(--leading-code) + 2rem);max-height:calc(${outputMaxLines} * var(--leading-code) + 2rem)`}
+        style={box}
       >{output}</pre>
+
+      <div data-trace hidden class="-m-4 p-4 overflow-auto font-mono text-2xs leading-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" style={box}></div>
     </div>
 
     <div class={footer}>
       <span data-status>Output</span>
+
+      {/* Shown once a run reports a trace, which a host built before traces never does. */}
+      <button type="button" data-trace-toggle hidden class="flex items-center gap-1.5 text-fg-hint transition hover:text-fg-muted">
+        <span data-trace-shows="trace" class="flex"><Icon name="binoculars" size="2xs" /></span>
+        <span data-trace-shows="output" class="hidden"><Icon name="output" size="2xs" /></span>
+        <span data-trace-label>Trace</span>
+      </button>
     </div>
   </div>
 </div>
@@ -102,6 +133,7 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
   import { createHighlight } from '../lib/playground/highlight'
   import { applyControls } from '../lib/playground/terminal'
   import { run, type Manifest, type Phase } from '../lib/playground/runtime'
+  import { createTrace } from '../lib/playground/trace'
 
   const PHASES: Record<Phase, string> = {
     lock: 'generating edge.lock…',
@@ -124,6 +156,9 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
     const manifest = root.querySelector<HTMLElement>('[data-manifest]')!
     const declared = manifest.querySelector('textarea')!
     const expected = root.dataset.expected ?? ''
+    const list = root.querySelector<HTMLElement>('[data-trace]')!
+    const toggle = root.querySelector<HTMLButtonElement>('[data-trace-toggle]')!
+    const trace = createTrace(list)
     let running = false
     let queued = false
     let timer = 0
@@ -153,6 +188,8 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
       input: declared,
       view: manifest.querySelector('code')!,
       highlight,
+      // As tall as the code, so switching files never moves the page.
+      minLines: Number(root.dataset.rows) || 1,
       lang: 'json'
     })
 
@@ -162,6 +199,7 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
       ran = snapshot()
 
       let buffer = ''
+      trace.reset()
 
       try {
         // The example runs under the edge.json its tab holds, edits included.
@@ -180,8 +218,12 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
             buffer += chunk
             write(applyControls(buffer).replace(/\n$/, ''))
           },
-          (phase) => { status!.textContent = `Output, ${PHASES[phase]}` }
+          (phase) => { status!.textContent = `Output, ${PHASES[phase]}` },
+          (event) => trace.push(event)
         )
+
+        trace.finish(result.ms)
+        toggle.hidden = !result.traced
 
         const text = applyControls(buffer).replace(/\n$/, '')
         write([text, result.error].filter(Boolean).join('\n'))
@@ -214,6 +256,22 @@ const tall = `max-height:calc(${maxLines} * var(--leading-code) + 2rem)`
         timer = window.setTimeout(settle, SETTLE)
       })
     }
+
+    // Runs the example as it stands, once, after which an edit is what runs it again.
+    const rerun = root.querySelector<HTMLButtonElement>('[data-rerun]')!
+    rerun.addEventListener('click', () => {
+      rerun.hidden = true
+      start()
+    }, { once: true })
+
+    // The box shows what the run printed or what it reached, one at a time.
+    toggle.addEventListener('click', () => {
+      const showing = list.hidden
+      list.hidden = !showing
+      output.hidden = showing
+      toggle.querySelector('[data-trace-label]')!.textContent = showing ? 'Output' : 'Trace'
+      toggle.querySelectorAll<HTMLElement>('[data-trace-shows]').forEach((icon) => icon.classList.toggle('hidden', (icon.dataset.traceShows === 'output') !== showing))
+    })
 
     // Picking a file swaps what the one box shows, and the menu marks the one now open.
     const source = input.parentElement!

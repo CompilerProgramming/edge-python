@@ -7,6 +7,8 @@ import type { Rt, EdgeValue } from '../rt.ts';
 import { nativeTable, resetNativeTable, waiting } from '../native.ts';
 import { SYSTEM } from '../system/index.ts';
 import type { Host } from '../system/index.ts';
+import { printed, traced } from '../system/trace.ts';
+import type { TraceEvent } from '../system/trace.ts';
 import { check, scopes } from '../system/grants.ts';
 import type { Permissions } from '../system/grants.ts';
 import type { CompilerExports } from '../wasm.ts';
@@ -38,6 +40,11 @@ let compilerExports: CompilerExports | null = null;
 let importsMap: Record<string, string> | null = null;
 let permissionsMap: Permissions | null = null;
 let secretsMap: Record<string, string> | null = null;
+// Whether the embedder asked for a trace, where the current run sends it, and when that run began.
+let tracing = false;
+let emitTrace: ((event: TraceEvent) => void) | null = null;
+let runStart = 0;
+const since = () => performance.now() - runStart;
 // The program's directory and the page's reader of its files, which a room cannot fetch itself.
 let programBase: string | null = null;
 let readFile: ((url: string) => Promise<Response>) | null = null;
@@ -75,11 +82,12 @@ const requireExports = (): CompilerExports => {
 const read = (url: string): Promise<Response> => (readFile && programBase && url.startsWith(programBase) ? readFile(url) : fetch(url));
 
 /* Engine orchestrator, internal to the Worker. Consumers use `createWorker` in `src/index.ts`. Lifecycle is `load` once -> many `run` cycles -> `dispose`, and each run instantiates the compiler fresh with no state leak. */
-export async function load({ wasmUrl, wasm = null, imports = null, permissions = null, secrets = null, baseUrl = null, limits: caps = null }: LoadOpts, reader: ((url: string) => Promise<Response>) | null = null): Promise<{ loadMs: number }> {
+export async function load({ wasmUrl, wasm = null, imports = null, permissions = null, secrets = null, trace = false, baseUrl = null, limits: caps = null }: LoadOpts, reader: ((url: string) => Promise<Response>) | null = null): Promise<{ loadMs: number }> {
     const t0 = performance.now();
     importsMap = imports;
     permissionsMap = permissions;
     secretsMap = secrets;
+    tracing = Boolean(trace);
     programBase = baseUrl ? new URL('./', baseUrl).href : null;
     readFile = reader;
     limits = caps;
@@ -99,17 +107,23 @@ export async function load({ wasmUrl, wasm = null, imports = null, permissions =
     return { loadMs: performance.now() - t0 };
 }
 
-export async function run(opts: RunOpts, onLine?: (text: string) => void): Promise<ExecResult> {
+export async function run(opts: RunOpts, onLine?: (text: string) => void, onTrace?: (event: TraceEvent) => void): Promise<ExecResult> {
     running = true;
+    emitTrace = tracing && onTrace ? onTrace : null;
+    // A print lands in the trace beside the calls, timed on the same clock.
+    const line = onLine && emitTrace ? (text: string) => { emitTrace?.(printed(since(), text)); onLine(text); } : onLine;
     try {
         const payload = TE.encode(opts.src);
         // REPL inputs keep the interpreter alive in the wasm instance, implying incremental so the instance itself persists too.
         if (opts.repl) {
-            return await execute({ ...opts, onLine, payload, incremental: true, start: (e, ptr, n) => e.repl_eval(ptr, n) });
+            return await execute({ ...opts, onLine: line, payload, incremental: true, start: (e, ptr, n) => e.repl_eval(ptr, n) });
         }
-        return await execute({ ...opts, onLine, payload, start: (e, ptr, n) => e.run_start(ptr, n) });
+        return await execute({ ...opts, onLine: line, payload, start: (e, ptr, n) => e.run_start(ptr, n) });
     }
-    finally { running = false; }
+    finally {
+        running = false;
+        emitTrace = null;
+    }
 }
 
 /* Shared run/restore core, instance, host imports, prefetch, then drive `start`. */
@@ -158,6 +172,9 @@ async function execute({ src, payload, start, entry = '', onLine, incremental = 
     }
 
     const t0 = performance.now();
+    runStart = t0;
+    // The one wall clock reading of a trace, so a reader can place every event in its own time.
+    emitTrace?.({ kind: 'run', at: 0, epoch: Date.now() });
     pendingHostCalls.clear(); // drop any stale captures from a prior run
     // The compiler copies the source out before the call returns.
     const payloadPtr = writeBytes(exports, payload);
@@ -202,7 +219,8 @@ function serveSystem(exports: CompilerExports, packages: Packages): string[] {
             const calls = Object.entries(system.calls);
             const baseId = nativeTable.length;
             for (const [name, call] of calls) {
-                nativeTable.push(Object.assign(() => {}, { __edge_kind: 'system' as const, __edge_name: name, __edge_module: module, call: call as (...args: EdgeValue[]) => unknown }));
+                const reported = traced(pkg, module, name, call as (...args: EdgeValue[]) => unknown, () => emitTrace, since);
+                nativeTable.push(Object.assign(() => {}, { __edge_kind: 'system' as const, __edge_name: name, __edge_module: module, call: reported }));
             }
             const names = TE.encode(calls.map(([name]) => name).join('\n'));
             exports.register_native_module(writeBytes(exports, spec), spec.length, writeBytes(exports, names), names.length, baseId);
@@ -257,6 +275,7 @@ async function drive(exports: CompilerExports, rt: Rt, status: number, t0: numbe
             const deadlineNs = exports.last_yield_deadline_ns();
             const nowNs = BigInt(Date.now()) * 1_000_000n;
             const waitMs = deadlineNs > nowNs ? Number((deadlineNs - nowNs) / 1_000_000n) : 0;
+            emitTrace?.({ kind: 'sleep', at: since(), ms: waitMs });
             await new Promise(r => setTimeout(r, waitMs));
         } else if (kind === STATUS_PENDING_EVENT) {
             // Drain events buffered before VM was ready. `inject_event` wakes the waiter on the first and queues the rest for later `receive()` calls, no `await` needed.
@@ -437,6 +456,7 @@ export function dispose(): void {
     importsMap = null;
     permissionsMap = null;
     secretsMap = null;
+    tracing = false;
     programBase = null;
     readFile = null;
     fetchedSources.clear();

