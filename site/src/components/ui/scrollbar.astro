@@ -1,30 +1,9 @@
 {/* Drawn over the site and shown only while it scrolls, since the native bar stays hidden. */}
-<div data-scrollbar aria-hidden="true" class="pointer-events-none fixed right-0.5 top-0 z-50 w-1 rounded-full bg-fg-disabled opacity-0 transition-opacity duration-200 data-shown:opacity-100"></div>
+<div data-scrollbar aria-hidden="true" class="pointer-events-none fixed right-0.5 top-0 z-50 w-1 rounded-full bg-fg-disabled opacity-0 transition-[opacity,background-color] duration-200 before:absolute before:inset-y-0 before:-inset-x-1.5 hover:bg-fg-hint data-dragging:bg-fg-hint data-shown:pointer-events-auto data-shown:opacity-100"></div>
 
 <script>
-  // How long it lingers after a scroll, its shortest length and its gap at each end.
-  const LINGER = 400
-  const SHORTEST = 24
-  const EDGE = 2
+  import { scrollbar } from '../../lib/scrollbar'
 
-  const bar = document.querySelector<HTMLElement>('[data-scrollbar]')!
-  let timer: ReturnType<typeof setTimeout> | undefined
-  let frame = 0
-
-  const place = () => {
-    frame = 0
-    const travel = document.documentElement.scrollHeight - innerHeight
-    const room = innerHeight - 2 * EDGE
-    const length = Math.max(SHORTEST, (room * innerHeight) / document.documentElement.scrollHeight)
-    bar.style.height = `${length}px`
-    bar.style.transform = `translateY(${EDGE + (travel > 0 ? (scrollY / travel) * (room - length) : 0)}px)`
-  }
-
-  addEventListener('scroll', () => {
-    if (document.documentElement.scrollHeight <= innerHeight) return
-    frame ||= requestAnimationFrame(place)
-    bar.setAttribute('data-shown', '')
-    clearTimeout(timer)
-    timer = setTimeout(() => bar.removeAttribute('data-shown'), LINGER)
-  }, { passive: true })
+  const { moved } = scrollbar(document.querySelector<HTMLElement>('[data-scrollbar]')!, 'y', (offset) => scrollTo(scrollX, offset))
+  addEventListener('scroll', () => moved({ offset: scrollY, view: innerHeight, total: document.documentElement.scrollHeight, track: innerHeight }), { passive: true })
 </script>

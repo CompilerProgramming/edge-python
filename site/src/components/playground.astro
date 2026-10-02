@@ -50,7 +50,11 @@ const manifest = (() => {
 })()
 
 const panel = 'bg-panel rounded-2xl mb-6'
-const card = 'bg-page border border-line-strong rounded-2xl overflow-hidden p-4'
+const card = 'relative bg-page border border-line-strong rounded-2xl overflow-hidden p-4'
+// Along the foot and the right of a box while a pointer rests in it or its file scrolls that way.
+const thumb = 'pointer-events-none absolute rounded-full bg-fg-disabled opacity-0 transition-[opacity,background-color] duration-200 before:absolute hover:bg-fg-hint data-dragging:bg-fg-hint data-shown:pointer-events-auto data-shown:opacity-100'
+const xbar = `${thumb} bottom-0.5 left-0 h-1 before:inset-x-0 before:-inset-y-1.5`
+const ybar = `${thumb} right-0.5 top-0 w-1 before:inset-y-0 before:-inset-x-1.5`
 const footer = 'flex items-center justify-between py-3 px-[17px] text-2xs text-fg-hint'
 // The header's own menu, shown while the script below marks its group open.
 const menu = 'invisible absolute left-0 top-full z-10 pt-2 opacity-0 -translate-y-1 transition-all group-data-open/file:visible group-data-open/file:opacity-100 group-data-open/file:translate-y-0'
@@ -80,6 +84,9 @@ const box = `min-height:calc(${minLines} * var(--leading-code) + 2rem);max-heigh
         <pre aria-hidden="true" class={paint}><code class={colors}></code></pre>
         <textarea rows={rows} spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="edge.json" class={field}>{manifest}</textarea>
       </div>
+
+      <div data-bar="x" aria-hidden="true" class={xbar}></div>
+      <div data-bar="y" aria-hidden="true" class={ybar}></div>
     </div>
 
     <div class={footer}>
@@ -116,6 +123,9 @@ const box = `min-height:calc(${minLines} * var(--leading-code) + 2rem);max-heigh
         {/* Rows keep at least 24rem and scroll sideways like the output instead of squeezing. */}
         <div data-rows class="w-max min-w-[max(100%,24rem)]"></div>
       </div>
+
+      <div data-bar="x" aria-hidden="true" class={xbar}></div>
+      <div data-bar="y" aria-hidden="true" class={ybar}></div>
     </div>
 
     <div class={footer}>
@@ -137,6 +147,7 @@ const box = `min-height:calc(${minLines} * var(--leading-code) + 2rem);max-heigh
   import { applyControls } from '../lib/playground/terminal'
   import { run, type Manifest, type Phase } from '../lib/playground/runtime'
   import { createTrace } from '../lib/playground/trace'
+  import { scrollbar } from '../lib/scrollbar'
 
   const PHASES: Record<Phase, string> = {
     lock: 'generating edge.lock…',
@@ -266,6 +277,30 @@ const box = `min-height:calc(${minLines} * var(--leading-code) + 2rem);max-heigh
       rerun.hidden = true
       start()
     }, { once: true })
+
+    root.querySelectorAll<HTMLElement>('[data-bar]').forEach((bar) => {
+      const box = bar.parentElement!
+      const x = bar.dataset.bar === 'x'
+      const shown = () => [...box.children].find((child): child is HTMLElement => !child.hasAttribute('data-bar') && !(child as HTMLElement).hidden)!
+      const offset = (scroller: HTMLElement) => (x ? scroller.scrollLeft : scroller.scrollTop)
+      const span = (scroller: HTMLElement) => x
+        ? { offset: scroller.scrollLeft, view: scroller.clientWidth, total: scroller.scrollWidth, track: box.clientWidth }
+        : { offset: scroller.scrollTop, view: scroller.clientHeight, total: scroller.scrollHeight, track: box.clientHeight }
+      // Kept to the flat of each side, clear of the rounded corners.
+      const { moved, held } = scrollbar(bar, x ? 'x' : 'y', (to) => shown().scrollTo(x ? { left: to } : { top: to }), parseFloat(getComputedStyle(box).borderBottomLeftRadius))
+      const last = new WeakMap<EventTarget, number>()
+
+      box.addEventListener('pointerenter', (event) => { if (event.pointerType === 'mouse') held(span(shown())) })
+      box.addEventListener('pointerleave', (event) => { if (event.pointerType === 'mouse') held(null) })
+
+      // Scroll never bubbles, so the box catches it on the way down, moves along this bar only.
+      box.addEventListener('scroll', (event) => {
+        const scroller = event.target as HTMLElement
+        if ((last.get(scroller) ?? 0) === offset(scroller)) return
+        last.set(scroller, offset(scroller))
+        moved(span(scroller))
+      }, { capture: true, passive: true })
+    })
 
     // The box shows what the run printed or what it reached, one at a time.
     toggle.addEventListener('click', () => {

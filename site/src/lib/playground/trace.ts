@@ -108,8 +108,11 @@ function draw(node: Node, guide: Cell[], epoch: number, total: number): HTMLDivE
   item.className = 'grid min-h-6 grid-cols-[4rem_1fr_auto_2.5rem] sm:grid-cols-[4rem_1fr_auto_3.5rem] gap-3'
   const share = (ms: number) => (total ? (ms / total) * 100 : 0)
 
+  // Cut at a fixed width, so one long print never pushes every bar out of view, and whole on hover.
+  const detail = el('ml-2 max-w-[40ch] truncate text-fg-hint', node.detail)
+  detail.title = node.detail
   const label = el('flex min-w-0 items-center')
-  label.replaceChildren(...guide.map(cell), el(node.failed ? 'ml-1 shrink-0 text-danger' : 'ml-1 shrink-0', node.name), el('ml-2 whitespace-nowrap text-fg-hint', node.detail))
+  label.replaceChildren(...guide.map(cell), el(node.failed ? 'ml-1 shrink-0 text-danger' : 'ml-1 shrink-0', node.name), detail)
   if (node.pkg && node.pkg !== 'main') label.appendChild(el('ml-2 shrink-0 rounded-full border border-line-strong px-1.5 text-fg-subtle', node.pkg))
 
   // Narrower only once the box drops under the 24rem the rows keep, which is when it scrolls.
