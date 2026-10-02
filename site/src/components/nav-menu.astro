@@ -106,6 +106,12 @@ const chevron = 'rotate-90 text-fg-hint transition-transform group-open/section:
           </ul>
         </details>
       ))}
+
+      {!user && (
+        <div class="mt-2 pt-2 border-t border-line-strong">
+          <a href={plans.href} aria-current={onPlans ? 'page' : undefined} class:list={[sheetRow, onPlans && 'bg-line-strong']}>{plans.label}</a>
+        </div>
+      )}
     </div>
   </Sheet>
 
@@ -114,14 +120,6 @@ const chevron = 'rotate-90 text-fg-hint transition-transform group-open/section:
     aria-current={onRegistry ? 'page' : undefined}
     class:list={['lg:hidden px-3 py-1.5 shrink-0 whitespace-nowrap transition', onRegistry ? 'text-fg' : 'text-fg-subtle hover:text-fg']}
   >{registry.label}</a>
-
-  {!user && (
-    <a
-      href={plans.href}
-      aria-current={onPlans ? 'page' : undefined}
-      class:list={['lg:hidden px-3 py-1.5 shrink-0 whitespace-nowrap transition', onPlans ? 'text-fg' : 'text-fg-subtle hover:text-fg']}
-    >{plans.label}</a>
-  )}
 </nav>
 
 <style>
