@@ -141,14 +141,15 @@ test('opens an older version under ?v= and keeps the newest at the bare address'
   await expect(page.getByText('Not found')).toBeVisible()
 })
 
-test('puts the newest release first under Recent and sends std to its maintainer', async ({ page, request }) => {
-  const older = await published(request)
-  const newer = await published(request)
+test('swaps the packages for templates under Templates and sends std to its maintainer', async ({ page, request }) => {
+  const { name } = await published(request)
 
-  await page.goto('/?sort=recent')
-  const shelf = await page.locator('[data-cards] a[href^="/package/"]').evaluateAll((all) => all.map((a) => a.getAttribute('href')))
-  expect(shelf).toContain(`/package/${older.name}`)
-  expect(shelf.indexOf(`/package/${newer.name}`)).toBeLessThan(shelf.indexOf(`/package/${older.name}`))
+  await page.goto('/?sort=templates')
+  await expect(page.locator('[data-cards]').getByRole('link', { name: 'Rails cracker' })).toHaveAttribute('href', '/templates/rails-cracker')
+  await expect(page.locator(`[data-cards] a[href="/package/${name}"]`)).toHaveCount(0)
+
+  await page.locator('[data-shelf] input').fill('nothing like it')
+  await expect(page.locator('[data-cards]')).toHaveText('No template matches that.')
 
   await expect(page.locator('[data-sorts]').getByRole('link', { name: 'std', exact: true })).toHaveAttribute('href', `/@${OWNER}`)
 })

@@ -5,9 +5,13 @@ import Icon from '../components/ui/icon.astro'
 import LinkList from '../components/ui/link-list.astro'
 import Field from '../components/ui/field.astro'
 import PackageCard from '../components/package-card.astro'
+import TemplateCard from '../components/template-card.astro'
 import Agent from '../components/agent.astro'
 import { counted, listed } from '../lib/server/packages'
+import { publicUser, userByHandle } from '../lib/server/users'
+import { avatarFor } from '../lib/account/avatar'
 import { OWNER } from '../lib/account/handle'
+import { templates } from '../data/templates'
 
 const guides = [
   { icon: 'file', label: 'Quickstart', detail: 'curl -fsSL https://cdn.edgepython.com/cli/install.sh | sh', href: '/docs/getting-started/quickstart' },
@@ -19,22 +23,30 @@ const { user } = Astro.locals
 
 // A query narrows the shelf, and it arrives in the url so the form works before any script does.
 const asked = (Astro.url.searchParams.get('q') ?? '').trim().slice(0, 64)
-const recent = Astro.url.searchParams.get('sort') === 'recent'
+const templated = Astro.url.searchParams.get('sort') === 'templates'
 
-// Popular and recent reorder the same shelf, std is the maintainer's own.
+// Popular and templates fill the same shelf, std is the maintainer's own.
 const shelf = (sort?: string) => {
   const params = new URLSearchParams({ ...(asked ? { q: asked } : {}), ...(sort ? { sort } : {}) })
   return params.size ? `/?${params}` : '/'
 }
 
 const sorts = [
-  { label: 'Popular', href: shelf(), current: !recent },
-  { label: 'Recent', href: shelf('recent'), current: recent },
+  { label: 'Popular', href: shelf(), current: !templated },
+  { label: 'Templates', href: shelf('templates'), current: templated },
   { label: 'std', href: `/@${OWNER}`, current: false }
 ]
 
-const { results: packages } = await listed(env.DB, { asked: asked || undefined, recent })
+const packages = templated ? [] : (await listed(env.DB, { asked: asked || undefined })).results
 const total = await counted(env.DB)
+
+const noun = templated ? 'template' : 'package'
+const shown = templated ? templates.filter((each) => `${each.name} ${each.description}`.toLowerCase().includes(asked.toLowerCase())) : []
+
+const authors = new Map(await Promise.all([...new Set(shown.map((each) => each.author))].map(async (handle) => {
+  const found = await userByHandle(env.DB, handle)
+  return [handle, found ? (publicUser(found).avatar ?? avatarFor(found.id)) : avatarFor(handle)] as const
+})))
 
 const outline = 'flex items-center gap-2 transition border border-line text-fg-hint px-4 py-1 rounded-full hover:text-fg'
 ---
@@ -84,7 +96,7 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
         <div data-sorts class="flex items-center gap-4 sm:ml-auto">
           <span class="text-fg-hint">Sort</span>
           {sorts.map(({ label, href, current }) => (
-            <a href={href} class:list={['rounded-full border border-line-strong px-3 py-1 text-xs', current ? 'text-fg' : 'text-fg-faint transition hover:text-fg']}>
+            <a href={href} data-panel={label} class:list={['rounded-full border border-line-strong px-3 py-1 text-xs', current ? 'text-fg' : 'text-fg-faint transition hover:text-fg']}>
               <span>{label}</span>
             </a>
           ))}
@@ -92,12 +104,16 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
       </div>
 
       <div data-cards>
-        {packages.length > 0 ? (
+        {shown.length > 0 ? (
+          <ul data-view="templates" class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+            {shown.map((each) => <TemplateCard {...each} avatar={authors.get(each.author)!} />)}
+          </ul>
+        ) : packages.length > 0 ? (
           <ul class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
             {packages.map((item) => <PackageCard {...item} />)}
           </ul>
         ) : (
-          <p class="ml-4 text-sm text-fg-hint">{asked ? 'No package matches that.' : 'No packages yet.'}</p>
+          <p class="ml-4 text-sm text-fg-hint">{asked ? `No ${noun} matches that.` : `No ${noun}s yet.`}</p>
         )}
       </div>
     </section>

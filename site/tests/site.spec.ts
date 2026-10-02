@@ -2,9 +2,6 @@ import { expect, type Page } from '@playwright/test'
 import { test, unique } from './helpers'
 
 const routes = [
-  { path: '/', group: 'Explore', label: 'Packages' },
-  { path: '/templates', group: 'Explore', label: 'Templates' },
-  { path: '/gallery', group: 'Explore', label: 'Gallery' },
   { path: '/docs/getting-started/introduction', group: 'Docs', label: 'Getting started' }
 ]
 
@@ -22,6 +19,12 @@ for (const { path, group, label } of routes) {
     await expect(page.locator('footer')).toBeVisible()
   })
 }
+
+test('marks Registry as the current page', async ({ page }) => {
+  await page.goto('/')
+
+  await expect(nav(page).getByRole('link', { name: 'Registry', exact: true })).toHaveAttribute('aria-current', 'page')
+})
 
 test.describe('the header nav', () => {
   test.beforeEach(async ({ page }) => {
@@ -48,15 +51,6 @@ test.describe('the header nav', () => {
     await expect(panel(page, 'Docs')).toBeVisible()
   })
 
-  test('swaps panels when the cursor slides across the nav', async ({ page }) => {
-    await trigger(page, 'Docs').hover()
-    await expect(panel(page, 'Docs')).toBeVisible()
-
-    await trigger(page, 'Explore').hover()
-    await expect(panel(page, 'Explore')).toBeVisible()
-    await expect(panel(page, 'Docs')).toBeHidden()
-  })
-
   test('closes once the cursor leaves', async ({ page }) => {
     await trigger(page, 'Docs').hover()
     await expect(panel(page, 'Docs')).toBeVisible()
@@ -66,12 +60,12 @@ test.describe('the header nav', () => {
   })
 
   test('opens from the keyboard and closes on Escape', async ({ page }) => {
-    await trigger(page, 'Explore').focus()
-    await expect(panel(page, 'Explore')).toBeVisible()
+    await trigger(page, 'Docs').focus()
+    await expect(panel(page, 'Docs')).toBeVisible()
 
     await page.keyboard.press('Escape')
-    await expect(panel(page, 'Explore')).toBeHidden()
-    await expect(trigger(page, 'Explore')).toHaveAttribute('aria-expanded', 'false')
+    await expect(panel(page, 'Docs')).toBeHidden()
+    await expect(trigger(page, 'Docs')).toHaveAttribute('aria-expanded', 'false')
   })
 
   test('navigates to the page it names', async ({ page }) => {
@@ -107,14 +101,14 @@ test.describe('the header nav on a phone', () => {
     }
   })
 
-  // The groups are one accordion, so only the section the visitor opens shows its pages.
-  test('opens a group to reveal its pages', async ({ page }) => {
+  test('opens on the first group outside every group', async ({ page }) => {
     await bar(page).tap()
-    await expect(sheet(page).getByRole('link', { name: 'Getting started', exact: true })).toBeHidden()
-
-    await sheet(page).getByText('Docs', { exact: true }).tap()
 
     await expect(sheet(page).getByRole('link', { name: 'Getting started', exact: true })).toBeVisible()
+  })
+
+  test('keeps Registry beside the bar', async ({ page }) => {
+    await expect(nav(page).getByRole('link', { name: 'Registry', exact: true })).toHaveAttribute('aria-current', 'page')
   })
 
   test('leaves the groups unclickable', async ({ page }) => {
@@ -127,7 +121,6 @@ test.describe('the header nav on a phone', () => {
 
   test('closes when a page is picked and lands on it', async ({ page }) => {
     await bar(page).tap()
-    await sheet(page).getByText('Docs', { exact: true }).tap()
     await sheet(page).getByRole('link', { name: 'Getting started', exact: true }).tap()
 
     await expect(sheet(page)).toBeHidden()
@@ -180,19 +173,6 @@ test('applies hover styles', async ({ page }) => {
   await link.hover()
 
   await expect.poll(color).not.toBe(idle)
-})
-
-test('says on hover what edge.json needs to list a template', async ({ page }) => {
-  await page.goto('/templates')
-  const hint = page.getByRole('tooltip')
-
-  await expect(hint).toBeHidden()
-  await page.getByRole('button', { name: 'What makes a template' }).hover()
-
-  await expect(hint).toBeVisible()
-  await expect(hint).toContainText('"kind": "template"')
-  // Highlighted when the site builds, so the tokens arrive already painted.
-  await expect(hint.locator('span[style*="--shiki-light"]').first()).toBeAttached()
 })
 
 // No engine emulates a pointer that cannot hover, so the page is told it has none.

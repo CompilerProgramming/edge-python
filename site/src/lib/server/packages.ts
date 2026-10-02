@@ -116,7 +116,7 @@ export type Listed = {
 }
 
 /* The same listing, narrowed. A handle holds it to one person's shelf, and a query reaches the name, what it says about itself, the license it carries and the prose of its own documentation, which is everything a package tells the registry about itself. */
-export function listed(db: D1Database, { handle, asked, recent = false, limit = 60 }: { handle?: string; asked?: string; recent?: boolean; limit?: number } = {}) {
+export function listed(db: D1Database, { handle, asked, limit = 60 }: { handle?: string; asked?: string; limit?: number } = {}) {
   const held = handle ? 'and u.handle = ?' : ''
   const like = asked ? `%${asked}%` : ''
 
@@ -137,7 +137,7 @@ export function listed(db: D1Database, { handle, asked, recent = false, limit = 
        where v.published_at = (select max(published_at) from version where package = p.name and yanked_at is null)
          ${held}
          ${matching}
-       order by ${asked ? 'case when p.name like ? then 0 else 1 end, ' : ''}${recent ? 'v.published_at' : 'p.downloads'} desc, p.name
+       order by ${asked ? 'case when p.name like ? then 0 else 1 end, ' : ''}p.downloads desc, p.name
        limit ?`
     )
     .bind(
