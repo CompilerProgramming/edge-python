@@ -106,6 +106,10 @@ html::-webkit-scrollbar { display: none; }
 
 body { font-family: var(--font-inter); }
 
+/* A theme change fades the whole page as one, never each part through its own transition. */
+[data-theme-swap] *, [data-theme-swap] *::before, [data-theme-swap] *::after { transition: none !important; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 300ms; }
+
 button:not(:disabled),
 label:has(input[type="radio"]:not(:disabled)) {
   cursor: pointer;

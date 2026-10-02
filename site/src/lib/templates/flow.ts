@@ -124,7 +124,7 @@ export function flow(canvas: HTMLCanvasElement, target: HTMLElement) {
     const lit = target.matches(':hover, :focus-within') || Boolean(field?.value)
     boost += ((lit ? BOOST : 1) - boost) * Math.min(1, seconds * EASE)
     travel += seconds * SPEED * innerWidth * boost
-    // Hidden on a phone, where the loop keeps its place but draws nothing. A still page runs this once, at no distance.
+    // Hidden below 1024px, where the loop keeps its place but draws nothing. A still page runs this once, at no distance.
     if (canvas.clientWidth > 0) draw(travel)
     if (!still.matches) requestAnimationFrame(frame)
   }

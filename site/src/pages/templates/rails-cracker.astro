@@ -4,6 +4,8 @@ import '../../styles/global.css'
 import Field from '../../components/ui/field.astro'
 import Icon from '../../components/ui/icon.astro'
 import Mark from '../../assets/mark.svg'
+import Header from '../../components/header.astro'
+import SignIn from '../../components/sign-in.astro'
 
 // Repos a visitor may know, each a tag that fills the bar.
 const examples = [
@@ -34,15 +36,18 @@ const edge = 'pointer-events-none absolute inset-y-0 w-16 from-page to-transpare
   {/* The theme the rest of the site chose, or the device when nobody chose one. */}
   <script is:inline>
     document.documentElement.dataset.theme = localStorage.getItem('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (event) => {
-      if (!localStorage.getItem('theme')) document.documentElement.dataset.theme = event.matches ? 'dark' : 'light'
-    })
   </script>
 </head>
 {/* A zoomed page counts the screen a tenth taller too, so the body takes it back to stay one screen. */}
 <body class="bg-page text-fg flex min-h-[calc(100dvh/var(--zoom))] items-center justify-center p-3.5">
-  {/* Lines from both edges into the bar, left out on a phone. */}
-  <canvas data-flow aria-hidden="true" class="pointer-events-none fixed inset-0 hidden size-full md:block"></canvas>
+  {/* The site header out of the flow like the footer, and at the size the rest of the site draws it. */}
+  <div class="fixed inset-x-0 top-0 z-10" style="zoom: calc(1 / var(--zoom))">
+    <Header />
+    <SignIn />
+  </div>
+
+  {/* Lines from both edges into the bar, left out below 1024px. */}
+  <canvas data-flow aria-hidden="true" class="pointer-events-none fixed inset-0 hidden size-full lg:block"></canvas>
 
   {/* The hidden label keeps its row, so its gap goes too or the bar sits low. */}
   <form role="search" class="relative w-full max-w-[600px] text-base [&>div]:gap-0">
@@ -74,8 +79,9 @@ const edge = 'pointer-events-none absolute inset-y-0 w-16 from-page to-transpare
     </div>
   </form>
 
-  <footer class="fixed inset-x-0 bottom-0 flex justify-center py-6 text-xs text-fg-disabled">
-    <a href="/" class="flex items-center gap-2 hover:underline"><Mark class="h-3.5 w-auto" aria-hidden="true" />Edge Python</a>
+  <footer class="fixed inset-x-0 bottom-0 flex flex-col items-center gap-2 py-6 text-xs text-fg-disabled">
+    <a href="/" class="flex items-center gap-2"><Mark class="h-3.5 w-auto" aria-hidden="true" />Edge Python</a>
+    <p class="text-2xs">By tracing a repo, you accept our <a href="/terms" class="underline transition hover:text-fg-hint">Terms and Conditions</a>.</p>
   </footer>
 
   <script>
@@ -90,7 +96,7 @@ const edge = 'pointer-events-none absolute inset-y-0 w-16 from-page to-transpare
     flow(canvas, input.parentElement!)
 
     // Nothing runs a trace yet, so sending keeps the page where it is.
-    document.querySelector('form')!.addEventListener('submit', (event) => event.preventDefault())
+    input.form!.addEventListener('submit', (event) => event.preventDefault())
 
     // An arrow rests and its edge clears once nothing is left on its side.
     const ends = () => {

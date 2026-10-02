@@ -11,7 +11,7 @@ const { slug, name, description, author, avatar } = Astro.props
 <li class="bg-page border border-line-strong rounded-2xl p-4 relative has-[a:focus-visible]:ring-1 has-[a:focus-visible]:ring-line-emphasis">
   <div class="mb-3">
     <h3 class="mb-1 text-sm font-semibold">
-      <a href={`/templates/${slug}`} class="after:absolute after:inset-0 after:rounded-2xl hover:underline focus-visible:outline-none">{name}</a>
+      <a href={`/templates/${slug}`} class="after:absolute after:inset-0 after:rounded-2xl focus-visible:outline-none">{name}</a>
     </h3>
     <p class="text-fg-muted">{description}</p>
   </div>

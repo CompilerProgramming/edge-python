@@ -11,7 +11,7 @@ const path = Astro.url.pathname.replace(/\/+$/, '') || '/'
 const { user } = Astro.locals
 ---
 
-<header class="bg-header border-b border-line w-full sticky top-0 z-10">
+<header data-header class="bg-page border-b border-transparent data-scrolled:border-line transition-colors w-full sticky top-0 z-10">
   <div class="max-w-[1200px] mx-auto px-2.5 py-3 sm:p-3 flex items-center gap-3.5 text-xs">
     <a href="/" class="shrink-0 whitespace-nowrap text-sm font-semibold">Edge Python</a>
 
@@ -65,21 +65,24 @@ const { user } = Astro.locals
 
 <script>
   import { signOut } from '../lib/account/auth'
+  import { followDevice, setTheme } from '../lib/theme'
 
   // The header holds one and the palette holds another, because a command palette carries commands too.
   document.querySelectorAll('[data-theme-toggle]').forEach((button) =>
     button.addEventListener('click', () => {
       const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'
-      document.documentElement.dataset.theme = theme
+      setTheme(theme)
       localStorage.setItem('theme', theme)
     })
   )
 
-  // Until the visitor picks one, the device decides, and keeps deciding.
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (event) => {
-    if (localStorage.getItem('theme')) return
-    document.documentElement.dataset.theme = event.matches ? 'dark' : 'light'
-  })
+  followDevice()
+
+  // The line under the header shows only once the page scrolls beneath it.
+  const header = document.querySelector<HTMLElement>('[data-header]')!
+  const edge = () => header.toggleAttribute('data-scrolled', scrollY > 0)
+  addEventListener('scroll', edge, { passive: true })
+  edge()
 
   document.addEventListener('signin:done', () => location.replace(location.pathname))
 

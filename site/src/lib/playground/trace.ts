@@ -105,14 +105,15 @@ function cell(kind: Cell): HTMLSpanElement {
 function draw(node: Node, guide: Cell[], epoch: number, total: number): HTMLDivElement {
   // A div and not a list item, since prose spaces the items of a list and the lines must meet.
   const item = document.createElement('div')
-  item.className = 'grid min-h-6 grid-cols-[4rem_1fr_3.5rem] sm:grid-cols-[4rem_1fr_6rem_3.5rem] gap-3'
+  item.className = 'grid min-h-6 grid-cols-[4rem_1fr_auto_2.5rem] sm:grid-cols-[4rem_1fr_auto_3.5rem] gap-3'
   const share = (ms: number) => (total ? (ms / total) * 100 : 0)
 
   const label = el('flex min-w-0 items-center')
-  label.replaceChildren(...guide.map(cell), el(node.failed ? 'ml-1 shrink-0 text-danger' : 'ml-1 shrink-0', node.name), el('ml-2 truncate text-fg-hint', node.detail))
+  label.replaceChildren(...guide.map(cell), el(node.failed ? 'ml-1 shrink-0 text-danger' : 'ml-1 shrink-0', node.name), el('ml-2 whitespace-nowrap text-fg-hint', node.detail))
   if (node.pkg && node.pkg !== 'main') label.appendChild(el('ml-2 shrink-0 rounded-full border border-line-strong px-1.5 text-fg-subtle', node.pkg))
 
-  const lane = el('relative hidden h-1.5 self-center overflow-hidden rounded-full bg-line-strong sm:block')
+  // Narrower only once the box drops under the 24rem the rows keep, which is when it scrolls.
+  const lane = el('relative h-1.5 w-16 self-center overflow-hidden rounded-full bg-line-strong @min-[24rem]:w-24')
   const bar = lane.appendChild(el(`absolute top-0 h-full min-w-0.5 rounded-full ${node.failed ? 'bg-danger' : node.name === 'print' ? 'bg-fg-muted' : 'bg-fg-hint'}`))
   // Held inside the track, so a tick at the very end still shows.
   bar.style.left = `min(${share(node.at)}%, calc(100% - 2px))`

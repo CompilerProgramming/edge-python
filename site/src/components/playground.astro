@@ -112,7 +112,10 @@ const box = `min-height:calc(${minLines} * var(--leading-code) + 2rem);max-heigh
         style={box}
       >{output}</pre>
 
-      <div data-trace hidden class="-m-4 p-4 overflow-auto font-mono text-2xs leading-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" style={box}></div>
+      <div data-trace hidden class="@container -m-4 p-4 overflow-auto font-mono text-2xs leading-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" style={box}>
+        {/* Rows keep at least 24rem and scroll sideways like the output instead of squeezing. */}
+        <div data-rows class="w-max min-w-[max(100%,24rem)]"></div>
+      </div>
     </div>
 
     <div class={footer}>
@@ -158,7 +161,7 @@ const box = `min-height:calc(${minLines} * var(--leading-code) + 2rem);max-heigh
     const expected = root.dataset.expected ?? ''
     const list = root.querySelector<HTMLElement>('[data-trace]')!
     const toggle = root.querySelector<HTMLButtonElement>('[data-trace-toggle]')!
-    const trace = createTrace(list)
+    const trace = createTrace(list.querySelector<HTMLElement>('[data-rows]')!)
     let running = false
     let queued = false
     let timer = 0
