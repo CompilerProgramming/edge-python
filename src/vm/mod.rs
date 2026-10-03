@@ -120,6 +120,8 @@ pub struct VM<'a> {
     pub(crate) unwind_stack: Vec<types::Unwind>,
     /* Exception currently being handled in an except block, a bare `raise` re-raises it. */
     pub(crate) handling_exc: Option<Val>,
+    // Where the handled exception was raised, so re-raising it reports that line.
+    pub(crate) handling_pos: Option<u32>,
     pub(crate) functions: Vec<&'a (Vec<String>, SSAChunk, u16, u16)>,
     // (chunk_ptr, global fn ids), linear scan over a tiny list avoids HashMap monomorphization.
     pub(crate) fn_index: Vec<(*const SSAChunk, Vec<u32>)>,
@@ -269,6 +271,7 @@ impl<'a> VM<'a> {
             exception_stack: Vec::new(),
             unwind_stack: Vec::new(),
             handling_exc: None,
+            handling_pos: None,
             error_byte_pos: None,
             module_table: HashMap::default(),
             fn_module: Vec::new(),
@@ -527,6 +530,7 @@ impl<'a> VM<'a> {
         self.pending_sync_frames.clear();
         self.executing_coros.clear();
         self.handling_exc = None;
+        self.handling_pos = None;
         self.cancelling = false;
         self.resume_raise = None;
         self.yielded = false;

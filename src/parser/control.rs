@@ -540,6 +540,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 break;
             }
 
+            // The header runs code of its own, so an error in its type reports its line.
+            self.mark_stmt();
             let mut as_name: Option<String> = None;
             if matches!(self.peek(), Some(TokenType::Colon)) {
                 had_bare = true;

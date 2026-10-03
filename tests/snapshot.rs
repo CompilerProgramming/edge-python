@@ -42,6 +42,9 @@ mod test {
         // Present means send() reaches a scheduler, this corpus only needs it accepted.
         #[serde(default)]
         sends: Option<Vec<(String, String)>>,
+        // The line the vm suite checks an error at, which a replay leaves alone.
+        #[serde(default, rename = "error_line")]
+        _error_line: Option<usize>,
     }
 
     fn accept_send(_group: &str, _body: &str) -> bool {

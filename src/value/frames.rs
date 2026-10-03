@@ -72,7 +72,8 @@ pub enum Unwind {
     Return(Val),
     // break/continue, run `remaining` more cleanups, then resume at `target`.
     Goto { target: usize, remaining: u16 },
-    Reraise(VmErr),
+    // An exception passing through, with the byte offset it was raised at.
+    Reraise(VmErr, Option<u32>),
 }
 
 /* Saved stack/iter/with/unwind depths for unwinding to a handler. Stored on the active Coroutine so `try`/`except` survives yields. */

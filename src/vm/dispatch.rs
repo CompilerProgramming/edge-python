@@ -228,7 +228,7 @@ impl<'a> VM<'a> {
                             self.call_stack.clear();
                             match self.next_cleanup_handler(exc_base) {
                                 Some(h) => {
-                                    self.unwind_stack.push(Unwind::Reraise(e));
+                                    self.unwind_stack.push(Unwind::Reraise(e, None));
                                     ip = h;
                                     continue;
                                 }
@@ -260,20 +260,22 @@ impl<'a> VM<'a> {
                                 let msg_val = alloc(&mut self.heap, HeapObj::Str(e.message()))?;
                                 alloc(&mut self.heap, HeapObj::ExcInstance(msg, alloc::vec![msg_val]))?
                             };
-                            self.error_byte_pos = None;
+                            // Kept so raising the exception again reports where it was first raised.
+                            let at = self.error_byte_pos.take();
                             // Drop reasons from finally bodies this exception unwinds past.
                             self.unwind_stack.truncate(frame.unwind_depth);
                             match frame.kind {
                                 BlockKind::Except => {
                                     // Record the handled exc so a bare `raise` in the handler can re-raise it.
                                     self.handling_exc = Some(exc);
+                                    self.handling_pos = at;
                                     self.push(exc);
                                     ip = frame.handler_ip;
                                 }
                                 // finally/with run their cleanup, then re-raise via EndFinally.
                                 BlockKind::Finally => {
                                     self.pending.exc_val = Some(exc);
-                                    self.unwind_stack.push(Unwind::Reraise(e));
+                                    self.unwind_stack.push(Unwind::Reraise(e, at));
                                     ip = frame.handler_ip;
                                 }
                             }
@@ -699,7 +701,7 @@ impl<'a> VM<'a> {
                 let cm = self.with_stack.pop().ok_or(cold_runtime("WithExit without matching WithEnter"))?;
                 let (exit_fn, class) = self.with_dunder(cm, "__exit__")?;
                 // Reraise selects `__exit__(type, exc, None)`, other exits pass three Nones.
-                let (exc_type, exc) = if matches!(self.unwind_stack.last(), Some(Unwind::Reraise(_))) {
+                let (exc_type, exc) = if matches!(self.unwind_stack.last(), Some(Unwind::Reraise(..))) {
                     let exc = self.pending.exc_val.unwrap_or(Val::none());
                     let exc_name = self.exc_type_name(exc);
                     (self.heap.alloc(HeapObj::Type(exc_name))?, exc)
@@ -716,7 +718,7 @@ impl<'a> VM<'a> {
             OpCode::WithJudge => {
                 let r = self.pop()?;
                 // A truthy `__exit__` suppresses the exception, but never a cancel.
-                if !self.cancelling && matches!(self.unwind_stack.last(), Some(Unwind::Reraise(_))) && self.truthy(r) {
+                if !self.cancelling && matches!(self.unwind_stack.last(), Some(Unwind::Reraise(..))) && self.truthy(r) {
                     // Suppress, turn the re-raise into a normal exit and drop the exc identity.
                     if let Some(top) = self.unwind_stack.last_mut() { *top = Unwind::Normal; }
                     self.pending.exc_val = None;
@@ -742,7 +744,10 @@ impl<'a> VM<'a> {
                             *ip = target;
                         }
                     }
-                    Some(Unwind::Reraise(e)) => return Err(e),
+                    Some(Unwind::Reraise(e, at)) => {
+                        self.error_byte_pos = at;
+                        return Err(e);
+                    }
                 }
             }
             // break/continue across N finally/with blocks, the following Jump completes the transfer.

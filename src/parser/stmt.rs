@@ -23,12 +23,16 @@ enum TupleElem {
 
 impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
-    /* Statement dispatch, returns true if a value is left on the stack for caller to PopTop. */
-    pub(super) fn stmt(&mut self) -> bool {
-        // Record ip->source offset before any emit so `resolve()` can map ip to source.
+    /* Records ip->source offset before any emit, so `resolve()` maps what follows to the next token. */
+    pub(super) fn mark_stmt(&mut self) {
         let ip = self.chunk.instructions.len() as u32;
         let pos = self.tokens.peek().map(|t| t.start as u32).unwrap_or(self.last_end as u32);
         self.chunk.stmt_pos.push((ip, pos));
+    }
+
+    /* Statement dispatch, returns true if a value is left on the stack for caller to PopTop. */
+    pub(super) fn stmt(&mut self) -> bool {
+        self.mark_stmt();
 
         match self.peek() {
             Some(TokenType::If) => {

@@ -163,11 +163,16 @@ impl<'a> VM<'a> {
                     };
                     let name = self.exc_type_name(exc);
                     self.pending.exc_val = Some(exc);
+                    self.error_byte_pos = self.handling_pos;
                     return Err(VmErr::Raised(name));
                 }
                 // RaiseFrom emits both `expr` then `from expr`, the topmost value is the cause, but the exception to raise is the LHS.
                 if op == OpCode::RaiseFrom { let _cause = self.pop()?; }
                 let mut exc = self.pop()?;
+                // The exception being handled raised again keeps the line it was first raised at.
+                if Some(exc) == self.handling_exc {
+                    self.error_byte_pos = self.handling_pos;
+                }
                 // A class deriving from an exception raises an instance of itself made with no arguments.
                 if matches!(self.heap.try_get(exc), Some(HeapObj::Class(..))) && self.exc_base(exc).is_some() {
                     self.push(exc);

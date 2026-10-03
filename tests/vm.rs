@@ -24,6 +24,9 @@ mod test {
         // Present installs a scheduler hook, the (group, body) pairs send() handed over.
         #[serde(default)]
         sends: Option<Vec<(String, String)>>,
+        // The line the error points at, counted from 1.
+        #[serde(default)]
+        error_line: Option<usize>,
     }
 
     std::thread_local! {
@@ -127,9 +130,15 @@ mod test {
                     }
                 }
                 Err(e) => match &case.error {
-                    Some(expected) => if !e.to_string().contains(expected.as_str()) {
-                        failures.push(format!("ERR {:?}\n   got '{}'\n   want '{}'", case.src, e, expected));
-                    },
+                    Some(expected) => {
+                        if !e.to_string().contains(expected.as_str()) {
+                            failures.push(format!("ERR {:?}\n   got '{}'\n   want '{}'", case.src, e, expected));
+                        }
+                        let line = vm.error_pos().map(|at| case.src[..at.min(case.src.len())].matches('\n').count() + 1);
+                        if let Some(want) = case.error_line && line != Some(want) {
+                            failures.push(format!("LINE {:?}\n   got {:?}\n   want {}", case.src, line, want));
+                        }
+                    }
                     None => failures.push(format!("RAISED {:?}: {}", case.src, e)),
                 }
             }

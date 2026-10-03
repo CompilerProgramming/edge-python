@@ -5199,5 +5199,15 @@
   {"src": "x = 3.25\nprint(id(x) == id(x), id(None) == id(None), id(True) != id(1), id(0) != id(False))", "output": ["True True True True"]},
   {"src": "class C:\n    pass\nobjs = [C() for _ in range(5)]\nprint(len({id(o) for o in objs}), all((id(p) == id(q)) == (p is q) for p in objs for q in objs))", "output": ["5 True"]},
   {"src": "n = float('nan')\nm = float('nan')\nprint(id(n) == id(n), id(n) != id(m), (id(n) == id(m)) == (n is m))", "output": ["True True True"]},
-  {"src": "big = 10 ** 30\nneg = -10 ** 30\nprint(id(big) != id(neg), (id(big) == id(big)), id(big) >= 0, id(neg) >= 0)", "output": ["True True True True"]}
+  {"src": "big = 10 ** 30\nneg = -10 ** 30\nprint(id(big) != id(neg), (id(big) == id(big)), id(big) >= 0, id(neg) >= 0)", "output": ["True True True True"]},
+  {"src": "try:\n    x = 1 / 0\nexcept NoExiste:\n    pass\n", "output": [], "error": "NameError: name 'NoExiste' is not defined", "error_line": 3},
+  {"src": "try:\n    x = 1 / 0\nfinally:\n    pass\n", "output": [], "error": "ZeroDivisionError: division by zero", "error_line": 2},
+  {"src": "try:\n    x = 1 / 0\nexcept KeyError:\n    pass\n", "output": [], "error": "ZeroDivisionError: division by zero", "error_line": 2},
+  {"src": "try:\n    x = 1 / 0\nexcept ZeroDivisionError:\n    raise\n", "output": [], "error": "ZeroDivisionError", "error_line": 2},
+  {"src": "try:\n    x = 1 / 0\nexcept ZeroDivisionError as e:\n    raise e\n", "output": [], "error": "ZeroDivisionError: division by zero", "error_line": 2},
+  {"src": "try:\n    x = 1 / 0\nfinally:\n    int('x')\n", "output": [], "error": "ValueError", "error_line": 4},
+  {"src": "try:\n    x = 0\nexcept ValueError:\n    pass\nelse:\n    y = 1 / x\n", "output": [], "error": "ZeroDivisionError: division by zero", "error_line": 6},
+  {"src": "try:\n    x = 1 / 0\nexcept ValueError:\n    pass\nexcept Nope as e:\n    pass\n", "output": [], "error": "NameError: name 'Nope' is not defined", "error_line": 5},
+  {"src": "class CM:\n    def __enter__(self):\n        return self\n    def __exit__(self, t, v, tb):\n        return False\nwith CM():\n    x = 1 / 0\n", "output": [], "error": "ZeroDivisionError: division by zero", "error_line": 7},
+  {"src": "def f():\n    return 1 / 0\ntry:\n    f()\nfinally:\n    pass\n", "output": [], "error": "ZeroDivisionError: division by zero", "error_line": 2}
 ]

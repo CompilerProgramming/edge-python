@@ -249,7 +249,7 @@ codec!(enum Unwind, put_unwind, get_unwind {
     0 Normal,
     1 Return(v: val),
     2 Goto { target: usz, remaining: u16 },
-    3 Reraise(e: (put_vm_err, get_vm_err)),
+    3 Reraise(e: (put_vm_err, get_vm_err), at: opt_u32),
 });
 
 codec!(enum WaitKind, put_wait_kind, get_wait_kind {
@@ -504,6 +504,7 @@ vm_state! {
     exception_stack: [put_exc_frame, get_exc_frame],
     unwind_stack: [put_unwind, get_unwind],
     handling_exc: opt_val,
+    handling_pos: opt_u32,
     pending_sync_frames: [put_sync_frame, get_sync_frame],
     pending_exec_exc_base: opt_usz,
     pending: (put_pending, get_pending),
