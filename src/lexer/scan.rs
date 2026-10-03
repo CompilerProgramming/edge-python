@@ -379,34 +379,19 @@ impl<'a> Scanner<'a> {
             self.scan_id_rest();
             let slice = &self.src[start..self.pos];
 
-            if is_fstring_prefix(slice)
-                && let Some(&q) = self.src.get(self.pos)
-                && (q == b'"' || q == b'\'')
+            // A prefix opens a literal only right before a quote, the parser decodes bytes-specific escapes later.
+            if let Some(&q @ (b'"' | b'\'')) = self.src.get(self.pos)
+                && let Some(kind) = string_prefix(slice)
             {
-                let pe = self.pos;
-                self.start_fstring(start, pe);
-                return self.pending.pop();
-            }
-
-            if is_string_prefix(slice)
-                && let Some(&q) = self.src.get(self.pos)
-                && (q == b'"' || q == b'\'')
-            {
+                if kind == TokenType::FstringStart {
+                    let pe = self.pos;
+                    self.start_fstring(start, pe);
+                    return self.pending.pop();
+                }
                 let q_start = self.pos;
                 self.pos += 1;
                 self.scan_string(q, q_start);
-                return Some((TokenType::String, line_at_start, start, self.pos));
-            }
-
-            /* Bytes literal (b/B, optional r/R for raw) scans like a string, the parser decodes bytes-specific escapes later. */
-            if is_bytes_prefix(slice)
-                && let Some(&q) = self.src.get(self.pos)
-                && (q == b'"' || q == b'\'')
-            {
-                let q_start = self.pos;
-                self.pos += 1;
-                self.scan_string(q, q_start);
-                return Some((TokenType::Bytes, line_at_start, start, self.pos));
+                return Some((kind, line_at_start, start, self.pos));
             }
 
             let kind = keyword(slice).unwrap_or(TokenType::Name);

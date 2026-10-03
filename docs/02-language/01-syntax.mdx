@@ -261,11 +261,11 @@ print("%d of %s" % (3, "pies"))
 
 ### Comparison and chaining
 
-Comparisons chain. Ordering works on numbers, strings, bytes, and on lists or tuples compared lexicographically. Mixing types that cannot be ordered raises `TypeError`.
+Comparisons chain, `in`, `not in`, `is` and `is not` included, so `a < b in c` means `a < b and b in c` with `b` evaluated once. Ordering works on numbers, strings, bytes, and on lists or tuples compared lexicographically. Mixing types that cannot be ordered raises `TypeError`.
 
 ```edge-python
 print(1 < 2 < 3)  # chained
-print(0 < 5 < 10)
+print(0 < 5 in [5, 6])
 print(1 == 1 == 1)
 print([1, 2] < [1, 3])  # lexicographic
 ```

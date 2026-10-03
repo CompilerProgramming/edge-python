@@ -25,7 +25,7 @@ impl<'a> VM<'a> {
 
     // Allocate a Set from `items` (deduped by content) and push. Mirrors `alloc_and_push_list`.
     pub(crate) fn alloc_and_push_set(&mut self, items: Vec<Val>) -> Result<(), VmErr> {
-        let v = self.alloc_set(items)?;
+        let v = self.alloc_set_result(items, false)?;
         self.push(v); Ok(())
     }
 
@@ -41,34 +41,29 @@ impl<'a> VM<'a> {
         self.push(v); Ok(())
     }
 
-    fn alloc_set(&mut self, items: Vec<Val>) -> Result<Val, VmErr> {
-        let mut set = ValSet::with_capacity(items.len());
-        for v in items { set.insert(v, &self.heap); }
-        self.heap.alloc(HeapObj::Set(Rc::new(RefCell::new(set))))
-    }
-
     // Build a tuple Val from items. Shared by the VM and the plugin ABI.
     pub(crate) fn tuple_from_items(&mut self, items: Vec<Val>) -> Result<Val, VmErr> {
         self.heap.alloc(HeapObj::Tuple(items))
     }
 
     // Build a set Val from items, rejecting unhashable elements first.
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn set_from_items(&mut self, items: Vec<Val>) -> Result<Val, VmErr> {
-        for v in &items { self.require_hashable(*v)?; }
-        self.alloc_set(items)
+        for &v in items.iter().filter(|v| v.is_heap()) { self.require_hashable(v)?; }
+        self.alloc_set_result(items, false)
     }
 
     // Build a frozenset Val from items, rejecting unhashable elements first.
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn frozenset_from_items(&mut self, items: Vec<Val>) -> Result<Val, VmErr> {
-        for v in &items { self.require_hashable(*v)?; }
-        let mut set = ValSet::with_capacity(items.len());
-        for v in items { set.insert(v, &self.heap); }
-        self.heap.alloc(HeapObj::FrozenSet(Rc::new(set)))
+        for &v in items.iter().filter(|v| v.is_heap()) { self.require_hashable(v)?; }
+        self.alloc_set_result(items, true)
     }
 
-    pub fn build_set(&mut self, op: u16) -> Result<(), VmErr> {
+    pub fn build_set(&mut self, op: u16, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let items = self.pop_n(op as usize)?;
-        let val = self.set_from_items(items)?;
+        let s = self.valset_of(&items, chunk, slots)?;
+        let val = self.heap.alloc(HeapObj::Set(Rc::new(RefCell::new(s))))?;
         self.push(val); Ok(())
     }
 
@@ -80,35 +75,8 @@ impl<'a> VM<'a> {
         self.push(val); Ok(())
     }
 
-    pub fn unpack_ex(&mut self, op: u16) -> Result<(), VmErr> {
-        let obj = self.pop()?;
-        if !obj.is_heap() { return Err(cold_type("cannot unpack non-iterable")); }
-        let items: Vec<Val> = match self.heap.get(obj) {
-            HeapObj::List(v) => v.borrow().clone(),
-            HeapObj::Tuple(v) => v.clone(),
-            // Range materialises to its ints, with the same budget cap as `*` spread.
-            HeapObj::Range(..) => self.iter_to_vec_for_spread(obj)?,
-            HeapObj::Str(s) => {
-                let s = s.clone();
-                self.str_to_char_vals(&s)?
-            }
-            _ => return Err(cold_type("cannot unpack non-iterable")),
-        };
-        let before = (op >> 8) as usize;
-        let after = (op & 0xFF) as usize;
-        if items.len() < before + after {
-            return Err(cold_value("not enough values to unpack"));
-        }
-        let mid = items.len() - after;
-        for &v in items[mid..].iter().rev() { self.push(v); }
-        let star = self.alloc_list(items[before..mid].to_vec())?;
-        self.push(star);
-        for &v in items[..before].iter().rev() { self.push(v); }
-        Ok(())
-    }
-
     // Operand packs kw<<8 | pos, keep counts distinct.
-    pub fn call_dict(&mut self, op: u16) -> Result<(), VmErr> {
+    pub fn call_dict(&mut self, op: u16, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let pos = (op & 0xFF) as usize;
         let kw = (op >> 8) as usize;
         if pos > 1 {
@@ -116,57 +84,62 @@ impl<'a> VM<'a> {
         }
         // Keyword pairs sit above the positional source.
         let kw_flat = self.pop_n(kw * 2)?;
-        let mut dm = if pos == 1 {
-            let src = self.pop()?;
-            self.dict_from_source(src)?
-        } else {
-            DictMap::with_capacity(kw)
-        };
-        for pair in kw_flat.chunks(2) { dm.insert(pair[0], pair[1], &self.heap); }
+        let src = if pos == 1 { Some(self.pop()?) } else { None };
+        // A dict source copies with the hashes it stored, so a user `__hash__` never runs again.
+        if let Some(HeapObj::Dict(rc)) = src.and_then(|s| self.heap.try_get(s)) && kw_flat.is_empty() {
+            let dm = rc.borrow().clone();
+            return self.alloc_and_push_dict(dm);
+        }
+        let mut pairs = match src { Some(s) => self.pairs_of(s)?, None => Vec::new() };
+        pairs.extend(kw_flat.chunks(2).map(|p| (p[0], p[1])));
+        let dm = self.with_roots(kw_flat.iter().copied().chain(src), |vm| vm.dictmap_of(pairs, chunk, slots))?;
         self.alloc_and_push_dict(dm)
     }
 
-    // dict(mapping) copies, dict(iterable) builds from pairs.
-    fn dict_from_source(&mut self, src: Val) -> Result<DictMap, VmErr> {
-        if let Some(HeapObj::Dict(rc)) = self.heap.try_get(src) {
-            let pairs: Vec<(Val, Val)> = rc.borrow().iter().collect();
-            return Ok(DictMap::from_pairs(pairs, &self.heap));
+    /* Entries of a mapping, or of an iterable of two-item iterables, as `dict()` takes them. */
+    pub(crate) fn pairs_of(&mut self, src: Val) -> Result<Vec<(Val, Val)>, VmErr> {
+        if let Some(HeapObj::Dict(rc)) = self.heap.try_get(src) { return Ok(rc.borrow().iter().collect()); }
+        let mut pairs = Vec::new();
+        for item in self.extract_iter(src)? {
+            let item = self.extract_iter(item).map_err(|e| match e {
+                VmErr::TypeMsg(_) => cold_type("cannot convert dictionary update sequence element to a sequence"),
+                e => e,
+            })?;
+            let [k, v] = item[..] else {
+                return Err(cold_value("dictionary update sequence element must have length 2"));
+            };
+            self.require_hashable(k)?;
+            pairs.push((k, v));
         }
-        let items = self.extract_iter(src)?;
-        let mut dm = DictMap::with_capacity(items.len());
-        for item in items {
-            let pair = self.extract_iter(item)?;
-            if pair.len() != 2 {
-                return Err(cold_value("dictionary update sequence element has length != 2"));
-            }
-            self.require_hashable(pair[0])?;
-            dm.insert(pair[0], pair[1], &self.heap);
-        }
-        Ok(dm)
+        Ok(pairs)
     }
 
-    pub fn call_set(&mut self, op: u16) -> Result<(), VmErr> {
-        if op == 0 {
-            let val = self.alloc_set(Vec::new())?;
-            self.push(val);
-        } else {
-            let o = self.pop()?;
-            let src = self.extract_iter(o)?;
-            let val = self.alloc_set(src)?;
-            self.push(val);
-        }
+    pub fn call_set(&mut self, op: u16, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        let src = if op == 0 { None } else { Some(self.pop()?) };
+        let s = self.set_source(src, chunk, slots)?;
+        let val = self.heap.alloc(HeapObj::Set(Rc::new(RefCell::new(s))))?;
+        self.push(val);
         Ok(())
     }
 
+    /* The items `set(src)` or `frozenset(src)` holds, a set source copies the hashes it stored. */
+    fn set_source(&mut self, src: Option<Val>, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<ValSet, VmErr> {
+        let Some(src) = src else { return Ok(ValSet::new()) };
+        match self.heap.try_get(src) {
+            Some(HeapObj::Set(rc)) => return Ok(rc.borrow().clone()),
+            Some(HeapObj::FrozenSet(rc)) => return Ok((**rc).clone()),
+            _ => {}
+        }
+        let items = self.extract_iter(src)?;
+        self.with_roots([src], |vm| vm.valset_of(&items, chunk, slots))
+    }
+
     /* `frozenset()` | `frozenset(iter)`, construct an immutable, hashable set from an iterable. Without args returns the empty frozenset. */
-    pub fn call_frozenset(&mut self, argc: u16) -> Result<(), VmErr> {
+    pub fn call_frozenset(&mut self, argc: u16, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let args = self.pop_n(argc as usize)?;
-        let items: Vec<Val> = match args.len() {
-            0 => Vec::new(),
-            1 => self.iter_to_vec_general(args[0])?,
-            _ => return Err(cold_type("frozenset() takes 0 or 1 argument")),
-        };
-        let v = self.frozenset_from_items(items)?;
+        if args.len() > 1 { return Err(cold_type("frozenset() takes 0 or 1 argument")); }
+        let s = self.set_source(args.first().copied(), chunk, slots)?;
+        let v = self.heap.alloc(HeapObj::FrozenSet(Rc::new(s)))?;
         self.push(v); Ok(())
     }
 
@@ -187,7 +160,7 @@ impl<'a> VM<'a> {
                     if let HeapObj::Bytes(b) = self.heap.get(a) {
                         b.clone()
                     } else {
-                        let items = self.iter_to_vec_general(a)?;
+                        let items = self.extract_iter(a)?;
                         let mut out = Vec::with_capacity(items.len());
                         for v in items {
                             if !v.is_int() {

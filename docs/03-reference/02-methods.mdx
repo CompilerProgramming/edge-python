@@ -65,7 +65,7 @@ hello
 
 ### Predicates
 
-`isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`, `istitle`. All return `False` on an empty string. The cased predicates also require at least one cased character. `isdigit` is Unicode-aware.
+`isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`, `istitle`. All return `False` on an empty string. The cased predicates also require at least one cased character. Every predicate follows the Unicode 15 character tables, so `"٣".isdigit()` is `True` and `"½".isdigit()` is `False`.
 
 ```edge-python
 print("123".isdigit())

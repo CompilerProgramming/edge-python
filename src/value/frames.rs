@@ -29,6 +29,11 @@ pub enum CoroState {
     Cancelled,
 }
 
+impl CoroState {
+    /* Finished for good, by a value, an error or a cancel. */
+    pub fn is_terminal(&self) -> bool { matches!(self, Self::Done(_) | Self::Errored(_) | Self::Cancelled) }
+}
+
 /* How `WaitingForChildren` finalizes when its tasks all reach terminal. `Run` returns target's value (or its error), `Gather` returns a list of all values (or the first error), `Timeout` returns the target's value, or `TimeoutError` if the deadline expired before completion. */
 #[derive(Clone, Debug)]
 pub enum WaitKind {
@@ -134,7 +139,7 @@ impl IterFrame {
                     // Clamp past the i64 edge so the next `done` check ends the range, never overflows.
                     *cur = cur.checked_add(*step).unwrap_or(if *step > 0 { i64::MAX } else { i64::MIN });
                     // Promote magnitudes beyond the 48-bit inline range to LongInt.
-                    Ok(Some(crate::vm::globals::sequence::range_int(heap, v)?))
+                    Ok(Some(heap.int(v as i128)?))
                 }
             }
         }

@@ -91,7 +91,7 @@ impl<'a> VM<'a> {
         Ok(FastOutcome::Done)
     }
 
-    /* Instance-dunder fast path. Guards the receiver's class identity, invokes the pre-resolved method bypassing `resolve_attr_silent`, and treats `NotImplemented` as a deopt so reflected dispatch can take over via the slow path. Restores the stack on miss so the slow handler reads its operands unchanged. */
+    /* Instance-dunder fast path. Guards the receiver's class identity, invokes the pre-resolved method bypassing the class lookup, and treats `NotImplemented` as a deopt so reflected dispatch can take over via the slow path. Restores the stack on miss so the slow handler reads its operands unchanged. */
     #[inline]
     fn exec_inst(&mut self, inst: InstanceCache, chunk: &SSAChunk, slots: &mut [Val]) -> Result<FastOutcome, VmErr> {
         let arity = inst.arity as usize;
@@ -116,7 +116,7 @@ impl<'a> VM<'a> {
 
         // SAFETY `method_bits` was recorded from a live `Val` and `Class` references are immutable, so the function still lives on the heap.
         let method = unsafe { Val::from_raw(inst.method_bits) };
-        self.pending.method_binding = Some((class_val, recv));
+        self.pending.method_binding = Some((Val::heap(inst.owner), recv));
         self.push(method);
         for &v in &operands { self.push(v); }
         self.exec_call(arity as u16, chunk, slots)?;
@@ -138,8 +138,8 @@ impl<'a> VM<'a> {
         // try_get is a backstop, callers root operands across the dunder call.
         let Some(HeapObj::Instance(cls, _)) = self.heap.try_get(recv) else { return; };
         let cls = *cls;
-        let Some((method, _)) = self.lookup_class_member(cls, name) else { return; };
-        cache.record_inst(ip, cls.as_heap(), method, arity);
+        let Some((method, owner)) = self.lookup_class_member(cls, name) else { return; };
+        cache.record_inst(ip, cls.as_heap(), owner.as_heap(), method, arity);
     }
 
     /* Main dispatch loop. Walks the fused instruction stream (LoadAttr+Call already collapsed to CallMethod+CallMethodArgs) and checks the IC inline for hot arith/compare opcodes. */
@@ -254,17 +254,11 @@ impl<'a> VM<'a> {
                             let exc = if let Some(v) = self.pending.exc_val.take() {
                                 v
                             } else {
-                                let is_heap_err = matches!(e, VmErr::Heap);
-                                let msg_val = match self.heap.alloc(HeapObj::Str(e.message())) {
-                                    Ok(v) => v,
-                                    Err(_) if is_heap_err => self.heap.alloc_emergency(HeapObj::Str(e.message()))?,
-                                    Err(e2) => return Err(e2),
-                                };
-                                match self.heap.alloc(HeapObj::ExcInstance(msg.clone(), alloc::vec![msg_val])) {
-                                    Ok(v) => v,
-                                    Err(_) if is_heap_err => self.heap.alloc_emergency(HeapObj::ExcInstance(msg, alloc::vec![msg_val]))?,
-                                    Err(e2) => return Err(e2),
-                                }
+                                // A MemoryError reports the limit itself, so its objects skip the soft limit.
+                                let heap_err = matches!(e, VmErr::Heap);
+                                let alloc = |heap: &mut HeapPool, obj| if heap_err { heap.alloc_emergency(obj) } else { heap.alloc(obj) };
+                                let msg_val = alloc(&mut self.heap, HeapObj::Str(e.message()))?;
+                                alloc(&mut self.heap, HeapObj::ExcInstance(msg, alloc::vec![msg_val]))?
                             };
                             self.error_byte_pos = None;
                             // Drop reasons from finally bodies this exception unwinds past.
@@ -325,12 +319,7 @@ impl<'a> VM<'a> {
             Err(VmErr::Attribute(msg)) => {
                 //  if `__getattr__` resolves the name to a callable, invoke it with the positional args.
                 if let Some(v) = self.try_getattr_fallback(obj, name, chunk, slots)? {
-                    self.push(v);
-                    for a in &positional { self.push(*a); }
-                    for a in &kw_flat { self.push(*a); }
-                    let argc = positional.len() as u16;
-                    let encoded = ((kw_flat.len() as u16 / 2) << 8) | argc;
-                    return self.exec_call(encoded, chunk, slots);
+                    return self.call_with(v, None, &positional, &kw_flat, chunk, slots);
                 }
                 return Err(VmErr::Attribute(msg));
             }
@@ -338,45 +327,21 @@ impl<'a> VM<'a> {
         };
         match lookup {
             opcodes::attr_lookup::AttrLookup::ModuleAttr(callee)
-            | opcodes::attr_lookup::AttrLookup::ClassMember(callee) => {
-                // Direct call on the resolved value, no `self` prepended.
-                self.push(callee);
-                for a in &positional { self.push(*a); }
-                for a in &kw_flat { self.push(*a); }
-                let argc = positional.len() as u16;
-                let encoded = ((kw_flat.len() as u16 / 2) << 8) | argc;
-                self.exec_call(encoded, chunk, slots)
-            }
+            | opcodes::attr_lookup::AttrLookup::ClassMember(callee)
+            // An instance-attribute callable gets no `self`, only class-level functions bind.
+            | opcodes::attr_lookup::AttrLookup::InstanceField(callee) => self.call_with(callee, None, &positional, &kw_flat, chunk, slots),
             opcodes::attr_lookup::AttrLookup::InstanceMethod { recv, func, class } => {
-                // Prepend `self`. Kw pairs re-pushed like the unfused BoundUserMethod path. `super()` reads the binding off `pending`.
+                // Prepend `self`, `super()` reads the binding off `pending`, and method bodies stage like plain calls.
                 self.pending.method_binding = Some((class, recv));
-                self.push(func);
-                self.push(recv);
-                for a in &positional { self.push(*a); }
-                for a in &kw_flat { self.push(*a); }
-                let argc = (positional.len() + 1) as u16;
-                let encoded = ((kw_flat.len() as u16 / 2) << 8) | argc;
-                // Method bodies stage like plain calls.
                 self.pending_exec_safe = self.frame_safe;
-                let called = self.exec_call(encoded, chunk, slots);
+                let called = self.call_with(func, Some(recv), &positional, &kw_flat, chunk, slots);
                 self.pending_exec_safe = false;
                 called
             }
-            opcodes::attr_lookup::AttrLookup::BuiltinMethod(id) => {
-                // sort runs user __lt__, so it needs chunk/slots the builtin-method table can't carry.
-                if id.name() == "sort" { return self.exec_sort(obj, &positional, &kw_flat, chunk, slots); }
-                self.exec_bound_method(obj, id, &positional, &kw_flat)
-            }
-            opcodes::attr_lookup::AttrLookup::InstanceField(field) => {
-                // Instance-attribute callable, call directly, no `self` prepended (only class-level functions bind). exec_call reports non-callables as TypeError, matching `obj.attr(...)` and `g = obj.attr; g()`.
-                self.push(field);
-                for a in &positional { self.push(*a); }
-                for a in &kw_flat { self.push(*a); }
-                let argc = positional.len() as u16;
-                let encoded = ((kw_flat.len() as u16 / 2) << 8) | argc;
-                self.exec_call(encoded, chunk, slots)
-            }
-            opcodes::attr_lookup::AttrLookup::ExcArgs(_) | opcodes::attr_lookup::AttrLookup::Name(_) => {
+            opcodes::attr_lookup::AttrLookup::BuiltinMethod(id) => self.exec_bound_method(obj, id, &positional, &kw_flat, chunk, slots),
+            opcodes::attr_lookup::AttrLookup::BoundBuiltin(recv, id) => self.exec_bound_method(recv, id, &positional, &kw_flat, chunk, slots),
+            opcodes::attr_lookup::AttrLookup::UnboundMethod(id) => self.exec_unbound_method(id, &positional, &kw_flat, chunk, slots),
+            opcodes::attr_lookup::AttrLookup::ExcArgs(_) | opcodes::attr_lookup::AttrLookup::Name(_) | opcodes::attr_lookup::AttrLookup::TypeOf(_) => {
                 // `e.args()` / `f.__name__()`, the value isn't callable, reports as missing attribute.
                 let ty = self.type_name(obj);
                 Err(VmErr::Attribute(s!("'", str ty, "' object has no attribute '", str &name, "'")))
@@ -387,32 +352,19 @@ impl<'a> VM<'a> {
                 self.push(getter);
                 self.push(recv);
                 self.exec_call(1, chunk, slots)?;
-                let result = self.pop()?;
-                self.push(result);
-                for a in &positional { self.push(*a); }
-                for a in &kw_flat { self.push(*a); }
-                let argc = positional.len() as u16;
-                let encoded = ((kw_flat.len() as u16 / 2) << 8) | argc;
-                self.exec_call(encoded, chunk, slots)
+                let value = self.pop()?;
+                self.call_with(value, None, &positional, &kw_flat, chunk, slots)
             }
             opcodes::attr_lookup::AttrLookup::Thunk(f) => {
                 // `X.__value__(...)` evaluates the value, then calls it.
                 self.push(f);
                 self.exec_call(0, chunk, slots)?;
-                for a in &positional { self.push(*a); }
-                for a in &kw_flat { self.push(*a); }
-                let argc = positional.len() as u16;
-                let encoded = ((kw_flat.len() as u16 / 2) << 8) | argc;
-                self.exec_call(encoded, chunk, slots)
+                let value = self.pop()?;
+                self.call_with(value, None, &positional, &kw_flat, chunk, slots)
             }
             opcodes::attr_lookup::AttrLookup::PropertySetterRef(prop) => {
                 let v = self.heap.alloc(HeapObj::PropertySetter(prop))?;
-                self.push(v);
-                for a in &positional { self.push(*a); }
-                for a in &kw_flat { self.push(*a); }
-                let argc = positional.len() as u16;
-                let encoded = ((kw_flat.len() as u16 / 2) << 8) | argc;
-                self.exec_call(encoded, chunk, slots)
+                self.call_with(v, None, &positional, &kw_flat, chunk, slots)
             }
         }
     }
@@ -496,14 +448,8 @@ impl<'a> VM<'a> {
             }
             OpCode::LoadGlobal => {
                 let name = chunk.names.get(op as usize).ok_or(cold_runtime("LoadGlobal: name index out of bounds"))?;
-                let v = self.module_state.get(name.as_str()).copied()
-                    .or_else(|| self.global(name))
-                    .or_else(|| self.builtin_binding(name))
-                    .unwrap_or(Val::undef());
-                if v.is_undef() {
-                    return Err(VmErr::Name(name.clone()));
-                }
-                self.push(v);
+                let v = self.module_state.get(name.as_str()).copied().or_else(|| self.global(name)).filter(|v| !v.is_undef());
+                self.push(v.ok_or_else(|| VmErr::Name(name.clone()))?);
             }
             OpCode::StoreGlobal => {
                 let v = self.pop()?;
@@ -534,8 +480,7 @@ impl<'a> VM<'a> {
                 let target = self.checked_jump(op as usize, n)?;
                 // Backward jumps are loop back-edges, charge them so `while` is bounded like `for`.
                 if target <= rip {
-                    if self.budget == 0 { return Err(cold_budget()); }
-                    self.budget -= 1;
+                    self.charge_step()?;
                     if self.heap.needs_gc() { self.collect(slots); }
                     // Back-edges are the only preempt sampling point.
                     if self.preempt_left != 0 {
@@ -575,7 +520,7 @@ impl<'a> VM<'a> {
 
             // Warm opcodes.
             OpCode::GetItem => {
-                // `Series[i]`-style hot loop, bypass `resolve_attr_silent("__getitem__")` once the site is monomorphic.
+                // `Series[i]`-style hot loop, bypass the `__getitem__` lookup once the site is monomorphic.
                 if let Some(inst) = cache.get_inst(rip) {
                     match self.exec_inst(inst, chunk, slots)? {
                         FastOutcome::Done => return Ok(None),
@@ -586,9 +531,9 @@ impl<'a> VM<'a> {
                 self.get_item(rip, chunk, slots, cache)?;
             }
 
-            OpCode::Call | OpCode::CallPrint | OpCode::CallLen | OpCode::CallAbs
+            OpCode::Call | OpCode::CallSpread | OpCode::CallPrint | OpCode::CallLen | OpCode::CallAbs
             | OpCode::CallStr | OpCode::CallInt | OpCode::CallFloat | OpCode::CallBool
-            | OpCode::CallType | OpCode::CallChr | OpCode::CallOrd | OpCode::CallSorted
+            | OpCode::CallType | OpCode::CallChr | OpCode::CallOrd
             | OpCode::CallList | OpCode::CallTuple | OpCode::CallEnumerate | OpCode::CallIsInstance
             | OpCode::CallRange | OpCode::CallRound | OpCode::CallMin | OpCode::CallMax
             | OpCode::CallSum | OpCode::CallZip | OpCode::CallDict | OpCode::CallSet
@@ -600,7 +545,7 @@ impl<'a> VM<'a> {
                 // Snapshot call-site byte_pos for the new CallFrame, falls back to enclosing stmt.
                 self.pending.call_byte_pos = chunk.resolve_call(rip as u32).or_else(|| chunk.resolve(rip as u32));
                 // Only plain user calls stage frames.
-                self.pending_exec_safe = self.frame_safe && ins.opcode == OpCode::Call;
+                self.pending_exec_safe = self.frame_safe && matches!(ins.opcode, OpCode::Call | OpCode::CallSpread);
                 let dispatched = self.handle_function(ins.opcode, op, chunk, slots);
                 // Cleared so `true` cannot leak onward.
                 self.pending_exec_safe = false;
@@ -644,19 +589,11 @@ impl<'a> VM<'a> {
             OpCode::MakeClass => self.exec_make_class(op, *ip, cache, chunk, slots)?,
             OpCode::StoreAttr => self.exec_store_attr(op, chunk, slots)?,
 
-            OpCode::LoadExtern => {
-                let f = chunk.extern_table.get(op as usize).ok_or(cold_runtime("LoadExtern: extern index out of bounds"))?.clone();
-                let v = self.heap.alloc(HeapObj::Extern(f))?;
-                self.push(v);
-            }
-
             OpCode::LoadModule => {
                 let entry = chunk.imports.get(op as usize).ok_or(cold_runtime("LoadModule: import index out of range"))?;
                 let v = *self.module_table.get(&entry.spec).ok_or(cold_runtime("LoadModule: module not initialised"))?;
                 self.push(v);
             }
-
-            OpCode::BuildModule => self.exec_build_module(op)?,
 
             other => return self.dispatch_generic(other, op, chunk, slots, ip, exc_base),
         }
@@ -683,17 +620,18 @@ impl<'a> VM<'a> {
             OpCode::In | OpCode::NotIn | OpCode::Is | OpCode::IsNot => self.handle_identity(opcode, chunk, slots)?,
 
             OpCode::BuildList | OpCode::BuildTuple | OpCode::BuildDict
-            | OpCode::BuildString | OpCode::BuildSet | OpCode::BuildSlice => self.handle_build(opcode, operand)?,
+            | OpCode::BuildString | OpCode::BuildSet | OpCode::BuildSlice => self.handle_build(opcode, operand, chunk, slots)?,
 
             OpCode::StoreItem => { self.mark_impure(); self.store_item(chunk, slots)?; }
             OpCode::DelItem => { self.mark_impure(); self.del_item(chunk, slots)?; }
             OpCode::DelAttr => { self.mark_impure(); self.exec_del_attr(operand, chunk)?; }
             OpCode::UnpackSequence | OpCode::UnpackEx | OpCode::FormatValue => self.handle_container(opcode, operand, chunk, slots)?,
 
-            OpCode::ListAppend | OpCode::SetAdd | OpCode::MapAdd => self.handle_comprehension(opcode)?,
-            OpCode::DictUpdate | OpCode::SetUpdate | OpCode::ListExtend => self.handle_spread_merge(opcode)?,
+            OpCode::ListAppend | OpCode::SetAdd | OpCode::MapAdd => self.handle_comprehension(opcode, chunk, slots)?,
+            OpCode::DictUpdate | OpCode::SetUpdate | OpCode::ListExtend => self.handle_spread_merge(opcode, chunk, slots)?,
 
-            OpCode::Yield => self.handle_yield()?,
+            // The yielded value stays on the stack for the resumer.
+            OpCode::Yield => self.yielded = true,
             OpCode::LoadYieldFrom => self.push(self.yield_from_value),
             OpCode::LoadEllipsis => {
                 let v = self.heap.alloc(HeapObj::Ellipsis)?;
@@ -731,20 +669,10 @@ impl<'a> VM<'a> {
             | OpCode::Raise | OpCode::RaiseFrom | OpCode::Await => {
                 self.handle_side(opcode, operand, chunk, slots)?;
             }
-            OpCode::SetupExcept => {
+            // A finally frame runs on every exit path, its handler the finally body or WithExit.
+            OpCode::SetupExcept | OpCode::SetupFinally => {
                 self.exception_stack.push(ExceptionFrame {
-                    kind: BlockKind::Except,
-                    handler_ip: operand as usize,
-                    stack_depth: self.stack.len(),
-                    iter_depth: self.iter_stack.len(),
-                    with_depth: self.with_stack.len(),
-                    unwind_depth: self.unwind_stack.len(),
-                });
-            }
-            // Cleanup frame run on every exit path, handler is the finally body or WithExit.
-            OpCode::SetupFinally => {
-                self.exception_stack.push(ExceptionFrame {
-                    kind: BlockKind::Finally,
+                    kind: if opcode == OpCode::SetupExcept { BlockKind::Except } else { BlockKind::Finally },
                     handler_ip: operand as usize,
                     stack_depth: self.stack.len(),
                     iter_depth: self.iter_stack.len(),
@@ -833,7 +761,7 @@ impl<'a> VM<'a> {
                 let kw_before = (operand >> 2) as usize;
                 match operand & 0x3 {
                     1 => {
-                        let items = self.iter_to_vec_for_spread(val)?;
+                        let items = self.iterable_items(val, chunk, slots)?;
                         let n = items.len() as i32;
                         // Insert below preceding kw pairs so positionals stay contiguous.
                         let at = self.stack.len() - 2 * kw_before;
@@ -948,64 +876,35 @@ impl<'a> VM<'a> {
 
     #[inline(never)]
     fn exec_for_iter(&mut self, op: u16, ip: &mut usize, n: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
-        if self.budget == 0 { return Err(cold_budget()); }
-        self.budget -= 1;
+        self.charge_step()?;
         if self.heap.needs_gc() { self.collect(slots); }
-        // Coroutine iteration, resume via call instead of next_item().
-        if let Some(IterFrame::Coroutine(coro_val)) = self.iter_stack.last() {
-            let cv = *coro_val;
+        // The next item, or the value a `yield from` over this frame evaluates to once it ends.
+        let step = match self.iter_stack.last() {
             // Resume directly so `yielded` distinguishes a yielded value (even None) from exhaustion.
-            let result = self.resume_coroutine(cv)?;
-            if self.yielded {
-                self.yielded = false;
-                self.push(result);
-            } else {
-                // `yield from gen` evaluates to the subgenerator's return value.
-                self.yield_from_value = result;
-                self.iter_stack.pop();
-                *ip = op as usize;
+            Some(&IterFrame::Coroutine(cv)) => {
+                let result = self.resume_coroutine(cv)?;
+                if core::mem::take(&mut self.yielded) { Ok(result) } else { Err(result) }
             }
-            return Ok(());
-        }
-        // user-defined iterator steps `__next__` or drains a builtin-iterator list, `StopIteration` ends the loop without propagating, other exceptions surface.
-        if let Some(IterFrame::UserDefined(iter_val)) = self.iter_stack.last() {
-            let iter = *iter_val;
-            match self.iter_next_proto(iter, chunk, slots) {
-                Ok(Some(item)) => { self.push(item); }
-                Ok(None) => {
-                    self.yield_from_value = Val::none();
-                    self.iter_stack.pop();
-                    if op as usize > n { return Err(cold_runtime("jump target out of bounds")); }
-                    *ip = op as usize;
-                }
-                Err(VmErr::Raised(m)) if m == "StopIteration" || m.starts_with("StopIteration:") => {
-                    // `raise StopIteration(v)` carries `v` as the yield-from value via the lifted instance.
-                    self.yield_from_value = if m.starts_with("StopIteration:") {
-                        match self.pending.exc_val {
-                            Some(e) if e.is_heap() => match self.heap.get(e) {
-                                HeapObj::ExcInstance(_, args) => args.first().copied().unwrap_or(Val::none()),
-                                _ => Val::none(),
-                            },
-                            _ => Val::none(),
-                        }
-                    } else { Val::none() };
-                    self.iter_stack.pop();
-                    if op as usize > n { return Err(cold_runtime("jump target out of bounds")); }
-                    *ip = op as usize;
-                }
+            // A user iterator steps `__next__`, `StopIteration` ends the loop and `raise StopIteration(v)` carries `v`.
+            Some(&IterFrame::UserDefined(iter)) => match self.iter_next_proto(iter, chunk, slots) {
+                Ok(Some(item)) => Ok(item),
+                Ok(None) => Err(Val::none()),
+                Err(VmErr::Raised(m)) if m == "StopIteration" || m.starts_with("StopIteration:") => Err(match self.pending.exc_val.and_then(|e| self.heap.try_get(e)) {
+                    Some(HeapObj::ExcInstance(_, args)) if m.starts_with("StopIteration:") => args.first().copied().unwrap_or(Val::none()),
+                    _ => Val::none(),
+                }),
                 Err(e) => return Err(e),
-            }
-            return Ok(());
-        }
-        // Split-borrow heap so the Range step can promote to LongInt.
-        let next = match self.iter_stack.last_mut() {
-            Some(f) => f.next_item(&mut self.heap)?,
-            None => None,
+            },
+            // Split-borrow heap so the Range step can promote to LongInt.
+            _ => match self.iter_stack.last_mut() {
+                Some(f) => f.next_item(&mut self.heap)?.ok_or(Val::none()),
+                None => Err(Val::none()),
+            },
         };
-        match next {
-            Some(item) => self.push(item),
-            None => {
-                self.yield_from_value = Val::none();
+        match step {
+            Ok(item) => self.push(item),
+            Err(done) => {
+                self.yield_from_value = done;
                 self.iter_stack.pop();
                 if op as usize > n { return Err(cold_runtime("jump target out of bounds")); }
                 *ip = op as usize;
@@ -1031,10 +930,14 @@ impl<'a> VM<'a> {
         let mut bases = self.pop_n(num_bases)?;
         // An `object` base is a no-op.
         bases.retain(|&b| !(b.is_heap() && matches!(self.heap.get(b), HeapObj::Type(n) if n == "object")));
+        // A builtin exception joins as a base, so the class enters its tree.
         for &b in &bases {
-            if !b.is_heap() || !matches!(self.heap.get(b), HeapObj::Class(..)) {
-                return Err(cold_type("base class must be a class object"));
-            }
+            let ok = match self.heap.try_get(b) {
+                Some(HeapObj::Class(..)) => true,
+                Some(HeapObj::Type(n)) => crate::vm::globals::matches_exc_class(n, "BaseException"),
+                _ => false,
+            };
+            if !ok { return Err(cold_type("base class must be a class object")); }
         }
         let Some(body) = chunk.classes.get(class_idx) else {
             return Err(cold_runtime("class index out of range"));
@@ -1100,16 +1003,21 @@ impl<'a> VM<'a> {
     fn exec_store_attr(&mut self, op: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let value = self.pop()?;
         let obj = self.pop()?;
+        let name = chunk.names.get(op as usize).ok_or(cold_runtime("StoreAttr: bad name index"))?;
+        self.store_attr(obj, name, value, chunk, slots)
+    }
+
+    /* `obj.name = value`, shared by StoreAttr and `setattr()`. */
+    pub(crate) fn store_attr(&mut self, obj: Val, name: &str, value: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         if !obj.is_heap() { return Err(cold_type("cannot set attribute")); }
-        let name = chunk.names.get(op as usize).ok_or(cold_runtime("StoreAttr: bad name index"))?.clone();
         if let HeapObj::Instance(cls_val, _) = self.heap.get(obj) {
             let cls_val = *cls_val;
-            if let Some((member, _)) = self.lookup_class_member(cls_val, &name)
+            if let Some((member, _)) = self.lookup_class_member(cls_val, name)
                 && member.is_heap()
                 && let HeapObj::Property(_, setter) = self.heap.get(member) {
                 let setter = *setter;
                 if setter.is_none() {
-                    return Err(VmErr::Attribute(s!("can't set attribute '", str &name, "'")));
+                    return Err(VmErr::Attribute(s!("can't set attribute '", str name, "'")));
                 }
                 if self.depth >= self.max_calls { return Err(cold_depth()); }
                 self.push(setter);
@@ -1122,46 +1030,22 @@ impl<'a> VM<'a> {
         }
         // Class attribute, insert or replace in the mutable members store.
         if let HeapObj::Class(_, _, members) = self.heap.get(obj) {
-            set_member(members, &name, value);
+            set_member(members, name, value);
             return Ok(());
         }
         if let HeapObj::Func(_, _, _, attrs) = self.heap.get(obj) {
-            set_member(attrs, &name, value);
+            set_member(attrs, name, value);
             // A cached result may have read the old attribute.
             self.templates.clear();
             return Ok(());
         }
-        let key = self.heap.alloc(HeapObj::Str(name))?;
+        let key = self.heap.alloc(HeapObj::Str(name.into()))?;
         match self.heap.get(obj) {
             HeapObj::Instance(_, attrs) => {
                 attrs.borrow_mut().insert(key, value, &self.heap);
             }
             _ => return Err(cold_type("cannot set attribute on this type")),
         }
-        Ok(())
-    }
-
-    #[inline(never)]
-    fn exec_build_module(&mut self, op: u16) -> Result<(), VmErr> {
-        let total = (op as usize) * 2 + 1;
-        let mut frame = self.pop_n(total)?;
-        let module_name_val = frame.pop().ok_or(cold_runtime("BuildModule: empty stack"))?;
-        let module_name = match self.heap.get(module_name_val) {
-            HeapObj::Str(s) => s.clone(),
-            _ => return Err(cold_runtime("BuildModule: module name not a string")),
-        };
-        let mut attrs: Vec<(String, Val)> = Vec::with_capacity(op as usize);
-        let mut it = frame.into_iter();
-        while let Some(name_v) = it.next() {
-            let val = it.next().ok_or(cold_runtime("BuildModule: malformed attr stack"))?;
-            let n = match self.heap.get(name_v) {
-                HeapObj::Str(s) => s.clone(),
-                _ => return Err(cold_runtime("BuildModule: attr name not a string")),
-            };
-            attrs.push((n, val));
-        }
-        let m = self.heap.alloc(HeapObj::Module(module_name, attrs))?;
-        self.push(m);
         Ok(())
     }
 }

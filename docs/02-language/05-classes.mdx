@@ -502,7 +502,7 @@ class K:
 
 k = K(5)
 print(hash(k))
-print({k: 'found'}[k]) # same instance reference looks up reliably
+print({k: 'found'}[K(5)]) # an equal instance finds the entry
 ```
 
 ```output
@@ -510,7 +510,7 @@ print({k: 'found'}[k]) # same instance reference looks up reliably
 found
 ```
 
-Built-in dict and set compare instance keys by identity. A user `__hash__` is returned by `hash()`, but does not change containment in built-in containers. Use the same instance reference to look up reliably.
+Dicts and sets place a key by its `__hash__` and match it with `__eq__`, so an equal instance finds the entry, and the hash a key had when it went in is the one it stays under.
 
 ### Representation
 
@@ -519,7 +519,7 @@ Built-in dict and set compare instance keys by identity. A user `__hash__` is re
 | `repr(x)` | `__repr__` | `<ClassName instance>` |
 | `str(x)`, `print(x)`| `__str__` | `__repr__`, then default |
 | `f"{x}"` (no spec) | `__str__` | same as `str(x)` |
-| `f"{x:spec}"` | `__format__` | built-in format spec engine |
+| `f"{x:spec}"` | `__format__` | `TypeError` for a non-empty spec |
 | `f"{x!r}"` | `__repr__` | - |
 
 `__format__(spec)` receives the spec string and must return `str`. `int(x)` on an instance calls `__int__`, which is also used by `%d` / `%x` / `%X` / `%o` formatting. `float(x)` calls `__float__` and falls back to `__index__`. `abs(x)` calls `__abs__`.

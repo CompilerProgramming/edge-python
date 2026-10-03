@@ -198,16 +198,11 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         for (orig_base, body) in elem_bodies {
             // Body is relocated by this delta, internal jump targets (from `or`/`and`/membership) must shift with it.
             let delta = self.chunk.instructions.len() as i64 - *orig_base as i64;
-            for ins in body {
-                let operand = if matches!(ins.opcode, OpCode::LoadName | OpCode::StoreName) {
-                    var_map.iter().find(|(k, _)| *k == ins.operand).map(|(_, v)| *v).unwrap_or(ins.operand)
-                } else if matches!(ins.opcode, OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfFalseOrPop | OpCode::JumpIfTrueOrPop | OpCode::ForIter) {
-                    (ins.operand as i64 + delta) as u16
-                } else {
-                    ins.operand
-                };
-                self.chunk.instructions.push(Instruction { opcode: ins.opcode, operand });
-            }
+            let remapped = body.iter().map(|&ins| match ins.opcode {
+                OpCode::LoadName | OpCode::StoreName => Instruction { operand: var_map.iter().find(|(k, _)| *k == ins.operand).map_or(ins.operand, |(_, v)| *v), ..ins },
+                _ => ins,
+            }).collect();
+            self.push_shifted(remapped, delta);
         }
     }
 
@@ -322,18 +317,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                         self.chunk.instructions.extend(drained);
                     }
                     if matches!(self.peek(), Some(TokenType::Colon)) {
-                        let colon = self.advance();
-                        let spec_start = colon.end;
-                        loop {
-                            match self.tokens.peek().map(|t| t.kind) {
-                                Some(TokenType::Rbrace) | None => break,
-                                _ => { self.tokens.next(); }
-                            }
-                        }
-                        let spec_end = self.tokens.peek().map(|t| t.start).unwrap_or(spec_start);
-                        let spec = self.source[spec_start..spec_end].to_string();
-                        let idx = self.chunk.push_const(Value::Str(spec));
-                        self.chunk.emit(OpCode::LoadConst, idx);
+                        self.advance();
+                        self.fstring_spec();
                         flags |= 1;
                     }
                     self.chunk.emit(OpCode::FormatValue, flags);
@@ -356,6 +341,37 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         parts
     }
 
+    /* A replacement field spec as one string, raw text with nested `{expr}` fields formatted in, `f"{x:{w}}"`. */
+    fn fstring_spec(&mut self) {
+        let (mut pieces, mut lit_start) = (0u16, self.last_end);
+        loop {
+            let (kind, at) = self.tokens.peek().map_or((None, self.source.len()), |t| (Some(t.kind), t.start));
+            if at > lit_start && matches!(kind, Some(TokenType::Rbrace | TokenType::Lbrace) | None) {
+                self.emit_const(Value::Str(self.source[lit_start..at].to_string()));
+                pieces += 1;
+            }
+            match kind {
+                Some(TokenType::Lbrace) => {
+                    self.advance();
+                    let saved_in_fstring = core::mem::replace(&mut self.in_fstring_expr, true);
+                    self.expr();
+                    self.in_fstring_expr = saved_in_fstring;
+                    self.chunk.emit(OpCode::FormatValue, 0);
+                    pieces += 1;
+                    self.eat(TokenType::Rbrace);
+                    lit_start = self.last_end;
+                }
+                Some(TokenType::Rbrace) | None => break,
+                _ => { self.tokens.next(); }
+            }
+        }
+        match pieces {
+            0 => self.emit_const(Value::Str(String::new())),
+            1 => {}
+            n => self.chunk.emit(OpCode::BuildString, n),
+        }
+    }
+
     /* Dispatches call, print/range opcodes, imported natives (shadow builtins), builtins table, else LoadName+Call. */
     pub(super) fn call(&mut self, name: String) -> bool {
         let call_pos = self.last_end as u32;
@@ -368,29 +384,32 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             } else {
                 self.chunk.emit(OpCode::LoadName, i);
             }
-            self.chunk.emit(OpCode::BeginArgs, 0);
-            let (pos, kw) = self.parse_args();
-            self.chunk.emit(OpCode::Call, super::pack_call(pos, kw));
-            self.chunk.record_call_pos(call_pos);
+            self.advance();
+            self.call_rest(call_pos);
             return true;
         }
         if name == "print" {
-            let (pos, kw, spread) = self.fused_args();
             // Same packed layout as Call so the VM can split sep/end kwargs from positionals.
-            self.chunk.emit(OpCode::CallPrint, super::pack_call(pos, kw) | spread);
+            let operand = self.fused_args(&name, true);
+            self.chunk.emit(OpCode::CallPrint, operand);
             self.chunk.record_call_pos(call_pos);
             return false;
         }
 
         if name == "range" {
-            self.call_range();
+            let operand = self.fused_args(&name, false);
+            if operand & super::KEYWORDS != 0 && (operand >> 8) & 0x3F != 0 { self.error("range() takes no keyword arguments"); }
+            self.chunk.emit(OpCode::CallRange, operand);
+            self.chunk.record_call_pos(call_pos);
             return true;
         }
 
         // Imported natives shadow builtins, matching Python `from x import *` rebinding.
         if let Some(&extern_idx) = self.chunk.extern_index.get(&name) {
+            // A native call always opens its spread frame, the operand has no room for a flag.
             self.chunk.emit(OpCode::BeginArgs, 0);
-            let (pos, kw) = self.parse_args();
+            self.advance();
+            let (pos, kw, _) = self.args_body(false);
             if pos > 0xF || kw > 0xF { self.error("native calls take at most 15 positional and 15 keyword arguments"); }
             // Operand packs extern_idx<<8 | kw<<4 | pos, same layout as Call.
             let encoded = (extern_idx << 8) | ((kw & 0xF) << 4) | (pos & 0xF);
@@ -407,8 +426,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             "enumerate" => Some(OpCode::CallEnumerate),
             _ => None,
         } {
-            let (pos, kw, spread) = self.fused_args();
-            self.chunk.emit(op, super::pack_call(pos, kw) | spread);
+            let operand = self.fused_args(&name, true);
+            self.chunk.emit(op, operand);
             self.chunk.record_call_pos(call_pos);
             return true;
         }
@@ -435,74 +454,58 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                     count = count.saturating_add(1);
                 }
                 self.eat(TokenType::Rpar);
-                self.chunk.emit(if find_true { OpCode::CallAny } else { OpCode::CallAll }, count);
+                let operand = self.fused_operand(&name, count, 0, false, false);
+                self.chunk.emit(if find_true { OpCode::CallAny } else { OpCode::CallAll }, operand);
                 self.chunk.record_call_pos(call_pos);
                 return true;
             }
             let (pos, kw, spread) = self.args_body(true);
-            let operand = if spread { super::pack_call(pos, kw) | super::SPREAD_ARGS } else { pos + kw };
+            let operand = self.fused_operand(&name, pos, kw, spread, false);
             self.chunk.emit(if find_true { OpCode::CallAny } else { OpCode::CallAll }, operand);
             self.chunk.record_call_pos(call_pos);
             return true;
         }
 
-        if let Some((op, leaves_value)) = builtin(name.as_str()) {
-            let (pos, kw, spread) = self.fused_args();
-            self.chunk.emit(op, if spread != 0 { super::pack_call(pos, kw) | spread } else { pos + kw });
+        if let Some(op) = builtin(name.as_str()) {
+            let operand = self.fused_args(&name, false);
+            self.chunk.emit(op, operand);
             self.chunk.record_call_pos(call_pos);
-            return leaves_value;
+            return true;
         }
 
         let i = self.push_ssa_name(&name, self.current_version(&name));
         self.chunk.emit(OpCode::LoadName, i);
-        // Isolate this call's spread delta from any enclosing call.
-        self.chunk.emit(OpCode::BeginArgs, 0);
-        let (pos, kw) = self.parse_args();
-        self.chunk.emit(OpCode::Call, super::pack_call(pos, kw));
-        self.chunk.record_call_pos(call_pos);
+        self.advance();
+        self.call_rest(call_pos);
         true
     }
 
-    pub(super) fn call_range(&mut self) {
-        let call_pos = self.last_end as u32;
-        self.advance();
-        let mut argc = 0u16;
-        let mut spread = 0u16;
-        self.comma_list(|t| t == TokenType::Rpar, |s| {
-            // `range(*args)` opens a spread frame and runs as a plain call.
-            if s.eat_if(TokenType::Star) {
-                if spread == 0 { s.chunk.emit(OpCode::BeginArgs, 0); }
-                spread = super::SPREAD_ARGS;
-                s.expr();
-                s.chunk.emit(OpCode::UnpackArgs, 1);
-            } else { s.expr(); }
-            argc = argc.saturating_add(1);
-        });
-        self.eat(TokenType::Rpar);
-        self.chunk.emit(OpCode::CallRange, argc | spread);
+    /* Args after `(` and the call, `CallSpread` once a spread opened its frame. */
+    pub(super) fn call_rest(&mut self, call_pos: u32) {
+        let (pos, kw, spread) = self.args_body(true);
+        self.chunk.emit(if spread { OpCode::CallSpread } else { OpCode::Call }, super::pack_call(pos, kw));
         self.chunk.record_call_pos(call_pos);
     }
 
-    pub(super) fn parse_args(&mut self) -> (u16, u16) {
-        self.advance();
-        self.parse_args_body()
-    }
-
-    pub(super) fn parse_args_body(&mut self) -> (u16, u16) {
-        let (pos, kw, _) = self.args_body(false);
-        (pos, kw)
-    }
-
-    /* Args of a fused builtin, the third value is `SPREAD_ARGS` when a `*` or `**` asks for a plain call. */
-    fn fused_args(&mut self) -> (u16, u16, u16) {
+    /* Parses the args of fused builtin `name` into its operand, `packed` keeps the keyword count. */
+    fn fused_args(&mut self, name: &str, packed: bool) -> u16 {
         self.advance();
         let (pos, kw, spread) = self.args_body(true);
-        if kw > 0x7F { self.error("too many keyword arguments in call (max 127)"); }
-        (pos, kw, if spread { super::SPREAD_ARGS } else { 0 })
+        if kw > 0x3F { self.error("too many keyword arguments in call (max 63)"); }
+        self.fused_operand(name, pos, kw, spread, packed)
+    }
+
+    /* Flags a spread, uncounted keywords or a count outside the arity, so the VM runs a plain call. */
+    fn fused_operand(&self, name: &str, pos: u16, kw: u16, spread: bool, packed: bool) -> u16 {
+        let fits = crate::value::NativeFnId::from_name(name).is_none_or(|id| id.takes(pos));
+        if spread { super::pack_call(pos, kw) | super::SPREAD_ARGS }
+        else if !fits || (!packed && kw > 0) { super::pack_call(pos, kw) | super::KEYWORDS }
+        else if packed { super::pack_call(pos, kw) }
+        else { pos }
     }
 
     // Parse args after `(` already consumed. Depth-guarded since the name-led arg path recurses through `name`/`call` without passing `expr_bp`.
-    fn args_body(&mut self, fused: bool) -> (u16, u16, bool) {
+    pub(super) fn args_body(&mut self, lazy: bool) -> (u16, u16, bool) {
         self.expr_depth += 1;
         if self.expr_depth > super::types::MAX_EXPR_DEPTH {
             self.expr_depth -= 1;
@@ -517,8 +520,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 else if s.eat_if(TokenType::Star) { Some(1u16) }
                 else { None };
             if let Some(kind) = unpack {
-                // A fused call opens its own spread frame at the first spread, as a plain call does up front.
-                if fused && !spread { s.chunk.emit(OpCode::BeginArgs, 0); }
+                // The first spread opens the frame its call closes, a native call opened one up front.
+                if lazy && !spread { s.chunk.emit(OpCode::BeginArgs, 0); }
                 spread = true;
                 s.expr();
                 // High bits carry preceding kw-pair count so the VM keeps positionals contiguous.
@@ -529,13 +532,12 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 if matches!(s.peek(), Some(TokenType::Equal)) {
                     let kw_name = s.lexeme(&t).to_string();
                     s.advance();
-                    let i = s.chunk.push_const(Value::Str(kw_name));
-                    s.chunk.emit(OpCode::LoadConst, i);
+                    s.emit_const(Value::Str(kw_name));
                     s.expr();
                     kw = kw.saturating_add(1);
                 } else {
                     let elem_start = s.chunk.instructions.len();
-                    s.name(t);
+                    s.name_operand(t);
                     s.infix_bp(0);
                     // Name-led arg bypasses expr(), parse a trailing ternary here too.
                     s.saw_newline = false;
@@ -556,9 +558,6 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         (pos, kw, spread)
     }
 
-    /* class compiles body into fresh chunk, emits MakeClass+decorators+StoreName. */
-    pub(super) fn class_def(&mut self) { self.class_def_with(0) }
-
     /* Consume the next Name, or emit a non-syncing diagnostic and return a synthetic name so parsing continues. */
     fn ident_or_missing(&mut self, msg: &str) -> String {
         if matches!(self.peek(), Some(TokenType::Name)) {
@@ -578,6 +577,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         }
     }
 
+    /* class compiles body into fresh chunk, emits MakeClass+decorators+StoreName. */
     pub(super) fn class_def_with(&mut self, decorators: u16) {
         // Missing name, non-syncing diagnostic + synthetic name so body still parses.
         let cname = self.ident_or_missing("expected class name");
@@ -665,53 +665,43 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             return (Vec::new(), 0);
         }
         self.advance();
-        let mut params = Vec::new();
-        let mut defaults = 0u16;
-        // Lone `*` flips kw_only, subsequent params get `~` prefix.
-        let mut kw_only = false;
-        // Break on Rarrow, signals end of params (return type follows).
-        while !matches!(self.peek(), Some(TokenType::Rpar | TokenType::Rarrow) | None) {
-            if self.eat_if(TokenType::Slash) {
-                self.eat_if(TokenType::Comma);
-                continue;
-            }
-            if self.eat_if(TokenType::Star) {
-                // Lone `*`, flip kw-only, no param emitted.
-                if matches!(self.peek(), Some(TokenType::Comma | TokenType::Rpar)) {
-                    self.eat_if(TokenType::Comma);
-                    kw_only = true;
-                    continue;
-                }
-                let nm = self.advance_text();
-                params.push(s!("*", str &nm));
-                self.drain_annotation();
-                self.eat_if(TokenType::Comma);
-                continue;
-            }
-            if self.eat_if(TokenType::DoubleStar) {
-                let nm = self.advance_text();
-                params.push(s!("**", str &nm));
-                self.drain_annotation();
-                self.eat_if(TokenType::Comma);
-                continue;
-            }
-            let prefix = if kw_only { "~" } else { "" };
-            let nm = self.advance_text();
-            params.push(if prefix.is_empty() { nm } else { s!(str prefix, str &nm) });
-            self.drain_annotation();
-            if self.eat_if(TokenType::Equal) {
-                self.expr();
-                defaults += 1;
-                // Trailing `=` marks this param as carrying a default value.
-                if let Some(last) = params.last_mut() { last.push('='); }
-            }
-            self.eat_if(TokenType::Comma);
-        }
+        let (params, defaults) = self.param_list(TokenType::Rpar, true);
         self.eat(TokenType::Rpar);
         if self.eat_if(TokenType::Rarrow) {
             while !matches!(self.peek(), Some(TokenType::Colon) | None) { self.advance(); }
         }
         self.eat(TokenType::Colon);
+        (params, defaults)
+    }
+
+    /* Parameters up to `close`, a bare `*` makes the rest keyword-only and `/` only separates. */
+    pub(super) fn param_list(&mut self, close: TokenType, annotated: bool) -> (Vec<String>, u16) {
+        let mut params: Vec<String> = Vec::new();
+        let mut defaults = 0u16;
+        let mut kw_only = false;
+        let at_end = |s: &mut Self| matches!(s.peek(), Some(TokenType::Rarrow) | None) || s.peek() == Some(close);
+        while !at_end(self) {
+            let prefix = if self.eat_if(TokenType::Slash) { None }
+                else if self.eat_if(TokenType::DoubleStar) { Some("**") }
+                else if self.eat_if(TokenType::Star) {
+                    let bare = matches!(self.peek(), Some(TokenType::Comma)) || at_end(self);
+                    kw_only |= bare;
+                    (!bare).then_some("*")
+                }
+                else { Some(if kw_only { "~" } else { "" }) };
+            if let Some(prefix) = prefix {
+                let nm = self.advance_text();
+                params.push(s!(str prefix, str &nm));
+                if annotated { self.drain_annotation(); }
+                // Trailing `=` marks a param carrying a default value.
+                if prefix.len() < 2 && self.eat_if(TokenType::Equal) {
+                    self.expr();
+                    defaults += 1;
+                    if let Some(last) = params.last_mut() { last.push('='); }
+                }
+            }
+            if !at_end(self) { self.eat(TokenType::Comma); }
+        }
         (params, defaults)
     }
 

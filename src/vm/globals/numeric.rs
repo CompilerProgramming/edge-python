@@ -1,9 +1,7 @@
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use super::super::VM;
 use super::super::types::*;
-use super::sequence::IterCursor;
 
 /* Convert a float to i128 for int()/round(), NaN and infinity raise, and the value is rejected before the saturating cast overflows. `transform` truncates or rounds. */
 fn finite_f64_to_i128(f: f64, transform: impl Fn(f64) -> f64) -> Result<i128, VmErr> {
@@ -61,7 +59,8 @@ fn parse_int_radix(s: &str, base: i64) -> Result<i128, VmErr> {
     if base != 0 && !(2..=36).contains(&base) {
         return Err(cold_value("int() base must be >= 2 and <= 36, or 0"));
     }
-    let t = s.trim();
+    let t = crate::util::uni::number_text(s);
+    let t = t.as_ref();
     let (neg, rest) = match t.as_bytes().first() {
         Some(b'-') => (true, &t[1..]),
         Some(b'+') => (false, &t[1..]),
@@ -184,12 +183,12 @@ impl<'a> VM<'a> {
     pub fn call_float(&mut self, argc: u16, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         if argc == 0 { self.push(Val::float(0.0)); return Ok(()); } // `float()` is 0.0.
         let o = self.pop()?;
-        let f = if o.is_float() { o.as_float() }
-            else if o.is_bool() { o.as_bool() as i64 as f64 }
-            else if o.is_int() { o.as_int() as f64 }
-            else if o.is_heap() && let HeapObj::LongInt(i) = self.heap.get(o) { *i as f64 }
+        // A float comes back as the same object.
+        if o.is_float() { self.push(o); return Ok(()); }
+        let f = if let Some(f) = num_as_f64(o, &self.heap) { f }
             else if o.is_heap() && let HeapObj::Str(s) = self.heap.get(o) {
-                let t = s.trim();
+                let t = crate::util::uni::number_text(s);
+                let t = t.as_ref();
                 // Accept `_` digit separators, strip then parse.
                 let cleaned = if t.contains('_') {
                     if t.starts_with('_') || t.ends_with('_') || t.contains("__") { return Err(cold_value("float(): invalid literal")); }
@@ -200,7 +199,7 @@ impl<'a> VM<'a> {
             else if o.is_heap() && matches!(self.heap.get(o), HeapObj::Instance(..)) {
                 // Honor a user `__float__` and fall back to `__index__` like CPython.
                 match self.try_call_dunder(o, "__float__", &[], chunk, slots)? {
-                    Some(r) if r.is_float() => r.as_float(),
+                    Some(r) if r.is_float() => { self.push(r); return Ok(()); }
                     Some(_) => return Err(cold_type("__float__ returned non-float")),
                     None => match self.try_call_dunder(o, "__index__", &[], chunk, slots)? {
                         Some(r) if r.is_int() || r.is_bool() => self.as_i128(r).unwrap_or(r.as_bool() as i128) as f64,
@@ -277,7 +276,7 @@ impl<'a> VM<'a> {
     pub fn call_max(&mut self, op: u16, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> { self.call_minmax(op, false, chunk, slots) }
 
     fn call_minmax(&mut self, op: u16, is_min: bool, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
-        let (positional, kw_flat, _np, _nk) = self.parse_call_args(op)?;
+        let (positional, kw_flat) = self.parse_call_args(op)?;
         // Optional `default=` (returned when a single iterable is empty) and `key=` (compare by key(x)).
         let mut default: Option<Val> = None;
         let mut key: Option<Val> = None;
@@ -289,39 +288,42 @@ impl<'a> VM<'a> {
             }
         }
         // One arg iterable, many args are values.
-        let items = if positional.len() == 1 { self.iter_to_vec_general(positional[0])? } else { positional };
+        let items = if positional.len() == 1 { self.extract_iter(positional[0])? } else { positional };
         let label = if is_min { "min() arg is an empty sequence" } else { "max() arg is an empty sequence" };
         if items.is_empty() {
             return match default { Some(d) => { self.push(d); Ok(()) }, None => Err(cold_value(label)) };
         }
         // Without a key, compare elements directly, with one, compare key(x) but return the winning element.
-        let keys: Vec<Val> = match key {
-            None => items.clone(),
-            Some(k) => {
-                let mut ks = Vec::with_capacity(items.len());
-                for &x in &items { self.push(k); self.push(x); self.exec_call(1, chunk, slots)?; ks.push(self.pop()?); }
-                ks
-            }
+        let keys = match key {
+            Some(k) => Some(self.call_rows(k, core::slice::from_ref(&items), items.len(), chunk, slots)?),
+            None => None,
         };
-        let mut best = 0;
-        for i in 1..items.len() {
-            let (l, r) = if is_min { (keys[i], keys[best]) } else { (keys[best], keys[i]) };
-            if self.lt_vals(l, r)? { best = i; }
-        }
+        let keys = keys.as_deref().unwrap_or(&items);
+        // An instance key runs `__lt__` like `sorted`, so then the operands stay rooted.
+        let roots = if self.any_instance(keys) { items.len() + keys.len() } else { 0 };
+        let best = self.with_roots(items.iter().chain(keys).copied().take(roots), |vm| vm.extreme_index(keys, is_min, chunk, slots))?;
         self.push(items[best]); Ok(())
+    }
+
+    /* Index of the least key, or with `!is_min` the greatest, the first one on a tie. */
+    fn extreme_index(&mut self, keys: &[Val], is_min: bool, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<usize, VmErr> {
+        let mut best = 0;
+        for i in 1..keys.len() {
+            let (l, r) = if is_min { (keys[i], keys[best]) } else { (keys[best], keys[i]) };
+            if self.sort_lt(l, r, chunk, slots)? { best = i; }
+        }
+        Ok(best)
     }
 
     pub fn call_sum(&mut self, op: u16) -> Result<(), VmErr> {
         let args = self.pop_n(op as usize)?;
         if args.is_empty() { return Err(cold_type("sum() requires at least 1 argument")); }
         let start = if args.len() > 1 { args[1] } else { Val::int(0) };
-        let mut cur = if args[0].is_heap() && matches!(self.heap.get(args[0]), HeapObj::Coroutine(..)) {
-            IterCursor::Vec { items: self.extract_iter(args[0])?, idx: 0 }
-        } else { self.iter_cursor(args[0])? };
+        let mut cur = self.iter_cursor(args[0])?;
         let mut acc = start;
         // Once a float enters, switch to Neumaier compensated summation (Python 3.12+).
         let mut fstate: Option<(f64, f64)> = if start.is_float() { Some((start.as_float(), 0.0)) } else { None };
-        while let Some(item) = cur.next(&mut self.heap)? {
+        while let Some(item) = cur.next_item(&mut self.heap)? {
             match fstate {
                 Some((s, c)) => match self.to_f64_coerce(item) {
                     Ok(x) => fstate = Some(neumaier(s, c, x)),
@@ -342,10 +344,7 @@ impl<'a> VM<'a> {
     }
 
     pub fn call_range(&mut self, op: u16) -> Result<(), VmErr> {
-        // Fold in UnpackArgs spread so `range(*args)` sees the real argument count.
-        let n = (op as i32 + self.pending.pos_delta).max(0) as usize;
-        self.pending.pos_delta = 0;
-        let args = self.pop_n(n)?;
+        let args = self.pop_n(op as usize)?;
         // Accept any integer (incl. LongInt/bool) that fits the i64 range bounds.
         let gi = |i: Option<i128>| -> Result<i64, VmErr> {
             match i {
@@ -381,27 +380,8 @@ impl<'a> VM<'a> {
     pub fn call_divmod(&mut self) -> Result<(), VmErr> {
         let b = self.pop()?;
         let a = self.pop()?;
-        // Float operands use divmod(a, b) == (floor(a/b), a - floor(a/b)*b).
-        if a.is_float() || b.is_float() {
-            let af = self.to_f64_coerce(a).map_err(|_| cold_type("divmod() requires numeric operands"))?;
-            let bf = self.to_f64_coerce(b).map_err(|_| cold_type("divmod() requires numeric operands"))?;
-            if bf == 0.0 { return Err(VmErr::ZeroDiv); }
-            let q = ffloor(af / bf);
-            let r = af - q * bf;
-            let qv = Val::float(q);
-            let rv = Val::float(r);
-            return self.alloc_and_push_tuple(alloc::vec![qv, rv]);
-        }
-        let (Some(ai), Some(bi)) = (self.as_i128(a), self.as_i128(b)) else { return Err(cold_type("divmod() requires numeric operands")); };
-        if bi == 0 { return Err(VmErr::ZeroDiv); }
-        // checked_div guards i128::MIN / -1.
-        let q = ai.checked_div(bi).ok_or(cold_overflow())?;
-        let r = ai - q * bi;
-        // Floor-div sign correction so divmod matches `(a // b, a % b)`.
-        let (q, r) = if (r != 0) && ((r < 0) != (bi < 0)) { (q - 1, r + bi) } else { (q, r) };
-        let qv = self.int_to_val(Some(q))?;
-        let rv = self.int_to_val(Some(r))?;
-        self.alloc_and_push_tuple(alloc::vec![qv, rv])
+        let (q, r) = self.divmod_vals(a, b, "divmod() requires numeric operands")?;
+        self.alloc_and_push_tuple(alloc::vec![q, r])
     }
 
     pub fn call_pow(&mut self, op: u16) -> Result<(), VmErr> {
@@ -450,8 +430,7 @@ impl<'a> VM<'a> {
 
     /* Two-arg power for `pow()` and `**`. int**non-neg int stays i128 (overflow trap), floats or negative exponents promote to f64. */
     pub(crate) fn pow_vals(&mut self, a: Val, b: Val, err_msg: &'static str) -> Result<Val, VmErr> {
-        if let (Some(ai), true) = (self.as_i128(a), b.is_int()) {
-            let exp = b.as_int();
+        if let (Some(ai), Some(exp)) = (self.as_i128(a), self.as_i128(b).and_then(|e| i64::try_from(e).ok())) {
             if exp >= 0 {
                 // i128 exp-by-squaring, overflow at any step -> OverflowError. Bases +/- 1/0 never overflow regardless of exp size.
                 let mut result: i128 = 1;
@@ -477,16 +456,7 @@ impl<'a> VM<'a> {
             };
             return Ok(Val::float(r));
         }
-        let to_f = |v: Val| -> Result<f64, VmErr> {
-            if v.is_int() { Ok(v.as_int() as f64) }
-            else if v.is_float() { Ok(v.as_float()) }
-            else if v.is_heap() {
-                if let HeapObj::LongInt(i) = self.heap.get(v) { Ok(*i as f64) }
-                else { Err(cold_type(err_msg)) }
-            }
-            else { Err(cold_type(err_msg)) }
-        };
-        let (fa, fb) = (to_f(a)?, to_f(b)?);
+        let (Some(fa), Some(fb)) = (num_as_f64(a, &self.heap), num_as_f64(b, &self.heap)) else { return Err(cold_type(err_msg)); };
         if fa == 0.0 && fb < 0.0 { return Err(VmErr::Raised(String::from("ZeroDivisionError: 0.0 cannot be raised to a negative power"))); }
         Ok(Val::float(fpowf(fa, fb)))
     }

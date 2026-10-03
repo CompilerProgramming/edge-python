@@ -169,16 +169,18 @@ print(g)
 [0, 2, 4]
 ```
 
-`reversed`, `map`, `filter` and `enumerate` return eager lists, not iterators, and `iter(x)` materializes a snapshot.
+`map`, `filter`, `zip`, `enumerate` and `reversed` return iterator objects whose items are all computed by the call itself, so the mapped function runs up front. `iter` over a list reads it live and over a `range` lazily, `next()` on any builtin iterator costs constant time. A builtin that takes an iterable, a `*` spread and an unpacking drain a user `__iter__` the same way, so an endless iterator runs until the budget stops it.
 
 ```python
-print(map(str, [1, 2]))
-print(reversed([1, 2, 3]))
+seen = []
+m = map(lambda v: seen.append(v) or v * 2, [1, 2, 3])
+print(len(seen), next(m), list(m))
+print(m)
 ```
 
 ```text Output
-['1', '2']
-[3, 2, 1]
+3 2 [4, 6]
+<map object>
 ```
 
 Dict views are concrete list snapshots taken at call time, not live views.
@@ -344,11 +346,11 @@ True 65 a
 
 ### Iteration
 
-`len`, `range`, `sorted`, `reversed`, `enumerate`, `zip`, `iter`, `next`, `map`, `filter`, `all`, `any`, `slice`. `range` is genuinely lazy and everything else eager, see the delta section.
+`len`, `range`, `sorted`, `reversed`, `enumerate`, `zip`, `iter`, `next`, `map`, `filter`, `all`, `any`, `slice`. `range` is genuinely lazy, and the other iterators compute their items when created, see the delta section.
 
 ```python
 print(list(enumerate("ab", start=1)))
-print(zip([1, 2, 3], "ab"))
+print(list(zip([1, 2, 3], "ab")))
 print(sorted([3, 1, 2], reverse=True), any([0, "", 3]))
 ```
 
@@ -360,7 +362,7 @@ print(sorted([3, 1, 2], reverse=True), any([0, "", 3]))
 
 ### Types and attributes
 
-`type`, `object`, `isinstance`, `issubclass`, `callable`, `id`, `hash`, `repr`, `format`, `getattr`, `hasattr`, `setattr`, `delattr`, `vars`, `globals`, `locals`, `import_module`, `super`, `property`, `staticmethod`, `classmethod`. `isinstance` accepts a tuple of types and `bool` is a subclass of `int`. `vars(x)` returns a snapshot of instance attributes, and `globals()` and `locals()` return copies whose mutation binds nothing.
+`type`, `object`, `isinstance`, `issubclass`, `callable`, `id`, `hash`, `repr`, `format`, `getattr`, `hasattr`, `setattr`, `delattr`, `vars`, `globals`, `locals`, `import_module`, `super`, `property`, `staticmethod`, `classmethod`. `isinstance` accepts a tuple of types and `bool` is a subclass of `int`. `x.__class__` is the same object as `type(x)`. `getattr`, `hasattr` and `setattr` behave like `obj.name`, properties and `__getattr__` included, and a `getattr` default answers only an `AttributeError`. `format(x, spec)` with a spec on a value that has no format of its own, a list or an instance without `__format__`, raises `TypeError`, and `f"{x!s:>10}"` pads its `str()`. `vars(x)` returns a snapshot of instance attributes, and `globals()` and `locals()` return copies whose mutation binds nothing.
 
 ```python
 print(isinstance(True, int), callable(len))
@@ -404,11 +406,27 @@ KeyError ('missing',)
 always
 ```
 
-User exception classes support inheritance among themselves for `except` matching but do not join the builtin tree.
+A class deriving from a builtin exception joins its tree, so `except ValueError` catches it. The constructor arguments become `e.args`, which `super().__init__(...)` or `Exception.__init__(self, ...)` resets, and `str(e)` follows `args` unless the class defines `__str__`.
+
+```python
+class Bad(ValueError):
+    def __init__(self, code):
+        super().__init__("bad code", code)
+        self.code = code
+
+try:
+    raise Bad(7)
+except ValueError as e:
+    print(type(e).__name__, e.code, e.args)
+```
+
+```text Output
+Bad 7 ('bad code', 7)
+```
 
 ## Type methods
 
-Methods live on the builtin types. `tuple`, `frozenset`, `bool` and `NoneType` have none.
+Methods live on the builtin types. `tuple`, `frozenset`, `bool` and `NoneType` have none. Read off the type, a method is unbound and takes its receiver first, so `str.lower("AB")` and `map(str.strip, lines)` work.
 
 ### str
 
@@ -597,7 +615,7 @@ edge run --restore-state state.bin         # resumes from the blob
 edge run app.py --preempt 500              # makes even while-True snapshottable
 ```
 
-A snapshot is taken when the script parks on a wait the engine cannot serve, for example `receive()` with no events left. Without `--save-state` such a park is an error. The blob embeds a bytecode fingerprint and only restores into the same program. Feed a resumed run with `--events file`, one `receive()` line per call.
+A snapshot is taken when the script parks on a wait the engine cannot serve, for example `receive()` with no events left. Without `--save-state` such a park is an error. The blob embeds a bytecode fingerprint and only restores into the same program, and a damaged or forged blob fails to restore instead of running. A restored run keeps the op budget and call depth it saved, capped by the limits it boots with. Feed a resumed run with `--events file`, one `receive()` line per call.
 
 ## Std packages
 
@@ -852,7 +870,7 @@ print([f() for f in fns])
 [0, 1, 2]
 ```
 
-Inline integers compare by value under `is`, so `is` on numbers does not mean identity. Reserve `is` for `None` and sentinels.
+Inline integers and floats compare by value under `is`, so `is` on numbers does not mean identity, except that every NaN keeps its own. Reserve `is` for `None` and sentinels.
 
 ```python
 a = 1000
@@ -890,7 +908,7 @@ print(s)
 print(id(object()))  # skip: heap slots are reused, the value changes between runs
 ```
 
-Truthiness follows Python, the falsy set is `None`, `False`, `0`, `0.0`, `""`, `b""`, `[]`, `()`, `{}`, `set()`, `frozenset()` and `range(0)`. `bool` subclasses `int` so `True + True == 2`. User objects in builtin dicts and sets compare by identity even when they define `__hash__` and `__eq__`, so look them up by the same reference. `len` on strings counts code points. Same source and input give the same output on every run, `id()` aside.
+Truthiness follows Python, the falsy set is `None`, `False`, `0`, `0.0`, `""`, `b""`, `[]`, `()`, `{}`, `set()`, `frozenset()` and `range(0)`. `bool` subclasses `int` so `True + True == 2`. `len` on strings counts code points. Same source and input give the same output on every run, `id()` aside.
 
 ## Sandbox limits
 

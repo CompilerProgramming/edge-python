@@ -11,7 +11,7 @@ use super::{Pending, VM};
 use super::types::*;
 
 const MAGIC: u32 = 0x4E53_5045;
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 4;
 
 pub type SnapErr = String;
 
@@ -56,10 +56,12 @@ impl W {
 struct R<'a> {
     b: &'a [u8],
     p: usize,
+    // Which heap slots hold an object, known once the heap is decoded.
+    live: Option<Vec<bool>>,
 }
 
 impl<'a> R<'a> {
-    fn new(b: &'a [u8]) -> Self { Self { b, p: 0 } }
+    fn new(b: &'a [u8]) -> Self { Self { b, p: 0, live: None } }
     fn take(&mut self, n: usize) -> Result<&'a [u8], SnapErr> {
         let end = self.p.checked_add(n).ok_or_else(|| "snapshot truncated".to_string())?;
         if end > self.b.len() { return Err("snapshot truncated".to_string()); }
@@ -95,7 +97,19 @@ impl<'a> R<'a> {
     fn leakstr(&mut self) -> Result<&'static str, SnapErr> {
         Ok(alloc::boxed::Box::leak(self.str()?.into_boxed_str()))
     }
-    fn val(&mut self) -> Result<Val, SnapErr> { Ok(Val(self.u64()?)) }
+    /* A blob is untrusted, a value must be well formed and past the heap name a live slot. */
+    fn val(&mut self) -> Result<Val, SnapErr> {
+        let v = Val(self.u64()?);
+        let known = v.is_float() || v.is_int() || v.is_none() || v.is_bool() || v.is_undef();
+        if !known && !(v.is_heap() && Val::heap(v.as_heap()).0 == v.0) {
+            return Err("snapshot holds a malformed value".to_string());
+        }
+        if v.is_heap() && let Some(live) = &self.live && !live.get(v.as_heap() as usize).copied().unwrap_or(false) {
+            return Err("snapshot references a missing object".to_string());
+        }
+        v.note_nan();
+        Ok(v)
+    }
     fn seq<T>(&mut self, f: impl Fn(&mut Self) -> Result<T, SnapErr>) -> Result<Vec<T>, SnapErr> {
         let n = self.count()?;
         let mut v = Vec::with_capacity(n);
@@ -157,8 +171,6 @@ macro_rules! codec {
     (@get $r:ident, $m:ident) => { $r.$m()? };
 }
 
-fn put_val_pair(w: &mut W, p: &(Val, Val)) { w.val(p.0); w.val(p.1); }
-fn get_val_pair(r: &mut R) -> Result<(Val, Val), SnapErr> { Ok((r.val()?, r.val()?)) }
 fn put_slot_val(w: &mut W, p: &(usize, Val)) { w.usz(p.0); w.val(p.1); }
 fn get_slot_val(r: &mut R) -> Result<(usize, Val), SnapErr> { Ok((r.usz()?, r.val()?)) }
 fn put_name_val(w: &mut W, p: &(String, Val)) { w.str(&p.0); w.val(p.1); }
@@ -264,27 +276,10 @@ codec!(struct CoroutineHandle, put_handle, get_handle {
     state: (put_coro_state, get_coro_state),
 });
 
-fn put_wfc(w: &mut W, v: &Option<(Vec<Val>, WaitKind)>) {
-    match v {
-        Some((tasks, kind)) => { w.u8(1); w.vals(tasks); put_wait_kind(w, kind); }
-        None => w.u8(0),
-    }
-}
-
-fn get_wfc(r: &mut R) -> Result<Option<(Vec<Val>, WaitKind)>, SnapErr> {
-    Ok(if r.u8()? == 1 { Some((r.vals()?, get_wait_kind(r)?)) } else { None })
-}
-
-fn put_binding(w: &mut W, v: &Option<(Val, Val)>) {
-    match v {
-        Some((a, b)) => { w.u8(1); w.val(*a); w.val(*b); }
-        None => w.u8(0),
-    }
-}
-
-fn get_binding(r: &mut R) -> Result<Option<(Val, Val)>, SnapErr> {
-    Ok(if r.u8()? == 1 { Some((r.val()?, r.val()?)) } else { None })
-}
+fn put_wfc(w: &mut W, v: &Option<(Vec<Val>, WaitKind)>) { w.opt(v.as_ref(), |w, (tasks, kind)| { w.vals(tasks); put_wait_kind(w, kind); }); }
+fn get_wfc(r: &mut R) -> Result<Option<(Vec<Val>, WaitKind)>, SnapErr> { r.opt(|r| Ok((r.vals()?, get_wait_kind(r)?))) }
+fn put_binding(w: &mut W, v: &Option<(Val, Val)>) { w.opt(*v, |w, (a, b)| { w.val(a); w.val(b); }); }
+fn get_binding(r: &mut R) -> Result<Option<(Val, Val)>, SnapErr> { r.opt(|r| Ok((r.val()?, r.val()?))) }
 
 codec!(struct Pending, put_pending, get_pending {
     pos_delta: i32v,
@@ -301,16 +296,22 @@ codec!(struct Pending, put_pending, get_pending {
     preempt_request: default,
 });
 
-fn put_dict(w: &mut W, d: &DictMap) { let live: Vec<(Val, Val)> = d.iter().collect(); w.seq(&live, put_val_pair); }
+/* Each entry keeps its hash, the one a user `__hash__` gave cannot be taken again without running code. */
+fn put_dict(w: &mut W, d: &DictMap) {
+    let live: Vec<(Val, Val, u64)> = d.iter_hashed().collect();
+    w.seq(&live, |w, &(k, v, h)| { w.val(k); w.val(v); w.u64(h); });
+}
 
 fn get_dict(r: &mut R) -> Result<DictMap, SnapErr> {
-    Ok(DictMap::from_entries(r.seq(get_val_pair)?))
+    Ok(DictMap::from_entries(r.seq(|r| Ok((r.val()?, r.val()?, r.u64()?)))?))
 }
 
 fn put_set(w: &mut W, s: &ValSet) {
-    let items: Vec<Val> = s.iter().copied().collect();
-    w.vals(&items);
+    let items: Vec<(u64, Val)> = s.iter_hashed().collect();
+    w.seq(&items, |w, &(h, v)| { w.u64(h); w.val(v); });
 }
+
+fn get_set_items(r: &mut R) -> Result<Vec<(u64, Val)>, SnapErr> { r.seq(|r| Ok((r.u64()?, r.val()?))) }
 
 /* Sorted so identical states produce identical blobs. */
 fn put_map(w: &mut W, m: &FxHashMap<String, Val>) {
@@ -332,8 +333,8 @@ fn get_map(r: &mut R) -> Result<FxHashMap<String, Val>, SnapErr> {
 
 /* Set items are inserted in the rehash pass. */
 enum SetFill {
-    Mutable(Vec<Val>),
-    Frozen(Vec<Val>),
+    Mutable(Vec<(u64, Val)>),
+    Frozen(Vec<(u64, Val)>),
 }
 
 fn put_obj(w: &mut W, obj: &HeapObj) {
@@ -346,13 +347,7 @@ fn put_obj(w: &mut W, obj: &HeapObj) {
         HeapObj::FrozenSet(rc) => { w.u8(5); put_set(w, rc); }
         HeapObj::Tuple(v) => { w.u8(6); w.vals(v); }
         HeapObj::Func(fi, captures, defaults, attrs) => {
-            // Attr-free functions keep the historic tag so old blobs stay readable.
-            let a = attrs.borrow();
-            if a.is_empty() {
-                w.u8(7); w.usz(*fi); w.vals(captures); w.seq(defaults, put_slot_val);
-            } else {
-                w.u8(28); w.usz(*fi); w.vals(captures); w.seq(defaults, put_slot_val); w.seq(&a, put_name_val);
-            }
+            w.u8(7); w.usz(*fi); w.vals(captures); w.seq(defaults, put_slot_val); w.seq(&attrs.borrow(), put_name_val);
         }
         HeapObj::Range(s, e, st) => { w.u8(8); w.i64(*s); w.i64(*e); w.i64(*st); }
         HeapObj::Slice(a, b, c) => { w.u8(9); w.val(*a); w.val(*b); w.val(*c); }
@@ -382,6 +377,11 @@ fn put_obj(w: &mut W, obj: &HeapObj) {
         HeapObj::TypeAlias(n, f) => { w.u8(30); w.str(n); w.val(*f); }
         HeapObj::Union(a) => { w.u8(31); w.val(*a); }
         HeapObj::TypeVar(n) => { w.u8(32); w.str(n); }
+        HeapObj::Iter(frame, name) => {
+            w.u8(33);
+            w.u8(crate::value::ITER_KINDS.iter().position(|k| k == name).unwrap_or(0) as u8);
+            put_iter_frame(w, &frame.borrow());
+        }
         HeapObj::Extern(f) => { w.u8(26); w.str(&f.name); }
     }
 }
@@ -393,15 +393,15 @@ fn get_obj(r: &mut R, externs: &ExternMap, fills: &mut Vec<(u32, SetFill)>, slot
         2 => HeapObj::List(Rc::new(RefCell::new(r.vals()?))),
         3 => HeapObj::Dict(Rc::new(RefCell::new(get_dict(r)?))),
         4 => {
-            fills.push((slot, SetFill::Mutable(r.vals()?)));
+            fills.push((slot, SetFill::Mutable(get_set_items(r)?)));
             HeapObj::Set(Rc::new(RefCell::new(ValSet::default())))
         }
         5 => {
-            fills.push((slot, SetFill::Frozen(r.vals()?)));
+            fills.push((slot, SetFill::Frozen(get_set_items(r)?)));
             HeapObj::FrozenSet(Rc::new(ValSet::default()))
         }
         6 => HeapObj::Tuple(r.vals()?),
-        7 => HeapObj::Func(r.usz()?, r.vals()?, r.seq(get_slot_val)?, Rc::new(RefCell::new(Vec::new()))),
+        7 => HeapObj::Func(r.usz()?, r.vals()?, r.seq(get_slot_val)?, Rc::new(RefCell::new(r.seq(get_name_val)?))),
         8 => HeapObj::Range(r.i64()?, r.i64()?, r.i64()?),
         9 => HeapObj::Slice(r.val()?, r.val()?, r.val()?),
         10 => HeapObj::Ellipsis,
@@ -435,11 +435,14 @@ fn get_obj(r: &mut R, externs: &ExternMap, fills: &mut Vec<(u32, SetFill)>, slot
             HeapObj::Extern(externs.get(&name).ok_or_else(|| s_err("unknown native binding", &name))?.clone())
         }
         27 => HeapObj::ClassMethod(r.val()?),
-        28 => HeapObj::Func(r.usz()?, r.vals()?, r.seq(get_slot_val)?, Rc::new(RefCell::new(r.seq(get_name_val)?))),
         29 => HeapObj::GenericAlias(r.val()?, r.val()?),
         30 => HeapObj::TypeAlias(r.str()?, r.val()?),
         31 => HeapObj::Union(r.val()?),
         32 => HeapObj::TypeVar(r.str()?),
+        33 => {
+            let name = *crate::value::ITER_KINDS.get(r.u8()? as usize).ok_or("snapshot names an unknown iterator")?;
+            HeapObj::Iter(Rc::new(RefCell::new(get_iter_frame(r)?)), name)
+        }
         t => return Err(s_err("unknown heap tag", itoa::Buffer::new().format(t))),
     })
 }
@@ -544,15 +547,6 @@ pub fn save(vm: &VM, source: &str) -> Vec<u8> {
     }
     put_vm_state(&mut w, vm);
     w.seq(&vm.call_stack, put_call_frame);
-    // Builtin-iterator marks ride as trailing heap slot indices, absent in older blobs.
-    let mut marked: Vec<u32> = Vec::new();
-    for (idx, obj) in vm.heap.snapshot_objs().enumerate() {
-        if let Some(HeapObj::List(rc)) = obj
-            && vm.is_iter_list(rc) {
-            marked.push(idx as u32);
-        }
-    }
-    w.seq(&marked, |w, &i| w.u32(i));
     w.b
 }
 
@@ -628,9 +622,9 @@ pub fn restore(vm: &mut VM, blob: &[u8]) -> Result<(), SnapErr> {
     let mut r = R::new(blob);
     r.p = h.body;
 
-    vm.budget = r.usz()?;
-    vm.max_calls = r.usz()?;
-    // Boot limits win over the recorded value.
+    // A blob may spend what it saved but never past the boot limits, the heap cap included.
+    vm.budget = r.usz()?.min(vm.budget);
+    vm.max_calls = r.usz()?.min(vm.max_calls);
     let _heap_limit = r.usz()?;
     vm.strict_input = r.boolean()?;
 
@@ -645,9 +639,18 @@ pub fn restore(vm: &mut VM, blob: &[u8]) -> Result<(), SnapErr> {
             _ => objs.push(Some(get_obj(&mut r, &externs, &mut fills, slot as u32)?)),
         }
     }
+    r.live = Some(objs.iter().map(Option::is_some).collect());
     vm.heap.restore_objs(objs);
+    check_objs(vm, &fills)?;
 
     get_vm_state(&mut r, vm)?;
+    // Each handle resumes a distinct coroutine, anything else would trap the scheduler.
+    let mut coros: Vec<u64> = vm.scheduler.iter().map(|h| h.coro.0).collect();
+    coros.sort_unstable();
+    coros.dedup();
+    if coros.len() != vm.scheduler.len() || vm.scheduler.iter().any(|h| !matches!(vm.heap.try_get(h.coro), Some(HeapObj::Coroutine(..)))) {
+        return Err("snapshot schedules a missing or repeated coroutine".to_string());
+    }
     vm.waiting_for_children_count = vm.scheduler.iter()
         .filter(|h| matches!(h.state, CoroState::WaitingForChildren { .. }))
         .count();
@@ -655,8 +658,10 @@ pub fn restore(vm: &mut VM, blob: &[u8]) -> Result<(), SnapErr> {
     let chunk = vm.chunk;
     let mut sources: Vec<&SSAChunk> = Vec::new();
     source_index(chunk, &mut sources);
+    let nfn = vm.functions.len();
     vm.call_stack = r.seq(|r| {
         let fi = r.usz()?;
+        if fi >= nfn { return Err("snapshot names a missing function".to_string()); }
         let call_byte_pos = r.u32()?;
         let path = r.str()?;
         let current_class = r.opt_val()?;
@@ -674,21 +679,30 @@ pub fn restore(vm: &mut VM, blob: &[u8]) -> Result<(), SnapErr> {
         })
     })?;
 
-    vm.iter_marks.clear();
-    // Optional trailing section, blobs written before iterator marks end at the call stack.
-    if r.p < r.b.len() {
-        for idx in r.seq(R::u32)? {
-            if let Some(HeapObj::List(rc)) = vm.heap.try_get(Val::heap(idx)) {
-                vm.iter_marks.push(Rc::downgrade(rc));
-            }
-        }
-    }
     if r.p != r.b.len() { return Err("snapshot has trailing bytes".to_string()); }
     // Derived flag, not serialized, recompute from the restored module bindings.
     vm.builtins_rebound = vm.module_state.keys().any(|k| NativeFnId::from_name(k).is_some());
     if vm.builtins_rebound { vm.needs_caller_slots.fill(true); }
     rehash(vm, fills)?;
     rebuild_mro(vm)
+}
+
+/* Rejects objects decoded before the heap with dangling refs, missing functions or stepless ranges. */
+fn check_objs(vm: &VM, fills: &[(u32, SetFill)]) -> Result<(), SnapErr> {
+    let nfn = vm.functions.len();
+    let dangling = |v: Val| v.is_heap() && vm.heap.try_get(v).is_none();
+    let mut set_items = fills.iter().flat_map(|(_, SetFill::Mutable(items) | SetFill::Frozen(items))| items);
+    if set_items.any(|&(_, v)| dangling(v)) { return Err("snapshot references a missing object or function".to_string()); }
+    for obj in vm.heap.snapshot_objs().flatten() {
+        let mut ok = match obj {
+            &HeapObj::Func(fi, ..) | &HeapObj::Coroutine(_, _, _, BodyRef::Fn(fi), ..) => fi < nfn,
+            &HeapObj::Range(_, _, step) => step != 0,
+            _ => true,
+        };
+        crate::value::for_each_val(obj, |v| ok &= !dangling(v));
+        if !ok { return Err("snapshot references a missing object or function".to_string()); }
+    }
+    Ok(())
 }
 
 /* Slot order caches bases before their subclasses. */
@@ -728,12 +742,10 @@ fn rehash(vm: &mut VM, fills: Vec<(u32, SetFill)>) -> Result<(), SnapErr> {
                     Some(HeapObj::Set(rc)) => rc.clone(),
                     _ => return Err("snapshot set slot mismatch".to_string()),
                 };
-                let mut s = rc.borrow_mut();
-                for v in items { s.insert(v, &vm.heap); }
+                *rc.borrow_mut() = ValSet::from_hashed(items, &vm.heap);
             }
             SetFill::Frozen(items) => {
-                let mut s = ValSet::with_capacity(items.len());
-                for v in &items { s.insert(*v, &vm.heap); }
+                let s = ValSet::from_hashed(items, &vm.heap);
                 vm.heap.replace_obj(slot, HeapObj::FrozenSet(Rc::new(s)));
             }
         }
@@ -741,23 +753,37 @@ fn rehash(vm: &mut VM, fills: Vec<(u32, SetFill)>) -> Result<(), SnapErr> {
     Ok(())
 }
 
+/* Appends `s` as a quoted JSON string. */
+fn json_str(out: &mut String, s: &str) {
+    out.push('"');
+    json_escape(out, s);
+    out.push('"');
+}
+
+/* Appends `items` as a JSON array, `item` writes each element. */
+fn json_array<T>(out: &mut String, items: impl IntoIterator<Item = T>, mut item: impl FnMut(&mut String, T)) {
+    out.push('[');
+    for (i, x) in items.into_iter().enumerate() {
+        if i > 0 { out.push(','); }
+        item(out, x);
+    }
+    out.push(']');
+}
+
 /* Module bindings as a {name: repr} JSON object. */
 pub fn inspect_globals(vm: &VM) -> String {
     let mut out = String::from("{");
-    let mut first = true;
-    for h in &vm.scheduler {
-        let Some(HeapObj::Coroutine(_, slots, _, BodyRef::Module, ..)) = vm.heap.try_get(h.coro) else { continue; };
-        let slots = slots.clone();
-        for (name, v) in super::init::collect_module_attrs(vm.chunk, &slots) {
-            if !first { out.push(','); }
-            first = false;
-            out.push('"');
-            json_escape(&mut out, &name);
-            out.push_str("\":\"");
-            json_escape(&mut out, &vm.display(v));
-            out.push('"');
+    let module = vm.scheduler.iter().find_map(|h| match vm.heap.try_get(h.coro) {
+        Some(HeapObj::Coroutine(_, slots, _, BodyRef::Module, ..)) => Some(slots.clone()),
+        _ => None,
+    });
+    if let Some(slots) = module {
+        for (i, (name, v)) in super::init::collect_module_attrs(vm.chunk, &slots).into_iter().enumerate() {
+            if i > 0 { out.push(','); }
+            json_str(&mut out, &name);
+            out.push(':');
+            json_str(&mut out, &vm.display(v));
         }
-        break;
     }
     out.push('}');
     out
@@ -771,9 +797,8 @@ pub fn inspect_stack(vm: &VM) -> String {
             _ => "<lambda>",
         }
     };
-    let mut out = String::from("[");
-    for (i, h) in vm.scheduler.iter().enumerate() {
-        if i > 0 { out.push(','); }
+    let mut out = String::new();
+    json_array(&mut out, &vm.scheduler, |out, h| {
         let state = match &h.state {
             CoroState::Ready => "ready",
             CoroState::Sleeping(_) => "sleeping",
@@ -786,31 +811,27 @@ pub fn inspect_stack(vm: &VM) -> String {
             CoroState::Cancelled => "cancelled",
             CoroState::Raising(..) => "raising",
         };
-        out.push_str("{\"state\":\"");
-        out.push_str(state);
-        out.push_str("\",\"function\":\"");
-        match vm.heap.try_get(h.coro) {
+        let (function, ip, frames) = match vm.heap.try_get(h.coro) {
             Some(HeapObj::Coroutine(ip, _, _, body, _, syncs, _)) => {
-                match body {
-                    BodyRef::Module => json_escape(&mut out, "<module>"),
-                    BodyRef::Fn(fi) => json_escape(&mut out, fn_name(*fi)),
-                }
-                out.push_str("\",\"ip\":");
-                out.push_str(itoa::Buffer::new().format(*ip));
-                out.push_str(",\"frames\":[");
-                for (j, f) in syncs.iter().enumerate() {
-                    if j > 0 { out.push(','); }
-                    out.push_str("{\"function\":\"");
-                    json_escape(&mut out, fn_name(f.fi));
-                    out.push_str("\",\"ip\":");
-                    out.push_str(itoa::Buffer::new().format(f.ip));
-                    out.push('}');
-                }
-                out.push_str("]}");
+                (match body { BodyRef::Module => "<module>", BodyRef::Fn(fi) => fn_name(*fi) }, *ip, &syncs[..])
             }
-            _ => out.push_str("\",\"ip\":0,\"frames\":[]}"),
-        }
-    }
-    out.push(']');
+            _ => ("", 0, &[][..]),
+        };
+        out.push_str("{\"state\":");
+        json_str(out, state);
+        out.push_str(",\"function\":");
+        json_str(out, function);
+        out.push_str(",\"ip\":");
+        out.push_str(itoa::Buffer::new().format(ip));
+        out.push_str(",\"frames\":");
+        json_array(out, frames, |out, f| {
+            out.push_str("{\"function\":");
+            json_str(out, fn_name(f.fi));
+            out.push_str(",\"ip\":");
+            out.push_str(itoa::Buffer::new().format(f.ip));
+            out.push('}');
+        });
+        out.push('}');
+    });
     out
 }

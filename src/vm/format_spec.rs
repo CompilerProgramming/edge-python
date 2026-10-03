@@ -1,6 +1,5 @@
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
-use crate::vm::types::{Val, HeapObj, HeapPool, VmErr, cold_value, fabs, ffloor, flog10, fsignum, ftrunc, num_as_f64};
+use crate::vm::types::{Val, HeapObj, HeapPool, VmErr, cold_value, fabs, fsignum, ftrunc, num_as_f64};
 
 // `%c`/`{:c}` out-of-range raises OverflowError, other format errors are ValueError.
 pub const C_RANGE_ERR: &str = "%c arg not in range(0x110000)";
@@ -11,9 +10,6 @@ pub fn fmt_err(m: &'static str) -> VmErr {
 
 /* f-string format spec, PEP 3101 subset, `[[fill]align][sign][#][0][width][,][.precision][type]`. Types are d/b/o/x/X (ints), f/F/e/E/g/G (floats), % (percent), s (str), c (codepoint). Returns Err(msg), the caller raises ValueError. */
 pub fn format_value(v: Val, spec: &str, heap: &HeapPool) -> Result<String, &'static str> {
-    if spec.is_empty() {
-        return Ok(display_inline(v, heap));
-    }
     let parsed = parse_spec(spec)?;
     // Cap against the heap budget, precision also below core::fmt's u16 abort threshold (panics at >= 65535).
     const PRECISION_MAX: usize = 65_000;
@@ -103,38 +99,17 @@ fn apply(v: Val, s: &Spec, heap: &HeapPool) -> Result<String, &'static str> {
     // Dispatch by type char, int types -> int formatter, float types coerce ints up, `s` only strings.
     match s.ty {
         0 | b's' => {
-            if is_int_like || v.is_float() || v.is_none() {
-                if s.ty == b's' { return Err("'s' format spec requires a string"); }
-                // Precision on int -> float-fixed, thousands stays in int path to keep LongInt precision.
-                if s.precision.is_some() && !is_int_like {
-                    return format_float(v, s, b'f', heap);
-                }
-                if s.sep != 0 && is_int_like {
-                    let mut s2 = s.clone();
-                    s2.ty = b'd';
-                    return format_int(v, &s2, heap);
-                }
-                if s.precision.is_some() {
-                    return format_float(v, s, b'f', heap);
-                }
-                if v.is_int() {
-                    return Ok(pad_numeric(s, &itoa_str(v.as_int())));
-                }
-                if is_long
-                    && let HeapObj::LongInt(i) = heap.get(v) {
-                    let mut buf = itoa::Buffer::new();
-                    return Ok(pad_numeric(s, buf.format(*i)));
-                }
-                if v.is_float() {
-                    return Ok(format_float_str(v.as_float(), s));
-                }
+            if let Some(HeapObj::Str(raw)) = heap.try_get(v) {
+                let text: String = match s.precision { Some(p) => raw.chars().take(p).collect(), None => raw.clone() };
+                return Ok(pad_string(s, &text));
             }
-            let raw = display_deep(v, heap);
-            let truncated = match s.precision {
-                Some(p) => raw.chars().take(p).collect::<String>(),
-                None => raw,
-            };
-            Ok(pad_string(s, &truncated))
+            if !is_int_like && !v.is_float() { return Err("unsupported format string"); }
+            if s.ty == b's' { return Err("'s' format spec requires a string"); }
+            if v.is_float() {
+                return if s.precision.is_some() { format_float(v, s, 0, heap) } else { Ok(format_float_str(v.as_float(), s)) };
+            }
+            if s.precision.is_some() { return Err("precision not allowed in integer format spec"); }
+            format_int(v, &Spec { ty: b'd', ..s.clone() }, heap)
         }
         // `n` is locale-aware decimal, paradigm has no locale, so alias to `d`.
         b'd' | b'b' | b'o' | b'x' | b'X' | b'n' => {
@@ -192,7 +167,7 @@ fn format_float(v: Val, s: &Spec, ty: u8, heap: &HeapPool) -> Result<String, &'s
     /* NaN/inf go through unchanged (emits "nan"/"inf" before padding). */
     if f.is_nan() {
         let body = if ty == b'F' { "NAN" } else { "nan" };
-        return Ok(pad_string(s, body));
+        return Ok(signed_pad(s, false, "", body));
     }
     if f.is_infinite() {
         return Ok(signed_pad(s, f.is_sign_negative(), "", if ty == b'F' { "INF" } else { "inf" }));
@@ -204,19 +179,17 @@ fn format_float(v: Val, s: &Spec, ty: u8, heap: &HeapPool) -> Result<String, &'s
         // e/g delegate to Rust's f64 formatter, round-half-to-even applies only to `f`.
         b'e' => format_with_e(mag, prec, false),
         b'E' => format_with_e(mag, prec, true),
-        // `g/G` picks `e` for very small/large, `f` otherwise.
-        b'g' | b'G' => {
-            let upper = ty == b'G';
-            let exp = if mag == 0.0 { 0 } else { ffloor(flog10(mag)) as i32 };
-            // The rule is -4 <= exp < precision uses fixed, else scientific.
+        // `g/G` pick fixed when the rounded exponent is in -4..precision, a typeless precision one below, else scientific.
+        b'g' | b'G' | 0 => {
             let p = prec.max(1);
-            if exp < -4 || exp >= p as i32 {
-                format_with_e(mag, p.saturating_sub(1), upper)
-            } else {
-                let dec = (p as i32 - 1 - exp).max(0) as usize;
-                let out = fixed(mag, dec);
-                if upper { out.to_uppercase() } else { out }
-            }
+            let sci = format_with_e(mag, p - 1, ty == b'G');
+            let exp: i32 = sci.rsplit_once(['e', 'E']).and_then(|(_, e)| e.parse().ok()).unwrap_or(0);
+            let fixed_form = (-4..p as i32 - (ty == 0) as i32).contains(&exp);
+            let out = if fixed_form { fixed(mag, (p as i32 - 1 - exp) as usize) } else { sci };
+            let mut out = if s.alt { out } else { trim_zeros(out) };
+            // Typeless keeps one digit past the point, `5.0` and not `5`.
+            if ty == 0 && fixed_form && !out.contains('.') { out.push_str(".0"); }
+            out
         }
         _ => unreachable!(),
     };
@@ -224,9 +197,17 @@ fn format_float(v: Val, s: &Spec, ty: u8, heap: &HeapPool) -> Result<String, &'s
     Ok(signed_pad(s, f.is_sign_negative(), "", &body))
 }
 
+/* `g` drops trailing mantissa zeros, and the point once nothing follows it. */
+fn trim_zeros(text: String) -> String {
+    let (mant, exp) = text.split_at(text.find(['e', 'E']).unwrap_or(text.len()));
+    if !mant.contains('.') { return text; }
+    crate::s!(str mant.trim_end_matches('0').trim_end_matches('.'), str exp)
+}
+
 /* Typeless float spec, str() digits with only align/width/sign and optional grouping applied. */
 fn format_float_str(f: f64, s: &Spec) -> String {
-    if f.is_nan() { return pad_string(s, "nan"); }
+    // NaN pads like a number, right-aligned and with its `+` sign when asked.
+    if f.is_nan() { return signed_pad(s, false, "", "nan"); }
     if f.is_infinite() { return signed_pad(s, f.is_sign_negative(), "", "inf"); }
     let body = crate::util::fstr::format_f64(f.abs());
     let body = if s.sep != 0 { add_thousands_float(&body, s.sep) } else { body };
@@ -328,11 +309,6 @@ fn signed_pad(s: &Spec, neg: bool, prefix: &str, body: &str) -> String {
     pad_aligned(s, &left, sign_ch.map(|_| 1).unwrap_or(0) + prefix.len())
 }
 
-fn pad_numeric(s: &Spec, body: &str) -> String {
-    let (neg, mag) = if let Some(rest) = body.strip_prefix('-') { (true, rest) } else { (false, body) };
-    signed_pad(s, neg, "", mag)
-}
-
 fn pad_string(s: &Spec, body: &str) -> String {
     let len = body.chars().count();
     if len >= s.width { return body.to_string(); }
@@ -425,140 +401,16 @@ fn u128_to_dec(n: u128) -> String {
     out.chars().rev().collect()
 }
 
-/* Plain `str()` rendering inlined here so the hot path doesn't borrow from VM. */
-pub fn display_inline(v: Val, heap: &HeapPool) -> String {
-    if v.is_int() {
-        let mut b = itoa::Buffer::new();
-        return b.format(v.as_int()).to_string();
-    }
-    if v.is_bool() { return (if v.as_bool() { "True" } else { "False" }).to_string(); }
-    if v.is_none() { return String::from("None"); }
-    if v.is_float() { return crate::util::fstr::format_f64(v.as_float()); }
-    if v.is_heap() {
-        match heap.get(v) {
-            HeapObj::Str(s) => return s.clone(),
-            HeapObj::LongInt(i) => {
-                let mut b = itoa::Buffer::new();
-                return b.format(*i).to_string();
-            }
-            _ => {}
+/* `ascii()` of a repr, every non-ASCII char escaped as `\\x`, `\\u` or `\\U`. */
+pub fn ascii_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c as u32 {
+            n if n < 0x80 => out.push(c),
+            n if n < 0x100 => out.push_str(&alloc::format!("\\x{n:02x}")),
+            n if n < 0x10000 => out.push_str(&alloc::format!("\\u{n:04x}")),
+            n => out.push_str(&alloc::format!("\\U{n:08x}")),
         }
     }
-    /* Fall back to nothing, caller should use VM::display for full coverage. */
-    String::new()
-}
-
-/* Container str() for the spec engine, elements render as repr and cycles collapse to "...". */
-fn display_deep(v: Val, heap: &HeapPool) -> String {
-    display_deep_d(v, heap, &mut Vec::new())
-}
-
-fn display_deep_d(v: Val, heap: &HeapPool, seen: &mut Vec<u32>) -> String {
-    if seen.len() > 100 { return "...".into(); }
-    if !v.is_heap() { return display_inline(v, heap); }
-    match heap.get(v) {
-        HeapObj::List(l) => {
-            let id = v.as_heap();
-            if seen.contains(&id) { return "[...]".into(); }
-            seen.push(id);
-            let mut out = String::from("[");
-            for (i, e) in l.borrow().iter().enumerate() {
-                if i > 0 { out.push_str(", "); }
-                out.push_str(&repr_deep_d(*e, heap, seen));
-            }
-            out.push(']');
-            seen.pop();
-            out
-        }
-        HeapObj::Tuple(t) => {
-            let id = v.as_heap();
-            if seen.contains(&id) { return "(...)".into(); }
-            seen.push(id);
-            let mut out = String::from("(");
-            for (i, e) in t.iter().enumerate() {
-                if i > 0 { out.push_str(", "); }
-                out.push_str(&repr_deep_d(*e, heap, seen));
-            }
-            if t.len() == 1 { out.push(','); }
-            out.push(')');
-            seen.pop();
-            out
-        }
-        HeapObj::Dict(d) => {
-            let id = v.as_heap();
-            if seen.contains(&id) { return "{...}".into(); }
-            seen.push(id);
-            let mut out = String::from("{");
-            for (i, (k, val)) in d.borrow().iter().enumerate() {
-                if i > 0 { out.push_str(", "); }
-                out.push_str(&repr_deep_d(k, heap, seen));
-                out.push_str(": ");
-                out.push_str(&repr_deep_d(val, heap, seen));
-            }
-            out.push('}');
-            seen.pop();
-            out
-        }
-        HeapObj::Set(st) => {
-            let items: Vec<Val> = st.borrow().iter().cloned().collect();
-            if items.is_empty() { return "set()".into(); }
-            let id = v.as_heap();
-            if seen.contains(&id) { return "{...}".into(); }
-            seen.push(id);
-            let mut out = String::from("{");
-            for (i, e) in items.iter().enumerate() {
-                if i > 0 { out.push_str(", "); }
-                out.push_str(&repr_deep_d(*e, heap, seen));
-            }
-            out.push('}');
-            seen.pop();
-            out
-        }
-        HeapObj::FrozenSet(st) => {
-            let items: Vec<Val> = st.iter().cloned().collect();
-            if items.is_empty() { return "frozenset()".into(); }
-            let id = v.as_heap();
-            if seen.contains(&id) { return "frozenset({...})".into(); }
-            seen.push(id);
-            let mut out = String::from("frozenset({");
-            for (i, e) in items.iter().enumerate() {
-                if i > 0 { out.push_str(", "); }
-                out.push_str(&repr_deep_d(*e, heap, seen));
-            }
-            out.push_str("})");
-            seen.pop();
-            out
-        }
-        _ => display_inline(v, heap),
-    }
-}
-
-fn repr_deep_d(v: Val, heap: &HeapPool, seen: &mut Vec<u32>) -> String {
-    if v.is_heap() && let HeapObj::Str(s) = heap.get(v) { return repr_quoted(s); }
-    display_deep_d(v, heap, seen)
-}
-
-/* repr() quoting, mirrors repr_str in value_ops (' unless the text has ' but not "). */
-fn repr_quoted(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => { out.push('\\'); out.push(c); }
-            c if c.is_control() => {
-                let n = c as u32;
-                if n <= 0xff { out.push_str(&alloc::format!("\\x{n:02x}")); }
-                else if n <= 0xffff { out.push_str(&alloc::format!("\\u{n:04x}")); }
-                else { out.push_str(&alloc::format!("\\U{n:08x}")); }
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
     out
 }

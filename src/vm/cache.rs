@@ -19,10 +19,12 @@ pub enum FastOp {
 /* Promote to `fast` after this many hits with a stable type key. */
 const QUICK_THRESH: u8 = 4;
 
-/* Per-site monomorphic instance-dunder cache. Records the receiver's class heap idx and the pre-resolved method Val, once `hits >= QUICK_THRESH` the slot promotes and the hot dispatch skips `resolve_attr_silent` entirely. `arity` is the total operand count consumed from the stack (1 for unary, 2 for binary like `__add__`/`__getitem__`). */
+/* Per-site monomorphic instance-dunder cache. Records the receiver's class heap idx and the pre-resolved method Val, once `hits >= QUICK_THRESH` the slot promotes and the hot dispatch skips the class lookup entirely. `arity` is the total operand count consumed from the stack (1 for unary, 2 for binary like `__add__`/`__getitem__`). */
 #[derive(Clone, Copy)]
 pub struct InstanceCache {
     pub class: u32,
+    // The class that defines the method, what `super()` inside it resumes from.
+    pub owner: u32,
     pub method_bits: u64,
     pub arity: u8,
     hits: u8,
@@ -83,19 +85,9 @@ impl OpcodeCache {
             let mut out = Vec::with_capacity(chunk.constants.len());
             for c in &chunk.constants {
                 let v = match c {
-                    Value::Int(i) => {
-                        if *i >= Val::INT_MIN && *i <= Val::INT_MAX { Val::int(*i) }
-                        // Defensive path for FFI/wire-format chunks, parser now emits LongInt directly.
-                        else { heap.alloc(HeapObj::LongInt(*i as i128))? }
-                    }
-                    Value::LongInt(i) => {
-                        // Demote when it fits inline so hash/eq stay in sync with literals.
-                        if *i >= Val::INT_MIN as i128 && *i <= Val::INT_MAX as i128 {
-                            Val::int(*i as i64)
-                        } else {
-                            heap.alloc(HeapObj::LongInt(*i))?
-                        }
-                    }
+                    // A wide literal that fits inline demotes so hash and eq stay in sync with the short form.
+                    Value::Int(i) => heap.int(*i as i128)?,
+                    Value::LongInt(i) => heap.int(*i)?,
                     Value::Float(f) => Val::float(*f),
                     Value::Bool(b) => Val::bool(*b),
                     Value::None => Val::none(),
@@ -149,7 +141,7 @@ impl OpcodeCache {
     }
 
     /* Monomorphic instance-dunder hit counter, promotes after `QUICK_THRESH` consecutive hits with the same class + method pair. Polymorphic sites churn (`record_inst` overwrites on mismatch) but never wedge. */
-    pub fn record_inst(&mut self, ip: usize, class: u32, method: Val, arity: u8) {
+    pub fn record_inst(&mut self, ip: usize, class: u32, owner: u32, method: Val, arity: u8) {
         let Some(s) = self.slots.get_mut(ip) else { return };
         match s.inst.as_mut() {
             Some(c) if c.class == class && c.method_bits == method.0 && c.arity == arity => {
@@ -159,6 +151,7 @@ impl OpcodeCache {
             _ => {
                 s.inst = Some(InstanceCache {
                     class,
+                    owner,
                     method_bits: method.0,
                     arity,
                     hits: 1,
@@ -182,19 +175,18 @@ impl OpcodeCache {
         self.slots.iter().filter_map(|s| s.inst).flat_map(|c| {
             // SAFETY `method_bits` was recorded from a live `Val`, class Val is reconstructed from the stored heap idx.
             let method = unsafe { Val::from_raw(c.method_bits) };
-            let class = Val::heap(c.class);
-            [method, class].into_iter()
+            [method, Val::heap(c.class), Val::heap(c.owner)].into_iter()
         })
     }
 
     fn specialize(opcode: &OpCode, ta: u8, tb: u8) -> Option<FastOp> {
         match (opcode, ta, tb) {
             (OpCode::Add, 1, 1) => Some(FastOp::AddInt), (OpCode::Add, 2, 2) => Some(FastOp::AddFloat),
-            (OpCode::Add, 5, 5) => Some(FastOp::AddStr), (OpCode::Sub, 1, 1) => Some(FastOp::SubInt),
+            (OpCode::Add, 3, 3) => Some(FastOp::AddStr), (OpCode::Sub, 1, 1) => Some(FastOp::SubInt),
             (OpCode::Sub, 2, 2) => Some(FastOp::SubFloat), (OpCode::Mul, 1, 1) => Some(FastOp::MulInt),
             (OpCode::Mul, 2, 2) => Some(FastOp::MulFloat), (OpCode::Lt, 1, 1) => Some(FastOp::LtInt),
             (OpCode::Lt, 2, 2) => Some(FastOp::LtFloat), (OpCode::Eq, 1, 1) => Some(FastOp::EqInt),
-            (OpCode::Eq, 5, 5) => Some(FastOp::EqStr), (OpCode::Gt, 1, 1) => Some(FastOp::GtInt),
+            (OpCode::Eq, 3, 3) => Some(FastOp::EqStr), (OpCode::Gt, 1, 1) => Some(FastOp::GtInt),
             (OpCode::LtEq, 1, 1) => Some(FastOp::LtEqInt), (OpCode::GtEq, 1, 1) => Some(FastOp::GtEqInt),
             (OpCode::NotEq, 1, 1) => Some(FastOp::NotEqInt),
             (OpCode::Mod, 1, 1) => Some(FastOp::ModInt),
@@ -337,8 +329,7 @@ fn fuse_method_calls(chunk: &SSAChunk) -> Vec<Instruction> {
     let mut targeted = vec![false; n + 1];
     for (k, ins) in src.iter().enumerate() {
         match ins.opcode {
-            OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrueOrPop | OpCode::JumpIfFalseOrPop
-            | OpCode::ForIter | OpCode::SetupExcept | OpCode::SetupFinally => {
+            op if op.is_jump() => {
                 let t = ins.operand as usize;
                 if t <= n { targeted[t] = true; }
             }
@@ -362,7 +353,7 @@ fn fuse_method_calls(chunk: &SSAChunk) -> Vec<Instruction> {
             j += 1;
         }
         if j >= n || src[j].opcode != OpCode::Call || targeted[j] { i += 1; continue; }
-        // Every arg must be exactly one whitelisted push, else stack layout breaks.
+        // Every arg must be exactly one allowed push, else stack layout breaks.
         let raw = src[j].operand as usize;
         if (raw & 0xFF) + 2 * ((raw >> 8) & 0xFF) != j - i - 1 { i += 1; continue; }
         out[i..(j - 1)].copy_from_slice(&src[(i + 1)..j]);

@@ -1,6 +1,7 @@
 use crate::s;
 use super::*;
 use super::super::ParamKind;
+use crate::parser::fused_native;
 
 use crate::alloc::string::ToString;
 
@@ -30,124 +31,134 @@ fn native_is_impure(id: super::super::types::NativeFnId) -> bool {
     )
 }
 
-/* Every fused call opcode -> its builtin name, extends `fused_native` with the packed-operand family. `sorted` stays out because its fused kwarg layout is not decodable for a redirect. */
-fn fused_builtin_name(op: OpCode) -> Option<&'static str> {
-    if let Some(id) = fused_native(op) { return Some(id.name()); }
-    Some(match op {
-        OpCode::CallPrint => "print", OpCode::CallRange => "range",
-        OpCode::CallDict => "dict", OpCode::CallMin => "min", OpCode::CallMax => "max",
-        OpCode::CallEnumerate => "enumerate",
-        _ => return None,
-    })
+/* Builtins that iterate an argument, where a user `__iter__` may stand in. */
+#[inline]
+fn iterates(id: super::super::types::NativeFnId) -> bool {
+    use super::super::types::NativeFnId::*;
+    matches!(id, Sum | Sorted | Set | FrozenSet | Enumerate | Any | All | Bytes | Dict | Min | Max | Iter | Map | Filter | Zip)
 }
 
-// Fused builtin opcode -> its id (plain-`pos+kw` operand ops), powers the shared arity guard.
-fn fused_native(op: OpCode) -> Option<super::super::types::NativeFnId> {
-    use super::super::types::NativeFnId as F;
-    Some(match op {
-        OpCode::CallLen => F::Len, OpCode::CallAbs => F::Abs, OpCode::CallStr => F::Str, OpCode::CallInt => F::Int,
-        OpCode::CallType => F::Type, OpCode::CallFloat => F::Float, OpCode::CallBool => F::Bool, OpCode::CallRound => F::Round,
-        OpCode::CallSum => F::Sum, OpCode::CallZip => F::Zip, OpCode::CallList => F::List, OpCode::CallTuple => F::Tuple,
-        OpCode::CallSet => F::Set, OpCode::CallInput => F::Input, OpCode::CallIsInstance => F::IsInstance, OpCode::CallChr => F::Chr,
-        OpCode::CallOrd => F::Ord, OpCode::CallAll => F::All, OpCode::CallAny => F::Any, OpCode::CallBin => F::Bin,
-        OpCode::CallOct => F::Oct, OpCode::CallHex => F::Hex, OpCode::CallDivmod => F::Divmod, OpCode::CallPow => F::Pow,
-        OpCode::CallRepr => F::Repr, OpCode::CallReversed => F::Reversed, OpCode::CallCallable => F::Callable,
-        OpCode::CallId => F::Id, OpCode::CallHash => F::Hash,
-        _ => return None,
-    })
+/* A count outside a builtin arity, ranged ones name the bound they miss. */
+#[cold]
+fn arity_err(id: super::super::types::NativeFnId, n: u16) -> VmErr {
+    let (lo, hi) = id.arity();
+    if lo == hi { return cold_type("wrong number of arguments to builtin"); }
+    let (word, bound) = if n < lo { ("least", lo) } else { ("most", hi) };
+    VmErr::TypeMsg(crate::s!(str id.name(), " expected at ", str word, " ", int bound, " argument", str if bound == 1 { "" } else { "s" }, ", got ", int n))
 }
 
 impl<'a> VM<'a> {
     /* Dispatch every function-shaped opcode (Call, MakeFunction, builtins). */
     pub(crate) fn handle_function(&mut self, op: OpCode, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
-        // Only a fused builtin carries the spread flag, `Call` and the make-ops use the bit as a count.
-        if operand & crate::parser::SPREAD_ARGS != 0
-            && !matches!(op, OpCode::Call | OpCode::CallExtern | OpCode::MakeFunction | OpCode::MakeCoroutine) {
-            let operand = operand & !crate::parser::SPREAD_ARGS;
-            // Ops that fold the spread counts themselves stay fused, the rest run as a plain call.
-            let r = if matches!(op, OpCode::CallPrint | OpCode::CallMin | OpCode::CallMax | OpCode::CallEnumerate | OpCode::CallRange) {
-                self.handle_function(op, operand, chunk, slots)
-            } else {
-                self.call_spread_builtin(op, operand, chunk, slots)
-            };
-            // Close the spread frame the first spread opened.
-            if let Some((p, k)) = self.pending.delta_save.pop() {
-                self.pending.pos_delta = p;
-                self.pending.kw_delta = k;
-            }
-            return r;
+        // Only a fused builtin carries these flags, `Call` and the make-ops use the bits as counts.
+        if operand & (crate::parser::SPREAD_ARGS | crate::parser::KEYWORDS) != 0
+            && !matches!(op, OpCode::Call | OpCode::CallSpread | OpCode::CallExtern | OpCode::MakeFunction | OpCode::MakeCoroutine) {
+            let (pos, kw) = ((operand & 0xFF) as usize, ((operand >> 8) & 0x3F) as usize);
+            let (pos, kw) = if operand & crate::parser::SPREAD_ARGS != 0 { self.close_spread(pos, kw) } else { (pos, kw) };
+            // A packed op stays fused while its counts fit, the rest run as a plain call.
+            let packed = matches!(op, OpCode::CallPrint | OpCode::CallDict | OpCode::CallMin | OpCode::CallMax | OpCode::CallEnumerate);
+            let fits = pos <= 0xFF && fused_native(op).is_some_and(|id| id.takes(pos as u16));
+            if fits && packed && kw <= 0x3F { return self.handle_function(op, crate::parser::pack_call(pos as u16, kw as u16), chunk, slots); }
+            if fits && op == OpCode::CallRange && kw == 0 { return self.handle_function(op, pos as u16, chunk, slots); }
+            return self.call_spread_builtin(op, pos, kw, chunk, slots);
         }
         // A module-scope rebind of a builtin name must win over call sites fused before it existed. Plain fused operands are a bare count, so counts past one byte fall back to the native (they cannot round-trip through `exec_call`'s packing).
         let packed_operand = matches!(op, OpCode::CallPrint | OpCode::CallDict | OpCode::CallMin | OpCode::CallMax | OpCode::CallEnumerate);
         if self.builtins_rebound
             && (packed_operand || operand <= 0xFF)
-            && let Some(name) = fused_builtin_name(op)
+            && let Some(name) = fused_native(op).map(|id| id.name())
             && let Some(&bound) = self.module_state.get(name)
             && !bound.is_undef()
             && !(bound.is_heap() && matches!(self.heap.get(bound), HeapObj::NativeFn(id) if id.name() == name))
         {
-            return self.call_rebound(bound, operand, chunk, slots);
+            return self.call_rebound(bound, (operand & 0xFF) as usize, ((operand >> 8) & 0xFF) as usize, chunk, slots);
         }
-        // Fused builtins skip dispatch_native's arity check, so validate fixed-arity ones to keep a wrong count a clean TypeError.
-        if let Some(id) = fused_native(op)
-            && let Some(n) = id.arity()
-            && operand != n {
-            return Err(cold_type("wrong number of arguments to builtin"));
+        // Fused builtins skip dispatch_native, the parser checked their counts and user iterables lift here.
+        if let Some(id) = fused_native(op) {
+            if iterates(id) {
+                let (pos, kw) = if packed_operand { (operand & 0xFF, operand >> 8) } else { (operand, 0) };
+                self.lift_builtin_args(id, pos as usize, kw as usize, chunk, slots)?;
+            }
+            return self.run_native(id, operand, chunk, slots);
         }
         match op {
-            OpCode::Call => {
-                let r = self.exec_call(operand, chunk, slots);
-                // Restore the enclosing call's spread delta.
-                if let Some((p, k)) = self.pending.delta_save.pop() {
-                    self.pending.pos_delta = p;
-                    self.pending.kw_delta = k;
-                }
-                r
+            OpCode::Call => self.exec_call(operand, chunk, slots),
+            OpCode::CallSpread => {
+                let (pos, kw) = self.close_spread((operand & 0xFF) as usize, ((operand >> 8) & 0xFF) as usize);
+                self.exec_call_n(pos, kw, chunk, slots)
             }
             OpCode::MakeFunction | OpCode::MakeCoroutine => self.exec_make_function(op, operand, chunk, slots),
-            OpCode::CallLen => self.call_len(chunk, slots),
-            OpCode::CallAbs => self.call_abs(chunk, slots),
-            OpCode::CallStr => self.call_str(operand, chunk, slots),
-            OpCode::CallInt => self.call_int(operand, chunk, slots),
-            OpCode::CallFloat => self.call_float(operand, chunk, slots),
-            OpCode::CallBool => self.call_bool(operand, chunk, slots),
-            OpCode::CallType => self.call_type(),
-            OpCode::CallChr => self.call_chr(),
-            OpCode::CallOrd => self.call_ord(),
-            OpCode::CallSorted => self.call_sorted(false, chunk, slots),
-            OpCode::CallList => self.call_list(operand, chunk, slots),
-            OpCode::CallTuple => self.call_tuple(operand, chunk, slots),
-            OpCode::CallEnumerate => self.call_enumerate(operand),
-            OpCode::CallIsInstance => self.call_isinstance(),
-            OpCode::CallRange => self.call_range(operand),
-            OpCode::CallRound => self.call_round(operand),
-            OpCode::CallMin => self.call_min(operand, chunk, slots),
-            OpCode::CallMax => self.call_max(operand, chunk, slots),
-            OpCode::CallSum => self.call_sum(operand),
-            OpCode::CallZip => self.call_zip(operand),
-            OpCode::CallDict => self.call_dict(operand),
-            OpCode::CallSet => self.call_set(operand),
-            OpCode::CallPrint => { self.mark_impure(); self.call_print(operand, chunk, slots) }
-            OpCode::CallInput => { self.mark_impure(); self.call_input() }
-            OpCode::CallAll => self.call_all(operand),
-            OpCode::CallAny => self.call_any(operand),
-            OpCode::CallBin => self.call_bin(),
-            OpCode::CallOct => self.call_oct(),
-            OpCode::CallHex => self.call_hex(),
-            OpCode::CallDivmod => self.call_divmod(),
-            OpCode::CallPow => self.call_pow(operand),
-            OpCode::CallRepr => self.call_repr(chunk, slots),
-            OpCode::CallReversed => self.call_reversed(),
-            OpCode::CallCallable => self.call_callable(),
-            OpCode::CallId => self.call_id(),
-            OpCode::CallHash => self.call_hash(chunk, slots),
             OpCode::CallExtern => self.call_extern(operand, chunk),
             _ => Err(cold_runtime("non-function opcode in handle_function")),
         }
     }
 
-    pub(crate) fn exec_bound_method(&mut self, recv: Val, id: crate::vm::methods::BuiltinMethodId, pos: &[Val], kw: &[Val]) -> Result<(), VmErr> {
+    /* A builtin method call, `sort`, `str.format` and user iterables run user code so they take the frame here. */
+    pub(crate) fn exec_bound_method(&mut self, recv: Val, id: crate::vm::methods::BuiltinMethodId, pos: &[Val], kw: &[Val], chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        use crate::vm::methods::MethodKind;
+        match id.kind() {
+            MethodKind::Sort => self.exec_sort(recv, pos, kw, chunk, slots),
+            MethodKind::Format if kw.is_empty() => crate::vm::methods::string::format(self, recv, pos, chunk, slots),
+            MethodKind::Search if id.ty() == "list" && kw.is_empty() => {
+                crate::vm::methods::method_frame(self, id, pos.len())?;
+                self.with_roots(pos.iter().copied().chain([recv]), |vm| {
+                    crate::vm::methods::list::search(vm, recv, id.name(), pos, |vm, a, b| vm.member_eq(a, b, chunk, slots))
+                })
+            }
+            MethodKind::Iterates if pos.iter().any(|&a| matches!(self.heap.try_get(a), Some(HeapObj::Instance(..)))) => {
+                // Each lifted list stays rooted while later arguments run their `__iter__`.
+                self.with_roots(pos.iter().copied().chain([recv]), |vm| {
+                    let mut args = pos.to_vec();
+                    for a in &mut args {
+                        if let Some(l) = vm.lift_iterable(*a, chunk, slots)? { vm.temp_roots.push(l); *a = l; }
+                    }
+                    vm.builtin_method(recv, id, &args, kw, chunk, slots)
+                })
+            }
+            _ => self.builtin_method(recv, id, pos, kw, chunk, slots),
+        }
+    }
+
+    /* A dict or set method meeting user keys runs in the VM, every other one through its table entry. */
+    #[inline]
+    fn builtin_method(&mut self, recv: Val, id: crate::vm::methods::BuiltinMethodId, pos: &[Val], kw: &[Val], chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        // `dict.fromkeys` reaches here with the type as its receiver.
+        let table = recv.is_heap() && matches!(self.heap.get(recv), HeapObj::Dict(_) | HeapObj::Set(_) | HeapObj::Type(_));
+        if table && self.keyed_method(id, recv, pos, kw, chunk, slots)? { return Ok(()); }
         crate::vm::methods::dispatch_method(self, id, recv, pos, kw)
+    }
+
+    /* `str.lower(s)`, an unbound builtin method takes a receiver of its own type as the first argument. */
+    pub(crate) fn exec_unbound_method(&mut self, id: crate::vm::methods::BuiltinMethodId, args: &[Val], kw: &[Val], chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        let Some((&recv, rest)) = args.split_first() else {
+            return Err(VmErr::TypeMsg(crate::s!("unbound method ", str id.ty(), ".", str id.name(), "() needs an argument")));
+        };
+        // An exception instance takes the `BaseException` methods its builtin base gives it.
+        let fits = self.type_name(recv) == id.ty()
+            || (id.ty() == "BaseException" && matches!(self.heap.try_get(recv), Some(&HeapObj::Instance(c, _)) if self.exc_base(c).is_some()));
+        if !fits {
+            return Err(VmErr::TypeMsg(crate::s!("descriptor '", str id.name(), "' for '", str id.ty(), "' objects doesn't apply to a '", str self.type_name(recv), "' object")));
+        }
+        self.exec_bound_method(recv, id, rest, kw, chunk, slots)
+    }
+
+    /* Lifts the user iterables among `pos` positional args under `kw` keyword pairs, wherever builtin `id` iterates. */
+    fn lift_builtin_args(&mut self, id: super::super::types::NativeFnId, pos: usize, kw: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        use super::super::types::NativeFnId::*;
+        let (from, to) = match id {
+            Sum | Sorted | Set | FrozenSet | Enumerate | Any | All | Bytes | Dict => (0, 1),
+            Min | Max | Iter if pos == 1 => (0, 1),
+            Map => (1, pos),
+            Filter => (1, 2),
+            Zip => (0, pos),
+            _ => return Ok(()),
+        };
+        let base = self.stack.len().saturating_sub(pos + 2 * kw);
+        for i in from..to.min(pos) {
+            if let Some(&v) = self.stack.get(base + i)
+                && let Some(l) = self.lift_iterable(v, chunk, slots)? { self.stack[base + i] = l; }
+        }
+        Ok(())
     }
 
     fn exec_make_function(&mut self, opcode: OpCode, operand: u16, chunk: &SSAChunk, slots: &[Val]) -> Result<(), VmErr> {
@@ -269,21 +280,28 @@ impl<'a> VM<'a> {
         Ok(cell)
     }
 
-    /* Route a fused call site's stacked args to a rebound callable via the generic call path, slot the callee under the args, then `exec_call` decodes the same packed operand. */
-    fn call_rebound(&mut self, callee: Val, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
-        let pos = ((operand & 0xFF) as i32 + self.pending.pos_delta).max(0) as usize;
-        let kw = (((operand >> 8) & 0xFF) as i32 + self.pending.kw_delta).max(0) as usize;
+    /* Calls a rebound builtin with the args a fused site stacked, the callee slotted under them. */
+    fn call_rebound(&mut self, callee: Val, pos: usize, kw: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let at = self.stack.len().checked_sub(pos + 2 * kw).ok_or(cold_runtime("stack underflow"))?;
         self.stack.insert(at, callee);
-        self.exec_call(operand, chunk, slots)
+        self.exec_call_n(pos, kw, chunk, slots)
     }
 
-    /* A fused builtin given `*` or `**` runs as a plain call through its binding, which decodes the spread. */
-    fn call_spread_builtin(&mut self, op: OpCode, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
-        let name = fused_builtin_name(op).or((op == OpCode::CallSorted).then_some("sorted")).ok_or(cold_runtime("spread on an unknown fused call"))?;
+    /* A fused builtin given `*` or keywords it cannot count runs as a plain call through its binding. */
+    fn call_spread_builtin(&mut self, op: OpCode, pos: usize, kw: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        let name = fused_native(op).ok_or(cold_runtime("spread on an unknown fused call"))?.name();
         self.register_builtin(name);
         let callee = self.module_state.get(name).copied().filter(|v| !v.is_undef()).or_else(|| self.global(name)).ok_or_else(|| VmErr::Name(name.into()))?;
-        self.call_rebound(callee, operand, chunk, slots)
+        self.call_rebound(callee, pos, kw, chunk, slots)
+    }
+
+    /* The counts a call gains from its spreads, reopening the frame its first spread saved. */
+    fn close_spread(&mut self, pos: usize, kw: usize) -> (usize, usize) {
+        let counts = ((pos as i32 + self.pending.pos_delta).max(0) as usize, (kw as i32 + self.pending.kw_delta).max(0) as usize);
+        let (p, k) = self.pending.delta_save.pop().unwrap_or((0, 0));
+        self.pending.pos_delta = p;
+        self.pending.kw_delta = k;
+        counts
     }
 
     /* The entry binds `bare` once and no class or module body binds it. */
@@ -322,11 +340,24 @@ impl<'a> VM<'a> {
         if keep { self.templates.insert(fi, args, owner, result, h); } else { self.memo_ok[fi] = false; }
     }
 
-    /* `Call` orchestrator. Only user `Func` callees build a fresh `fn_slots` and run the body inline, every other callee kind short-circuits in `try_dispatch_non_func_callable`. */
+    /* Calls `callee`, with `recv` first when bound, the arguments laid out as a plain call leaves them. */
+    pub(crate) fn call_with(&mut self, callee: Val, recv: Option<Val>, positional: &[Val], kw_flat: &[Val], chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        self.push(callee);
+        self.stack.extend(recv);
+        self.stack.extend_from_slice(positional);
+        self.stack.extend_from_slice(kw_flat);
+        self.exec_call_n(positional.len() + recv.is_some() as usize, kw_flat.len() / 2, chunk, slots)
+    }
+
     pub(crate) fn exec_call(&mut self, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        self.exec_call_n((operand & 0xFF) as usize, ((operand >> 8) & 0xFF) as usize, chunk, slots)
+    }
+
+    /* `Call` orchestrator. Only user `Func` callees build a fresh `fn_slots` and run the body inline, every other callee kind short-circuits in `try_dispatch_non_func_callable`. */
+    pub(crate) fn exec_call_n(&mut self, num_pos: usize, num_kw: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         // Taken so nested native calls see false.
         let call_safe = core::mem::take(&mut self.pending_exec_safe);
-        let (positional, kw_flat, _num_pos, num_kw) = self.parse_call_args(operand)?;
+        let (positional, kw_flat) = self.take_args(num_pos, num_kw)?;
 
         if self.depth >= self.max_calls { return Err(cold_depth()); }
         // Charge each call so wide recursion is op-budget bounded.
@@ -343,7 +374,7 @@ impl<'a> VM<'a> {
                 if matches!(self.heap.get(callee), HeapObj::BoundUserMethod(..)) {
                     self.pending_exec_safe = call_safe;
                 }
-                let dispatched = self.try_dispatch_non_func_callable(callee, &positional, &kw_flat, num_kw, chunk, slots);
+                let dispatched = self.try_dispatch_non_func_callable(callee, &positional, &kw_flat, chunk, slots);
                 self.pending_exec_safe = false;
                 if dispatched? {
                     return Ok(());
@@ -405,21 +436,8 @@ impl<'a> VM<'a> {
             // Sync helper suspended mid-execution (e.g. `sleep(0)` from inside a sync fn called by an async coro). Stage its frame on the VM-level buffer. `resume_coroutine` drains it onto the enclosing coro so the helper is re-entered from the right ip. Without this, the outer's resume_ip would skip past the unfinished helper and the next StoreName would underflow. A nested sync call inside this helper would already have pushed its own frame first, so the buffer ends up innermost-last.
             let helper_resume_ip = self.resume_ip;
             self.resume_ip = 0;
-            let helper_stack_delta = if self.stack.len() > stack_base { self.stack.split_off(stack_base) } else { Vec::new() };
-            let helper_iter_delta: Vec<IterFrame> = if self.iter_stack.len() > iter_base { self.iter_stack.drain(iter_base..).collect() } else { Vec::new() };
-            let helper_exc_delta: Vec<ExceptionFrame> = if self.exception_stack.len() > exc_base {
-                self.exception_stack.drain(exc_base..)
-                    .map(|mut f| {
-                        f.stack_depth = f.stack_depth.saturating_sub(stack_base);
-                        f.iter_depth = f.iter_depth.saturating_sub(iter_base);
-                        f
-                    })
-                    .collect()
-            } else { Vec::new() };
-            self.pending_sync_frames.push(SyncFrame {
-                ip: helper_resume_ip, fi, slots: fn_slots,
-                stack_delta: helper_stack_delta, iter_delta: helper_iter_delta, exception_delta: helper_exc_delta,
-            });
+            let (stack_delta, iter_delta, exception_delta) = self.split_frames(stack_base, iter_base, exc_base);
+            self.pending_sync_frames.push(SyncFrame { ip: helper_resume_ip, fi, slots: fn_slots, stack_delta, iter_delta, exception_delta });
             return Ok(());
         }
 
@@ -436,24 +454,20 @@ impl<'a> VM<'a> {
         Ok(())
     }
 
-    /* Decode `operand` (lo=positional, hi=kw pairs) + star-spread deltas, then pop into positional/kw buffers. kw is flat alternating name/value as the parser emits. */
-    pub(crate) fn parse_call_args(&mut self, operand: u16) -> Result<(Vec<Val>, Vec<Val>, usize, usize), VmErr> {
-        let raw = operand as usize;
+    /* Pops the positional args and the flat name and value keyword pairs a call counts. */
+    pub(crate) fn parse_call_args(&mut self, operand: u16) -> Result<(Vec<Val>, Vec<Val>), VmErr> {
+        self.take_args((operand & 0xFF) as usize, ((operand >> 8) & 0xFF) as usize)
+    }
 
-        let base_pos = (raw & 0xFF) as i32;
-        let base_kw = ((raw >> 8) & 0xFF) as i32;
-        let num_pos = (base_pos + self.pending.pos_delta).max(0) as usize;
-        let num_kw = (base_kw + self.pending.kw_delta ).max(0) as usize;
-        self.pending.pos_delta = 0;
-        self.pending.kw_delta = 0;
-
+    /* Pops `num_pos` positionals and `num_kw` name/value pairs. */
+    pub(crate) fn take_args(&mut self, num_pos: usize, num_kw: usize) -> Result<(Vec<Val>, Vec<Val>), VmErr> {
         let total_items = num_pos + 2 * num_kw;
         // Bulk-copy the stack tail, one memcpy instead of per-item pops plus a reverse.
         let at = self.stack.len().checked_sub(total_items).ok_or(cold_runtime("stack underflow"))?;
         let kw_flat: Vec<Val> = self.stack[at + num_pos..].to_vec();
         let mut positional = self.stack.split_off(at);
         positional.truncate(num_pos);
-        Ok((positional, kw_flat, num_pos, num_kw))
+        Ok((positional, kw_flat))
     }
 
     /* Pack a flat `[name, val, name, val, ...]` slice into a heap dict for the trailing kwargs slot. `None` when there are no kwargs so the FFI layer can serialize handle 0 on the wire. */
@@ -481,159 +495,98 @@ impl<'a> VM<'a> {
     }
 
     /* Dispatch non-Func callees. Returns Ok(true) when handled here, Ok(false) means the caller falls through to the Func path. */
-    fn try_dispatch_non_func_callable(&mut self, callee: Val, positional: &[Val], kw_flat: &[Val], num_kw: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<bool, VmErr> {
-        // `list[int](xs)` builds what its origin builds.
-        if let &HeapObj::GenericAlias(origin, _) = self.heap.get(callee) {
-            return self.try_dispatch_non_func_callable(origin, positional, kw_flat, num_kw, chunk, slots);
-        }
-        if let HeapObj::BoundMethod(recv, id) = self.heap.get(callee) {
-            let recv = *recv;
-            let id = *id;
-            if id.name() == "sort" {
-                self.exec_sort(recv, positional, kw_flat, chunk, slots)?;
-                return Ok(true);
+    fn try_dispatch_non_func_callable(&mut self, callee: Val, positional: &[Val], kw_flat: &[Val], chunk: &SSAChunk, slots: &mut [Val]) -> Result<bool, VmErr> {
+        match self.heap.try_get(callee) {
+            // `list[int](xs)` builds what its origin builds.
+            Some(&HeapObj::GenericAlias(origin, _)) => return self.try_dispatch_non_func_callable(origin, positional, kw_flat, chunk, slots),
+            Some(&HeapObj::BoundMethod(recv, id)) if recv.is_undef() => self.exec_unbound_method(id, positional, kw_flat, chunk, slots)?,
+            Some(&HeapObj::BoundMethod(recv, id)) => self.exec_bound_method(recv, id, positional, kw_flat, chunk, slots)?,
+            Some(&HeapObj::NativeFn(id)) => {
+                // First-class builtins (e.g. `apply(print, x)`) bypass the CallPrint/CallInput opcodes. Mark here so a pure wrapper around them isn't memoised.
+                if native_is_impure(id) { self.mark_impure(); }
+                self.dispatch_native(id, positional, kw_flat, chunk, slots)?;
             }
-            self.exec_bound_method(recv, id, positional, kw_flat)?;
-            return Ok(true);
-        }
-
-        if let HeapObj::NativeFn(id) = self.heap.get(callee) {
-            let id = *id;
-            // First-class builtins (e.g. `apply(print, x)`) bypass the CallPrint/CallInput opcodes. Mark here so a pure wrapper around them isn't memoised.
-            if native_is_impure(id) { self.mark_impure(); }
-            self.dispatch_native(id, positional, kw_flat, chunk, slots)?;
-            return Ok(true);
-        }
-
-        if let HeapObj::Extern(extern_fn) = self.heap.get(callee) {
-            let func = extern_fn.func.clone();
-            let pure = extern_fn.pure;
-            if !pure { self.mark_impure(); }
-            let kwargs = Self::pack_kw_dict(&mut self.heap, kw_flat)?;
             // Park on host-deferral like `call_extern` (e.g. `time.sleep` via module attr).
-            match func(&mut self.heap, positional, kwargs) {
-                Ok(result) => self.push(result),
-                Err(VmErr::HostCallDeferred) => self.park_host_call(),
-                Err(e) => return Err(e),
+            Some(HeapObj::Extern(extern_fn)) => {
+                let (func, pure) = (extern_fn.func.clone(), extern_fn.pure);
+                self.invoke_extern(&func, pure, positional, kw_flat)?;
             }
-            return Ok(true);
-        }
-
-        if let HeapObj::Type(name) = self.heap.get(callee) {
-            let name = name.clone();
-            if let Some(id) = constructor_native(&name) {
-                self.dispatch_native(id, positional, kw_flat, chunk, slots)?; // int/set/list/... construct
-                return Ok(true);
-            }
-            // `object()` builds a unique featureless instance.
-            if name == "object" {
-                if !positional.is_empty() || !kw_flat.is_empty() {
-                    return Err(cold_type("object() takes no arguments"));
+            Some(HeapObj::Type(name)) => {
+                let name = name.clone();
+                if let Some(id) = constructor_native(&name) {
+                    self.dispatch_native(id, positional, kw_flat, chunk, slots)?; // int/set/list/... construct
+                } else if name == "object" {
+                    // `object()` builds a unique featureless instance.
+                    if !positional.is_empty() || !kw_flat.is_empty() { return Err(cold_type("object() takes no arguments")); }
+                    let inst = self.heap.alloc(HeapObj::Instance(callee, Rc::new(RefCell::new(DictMap::new()))))?;
+                    self.push(inst);
+                } else {
+                    // Other Type objects are exception classes, build an ExcInstance for `raise X("msg")`.
+                    if !kw_flat.is_empty() { return Err(cold_type("exception class takes no keyword arguments")); }
+                    let exc = self.heap.alloc(HeapObj::ExcInstance(name, positional.to_vec()))?;
+                    self.push(exc);
                 }
-                let inst = self.heap.alloc(HeapObj::Instance(callee, Rc::new(RefCell::new(DictMap::new()))))?;
-                self.push(inst);
-                return Ok(true);
             }
-            // Other Type objects are exception classes, build an ExcInstance for `raise X("msg")`.
-            if !kw_flat.is_empty() {
-                return Err(cold_type("exception class takes no keyword arguments"));
-            }
-            let exc = self.heap.alloc(HeapObj::ExcInstance(name, positional.to_vec()))?;
-            self.push(exc);
-            return Ok(true);
-        }
-
-        // Calling a class, create an instance and run `__init__` if defined (walks bases).
-        if let HeapObj::Class(..) = self.heap.get(callee) {
-            // The recursive `exec_call` below only encodes positional count, kwargs would silently disappear before reaching `__init__`, so reject them here.
-            if !kw_flat.is_empty() {
-                return Err(cold_type("class constructor takes no keyword arguments"));
-            }
-            let instance = self.heap.alloc(HeapObj::Instance(callee, Rc::new(RefCell::new(DictMap::new()))))?;
-            if let Some((init_fn, defining)) = self.lookup_class_member(callee, "__init__") {
-                // Fail-fast before pushing, the inner check fires only after parse_call_args pops.
-                if self.depth >= self.max_calls { return Err(cold_depth()); }
-                self.pending.method_binding = Some((defining, instance));
-                self.push(init_fn);
+            // Calling a class, create an instance and run `__init__` if defined (walks bases).
+            Some(HeapObj::Class(..)) => {
+                let init = self.lookup_class_member(callee, "__init__");
+                if init.is_none() && !kw_flat.is_empty() {
+                    return Err(cold_type("class constructor takes no keyword arguments"));
+                }
+                let instance = self.heap.alloc(HeapObj::Instance(callee, Rc::new(RefCell::new(DictMap::new()))))?;
+                // An exception keeps its constructor arguments as `args`, a later `__init__` may reset them.
+                if self.exc_base(callee).is_some() { self.set_exc_args(instance, positional.to_vec())?; }
+                if let Some((init_fn, defining)) = init {
+                    // Fail-fast before pushing, the inner check fires only after parse_call_args pops.
+                    if self.depth >= self.max_calls { return Err(cold_depth()); }
+                    self.pending.method_binding = Some((defining, instance));
+                    // Keywords reach `__init__` as they reach any function, its return value is dropped.
+                    self.call_with(init_fn, Some(instance), positional, kw_flat, chunk, slots)?;
+                    self.pop()?;
+                }
                 self.push(instance);
-                for a in positional { self.push(*a); }
-                let argc = (1 + positional.len()) as u16;
-                self.exec_call(argc, chunk, slots)?;
-                // Discard `__init__` return value.
-                self.pop()?;
             }
-            self.push(instance);
-            return Ok(true);
-        }
-
-        // Bound user method, prepend `self` to the arg list and re-dispatch.
-        if let HeapObj::BoundUserMethod(recv, func, class) = self.heap.get(callee) {
-            // Same as the Class branch, depth check before mutating the stack.
-            if self.depth >= self.max_calls { return Err(cold_depth()); }
-            let (recv, func, class) = (*recv, *func, *class);
-            self.pending.method_binding = Some((class, recv));
-            self.push(func);
-            self.push(recv);
-            for a in positional { self.push(*a); }
-            // Re-push keyword pairs too, else the re-dispatch underflows the stack.
-            for k in kw_flat { self.push(*k); }
-            let argc = (positional.len() + 1) as u16;
-            let encoded = ((num_kw as u16) << 8) | argc;
-            self.exec_call(encoded, chunk, slots)?;
-            return Ok(true);
-        }
-
-        // `prop.setter(fn)` returns a new `Property` carrying the original getter plus the supplied setter.
-        if let HeapObj::PropertySetter(prop_val) = self.heap.get(callee) {
-            if positional.len() != 1 || !kw_flat.is_empty() {
-                return Err(cold_type("property.setter takes exactly 1 argument"));
+            // Bound user method, prepend `self` to the arg list and re-dispatch.
+            Some(&HeapObj::BoundUserMethod(recv, func, class)) => {
+                // Same as the Class branch, depth check before mutating the stack.
+                if self.depth >= self.max_calls { return Err(cold_depth()); }
+                self.pending.method_binding = Some((class, recv));
+                self.call_with(func, Some(recv), positional, kw_flat, chunk, slots)?;
             }
-            let prop_val = *prop_val;
-            let getter = match self.heap.get(prop_val) {
-                HeapObj::Property(g, _) => *g,
-                _ => return Err(cold_runtime("PropertySetter wraps a non-Property value")),
-            };
-            let new_setter = positional[0];
-            let new_prop = self.heap.alloc(HeapObj::Property(getter, new_setter))?;
-            self.push(new_prop);
-            return Ok(true);
-        }
-
-        // Instance with `__call__`, bind and dispatch through `BoundUserMethod`-style flow.
-        if let HeapObj::Instance(..) = self.heap.get(callee)
-            && let Some((func, class)) = self.lookup_class_member(
-                match self.heap.get(callee) { HeapObj::Instance(c, _) => *c, _ => unreachable!() },
-                "__call__")
-        {
-            if self.depth >= self.max_calls { return Err(cold_depth()); }
-            self.pending.method_binding = Some((class, callee));
-            self.push(func);
-            self.push(callee);
-            for a in positional { self.push(*a); }
-            for k in kw_flat { self.push(*k); }
-            let argc = (positional.len() + 1) as u16;
-            let encoded = ((num_kw as u16) << 8) | argc;
-            self.exec_call(encoded, chunk, slots)?;
-            return Ok(true);
-        }
-
-        if let HeapObj::Coroutine(..) = self.heap.get(callee) {
-            // Plain `async def` (no `yield`) drives to completion via the scheduler (await semantics). Async *generators* fall through to step-wise resume like sync generators.
-            let drive_async = matches!(self.heap.get(callee),
-                HeapObj::Coroutine(_, _, _, super::super::types::BodyRef::Fn(fi), ..)
-                    if self.is_async.get(*fi).copied().unwrap_or(false) && !self.functions[*fi].1.is_generator);
-            if drive_async {
-                self.await_coroutine(callee)?;
-                return Ok(true);
+            // `prop.setter(fn)` returns a new `Property` carrying the original getter plus the supplied setter.
+            Some(&HeapObj::PropertySetter(prop_val)) => {
+                if positional.len() != 1 || !kw_flat.is_empty() {
+                    return Err(cold_type("property.setter takes exactly 1 argument"));
+                }
+                let Some(&HeapObj::Property(getter, _)) = self.heap.try_get(prop_val) else {
+                    return Err(cold_runtime("PropertySetter wraps a non-Property value"));
+                };
+                let new_prop = self.heap.alloc(HeapObj::Property(getter, positional[0]))?;
+                self.push(new_prop);
             }
-            // Generator stepping (ForIter calls here per `next`) resumes one step, the inner yield must NOT propagate to the caller.
-            let result = self.resume_coroutine(callee)?;
-            if self.yielded { self.yielded = false; }
-            self.push(result);
-            return Ok(true);
+            // Instance with `__call__`, bind and dispatch through `BoundUserMethod`-style flow.
+            Some(&HeapObj::Instance(cls, _)) => {
+                let Some((func, class)) = self.lookup_class_member(cls, "__call__") else { return Ok(false) };
+                if self.depth >= self.max_calls { return Err(cold_depth()); }
+                self.pending.method_binding = Some((class, callee));
+                self.call_with(func, Some(callee), positional, kw_flat, chunk, slots)?;
+            }
+            Some(HeapObj::Coroutine(_, _, _, body, ..)) => {
+                // Plain `async def` (no `yield`) drives to completion via the scheduler (await semantics). Async *generators* fall through to step-wise resume like sync generators.
+                let drive_async = matches!(*body, super::super::types::BodyRef::Fn(fi)
+                    if self.is_async.get(fi).copied().unwrap_or(false) && !self.functions[fi].1.is_generator);
+                if drive_async {
+                    self.await_coroutine(callee)?;
+                } else {
+                    // Generator stepping (ForIter calls here per `next`) resumes one step, the inner yield must NOT propagate to the caller.
+                    let result = self.resume_coroutine(callee)?;
+                    self.yielded = false;
+                    self.push(result);
+                }
+            }
+            _ => return Ok(false),
         }
-
-        Ok(false)
+        Ok(true)
     }
 
     /* Bind formal params from positional/kw buffers, then fill remaining undef slots with defaults and captures. `defaults`/`captures` are pre-snapshotted by `exec_call`. */
@@ -684,6 +637,7 @@ impl<'a> VM<'a> {
         if !kw_flat.is_empty() {
             let params = &self.functions[fi].0;
             let body_map = &self.body_maps[fi];
+            let has_double_star = self.param_slots[fi].iter().any(|(k, _)| matches!(k, ParamKind::DoubleStar));
             for pair in kw_flat.as_chunks::<2>().0 {
                 // Malformed `**`/kwarg bytecode can leave a non-string in the name slot, so guard the heap access.
                 let key = match self.heap.try_get(pair[0]) {
@@ -694,8 +648,11 @@ impl<'a> VM<'a> {
                 if params.iter().any(|p| !p.starts_with('*') && crate::parser::types::param_base_name(p) == key.as_str()) {
                     let pname = s!(str &key, "_0");
                     if let Some(&s) = body_map.get(pname.as_str()) {
+                        if !fn_slots[s].is_undef() { return Err(VmErr::TypeMsg(s!("got multiple values for argument '", str &key, "'"))); }
                         fn_slots[s] = pair[1];
                     }
+                } else if !has_double_star {
+                    return Err(VmErr::TypeMsg(s!("got an unexpected keyword argument '", str &key, "'")));
                 }
             }
         }
@@ -708,6 +665,16 @@ impl<'a> VM<'a> {
                     && slot < fn_slots.len() && fn_slots[slot].is_undef() {
                         fn_slots[slot] = dv;
                     }
+            }
+        }
+
+        // A parameter left without a positional, a keyword or a default is a missing argument.
+        if positional.len() < n_params {
+            for (i, &(kind, slot)) in self.param_slots[fi].iter().enumerate() {
+                if matches!(kind, ParamKind::Normal | ParamKind::KwOnly) && fn_slots.get(slot).is_some_and(|v| v.is_undef()) {
+                    let name = crate::parser::types::param_base_name(&self.functions[fi].0[i]);
+                    return Err(VmErr::TypeMsg(s!("missing required argument '", str name, "'")));
+                }
             }
         }
 
@@ -905,32 +872,29 @@ impl<'a> VM<'a> {
         // Snapshot to release borrows on self before the `heap.get_mut` writes.
         let nl_pairs: Vec<(usize, usize)> = self.nonlocal_tables[fi].clone();
         let name_index = self.chunk_name_versions.get(&(chunk as *const _));
-        for (canon_body, _) in nl_pairs {
-            if let Some(&val) = fn_slots.get(canon_body) {
-                if val.is_undef() { continue; }
-                for base in &body.nonlocals {
-                    if let Some(idx) = name_index && let Some(versions) = idx.get(base.as_str())
-                    {
-                        for &(_, si) in versions {
-                            if si < slots.len() { slots[si] = val; }
-                        }
-                    }
-                    // Write into the shared cell so sibling closures over this variable observe the nonlocal write. Access `self.heap` directly (not via &mut self helpers) so it stays disjoint from the `name_index` borrow above.
-                    let cell = if let HeapObj::Func(_, _, caps, _) = self.heap.get(callee) {
-                        caps.iter().find(|(ci, _)| *ci == canon_body).map(|(_, c)| *c)
-                    } else { None };
-                    match cell {
-                        Some(c) => if let HeapObj::List(rc) = self.heap.get(c) {
-                            let mut b = rc.borrow_mut();
-                            if b.is_empty() { b.push(val); } else { b[0] = val; }
-                        },
-                        // Nonlocal target not captured at MakeFunction (rare), attach a fresh cell so the next call sees it.
-                        None => if let Ok(c) = self.heap.alloc(HeapObj::List(Rc::new(RefCell::new(vec![val]))))
-                            && let HeapObj::Func(_, _, caps, _) = self.heap.get_mut(callee) {
-                                caps.push((canon_body, c));
-                            },
-                    }
+        for (canon_body, ni) in nl_pairs {
+            let Some(&val) = fn_slots.get(canon_body) else { continue };
+            if val.is_undef() { continue; }
+            // Each nonlocal writes back into its own name only.
+            if let Some(idx) = name_index && let Some(versions) = body.nonlocals.get(ni).and_then(|base| idx.get(base.as_str())) {
+                for &(_, si) in versions {
+                    if si < slots.len() { slots[si] = val; }
                 }
+            }
+            // Write into the shared cell so sibling closures over this variable observe the nonlocal write. Access `self.heap` directly (not via &mut self helpers) so it stays disjoint from the `name_index` borrow above.
+            let cell = if let HeapObj::Func(_, _, caps, _) = self.heap.get(callee) {
+                caps.iter().find(|(ci, _)| *ci == canon_body).map(|(_, c)| *c)
+            } else { None };
+            match cell {
+                Some(c) => if let HeapObj::List(rc) = self.heap.get(c) {
+                    let mut b = rc.borrow_mut();
+                    if b.is_empty() { b.push(val); } else { b[0] = val; }
+                },
+                // Nonlocal target not captured at MakeFunction (rare), attach a fresh cell so the next call sees it.
+                None => if let Ok(c) = self.heap.alloc(HeapObj::List(Rc::new(RefCell::new(vec![val]))))
+                    && let HeapObj::Func(_, _, caps, _) = self.heap.get_mut(callee) {
+                        caps.push((canon_body, c));
+                    },
             }
         }
     }
@@ -940,19 +904,21 @@ impl<'a> VM<'a> {
     pub(crate) fn call_extern(&mut self, operand: u16, chunk: &SSAChunk) -> Result<(), VmErr> {
         let extern_idx = (operand >> 8) as usize;
         // A star spread grows the counts the operand was written with.
-        let kw = (((operand >> 4) & 0xF) as i32 + self.pending.kw_delta).max(0) as usize;
-        let pos = ((operand & 0xF) as i32 + self.pending.pos_delta).max(0) as usize;
-        let (p, k) = self.pending.delta_save.pop().unwrap_or((0, 0));
-        self.pending.pos_delta = p;
-        self.pending.kw_delta = k;
+        let (pos, kw) = self.close_spread((operand & 0xF) as usize, ((operand >> 4) & 0xF) as usize);
         let extern_fn = chunk.extern_table.get(extern_idx).ok_or(cold_runtime("CallExtern: extern index out of bounds"))?;
         let func = extern_fn.func.clone(); // Arc clone, refcount bump only
         let pure = extern_fn.pure;
         let kw_flat = if kw > 0 { self.pop_n(kw * 2)? } else { Vec::new() };
         let positional = self.pop_n(pos)?;
-        let kwargs = Self::pack_kw_dict(&mut self.heap, &kw_flat)?;
+        self.invoke_extern(&func, pure, &positional, &kw_flat)
+    }
+
+    /* Runs a native binding with its args rooted, a plugin can call back into code that collects. */
+    fn invoke_extern(&mut self, func: &crate::vm::types::ExternCallable, pure: bool, positional: &[Val], kw_flat: &[Val]) -> Result<(), VmErr> {
         if !pure { self.mark_impure(); }
-        match func(&mut self.heap, &positional, kwargs) {
+        let kwargs = Self::pack_kw_dict(&mut self.heap, kw_flat)?;
+        let roots = positional.iter().chain(kw_flat).copied().chain(kwargs);
+        match self.with_roots(roots, |vm| func(&mut vm.heap, positional, kwargs)) {
             Ok(result) => { self.push(result); Ok(()) }
             Err(VmErr::HostCallDeferred) => { self.park_host_call(); Ok(()) }
             Err(e) => Err(e),
@@ -966,6 +932,34 @@ impl<'a> VM<'a> {
         self.next_host_call_id += 1;
         self.pending.host_call_request = true;
         self.yielded = true;
+    }
+
+    /* A builtin that takes keywords sees each one as the positional it names, `int("ff", base=16)`. */
+    #[cold]
+    fn dispatch_native_named(&mut self, id: super::super::types::NativeFnId, positional: &[Val], kw: &[Val], chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        use super::super::types::NativeFnId::*;
+        let names: &[&str] = match id {
+            Int => &["x", "base"],
+            Round => &["number", "ndigits"],
+            Sum => &["iterable", "start"],
+            Pow => &["base", "exp", "mod"],
+            Str => &["object", "encoding", "errors"],
+            Bytes => &["source", "encoding", "errors"],
+            _ => return Err(VmErr::TypeMsg(s!(str id.name(), "() takes no keyword arguments"))),
+        };
+        let mut args: Vec<Option<Val>> = positional.iter().map(|&v| Some(v)).collect();
+        for pair in kw.chunks(2) {
+            let name = self.kw_name(pair[0]).unwrap_or("");
+            let Some(i) = names.iter().position(|&n| n == name) else {
+                return Err(VmErr::TypeMsg(s!("'", str name, "' is an invalid keyword argument for ", str id.name(), "()")));
+            };
+            if args.get(i).is_some_and(|a| a.is_some()) { return Err(VmErr::TypeMsg(s!(str id.name(), "() got multiple values for argument '", str name, "'"))); }
+            if args.len() <= i { args.resize(i + 1, None); }
+            args[i] = Some(pair[1]);
+        }
+        let args: Option<Vec<Val>> = args.into_iter().collect();
+        let args = args.ok_or_else(|| VmErr::TypeMsg(s!(str id.name(), "() is missing a positional argument")))?;
+        self.dispatch_native(id, &args, &[], chunk, slots)
     }
 
     pub(crate) fn dispatch_native(&mut self, id: super::super::types::NativeFnId, positional: &[Val], kw: &[Val], chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
@@ -991,13 +985,12 @@ impl<'a> VM<'a> {
 
         let kw_aware = matches!(id, Print | Min | Max | Enumerate | Dict);
         if !kw_remaining.is_empty() && !kw_aware {
-            return Err(cold_type("native function takes no keyword arguments"));
+            return self.dispatch_native_named(id, positional, kw_remaining, chunk, slots);
         }
         let argc = positional.len() as u16;
 
-        // Pre-validate fixed arity to keep the stack clean on error.
-        if let Some(n) = id.arity()
-            && argc != n { return Err(cold_type("wrong number of arguments to builtin")); }
+        // Pre-validate arity to keep the stack clean on error.
+        if !id.takes(argc) { return Err(arity_err(id, argc)); }
 
         for &v in positional { self.push(v); }
         // Repack pos/kw counts so the handlers pop the same layout a fused call leaves.
@@ -1005,43 +998,49 @@ impl<'a> VM<'a> {
             for &v in kw_remaining { self.push(v); }
             (((kw_remaining.len() / 2) as u16) << 8) | argc
         } else { argc };
+        if iterates(id) { self.lift_builtin_args(id, argc as usize, kw_remaining.len() / 2, chunk, slots)?; }
+        match id {
+            Sorted => self.call_sorted_with_key(sort_key, sort_reverse, chunk, slots),
+            // CallPrint is statement-shaped, reached through Call its result is popped, so it leaves None.
+            Print => { self.run_native(id, operand, chunk, slots)?; self.push(Val::none()); Ok(()) }
+            _ => self.run_native(id, operand, chunk, slots),
+        }
+    }
 
+    /* Runs a builtin on stacked args, `operand` a count or packed counts for keyword-aware ones. */
+    fn run_native(&mut self, id: super::super::types::NativeFnId, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        use super::super::types::NativeFnId::*;
         match id {
             // Variadic
-            Print => {
-                // CallPrint is statement-shaped (no trailing Pop). When reached via Call the parser emits Pop, so push None to keep the stack balanced.
-                self.call_print(operand, chunk, slots)?;
-                self.push(Val::none());
-                Ok(())
-            }
-            Range => self.call_range(argc),
-            Round => self.call_round(argc),
+            Print => { self.mark_impure(); self.call_print(operand, chunk, slots) }
+            Range => self.call_range(operand),
+            Round => self.call_round(operand),
             Min => self.call_min(operand, chunk, slots),
             Max => self.call_max(operand, chunk, slots),
-            Sum => self.call_sum(argc),
-            Zip => self.call_zip(argc),
-            Dict => self.call_dict(operand),
-            Set => self.call_set(argc),
-            Pow => self.call_pow(argc),
-            All => self.call_all(argc),
-            Any => self.call_any(argc),
-            GetAttr => self.call_getattr(argc),
-            Format => self.call_format(argc, chunk, slots),
+            Sum => self.call_sum(operand),
+            Zip => self.call_zip(operand),
+            Dict => self.call_dict(operand, chunk, slots),
+            Set => self.call_set(operand, chunk, slots),
+            Pow => self.call_pow(operand),
+            All => self.call_all(operand),
+            Any => self.call_any(operand),
+            GetAttr => self.call_getattr(operand, chunk, slots),
+            Format => self.call_format(operand, chunk, slots),
             // 0/1/2-arg
-            Input => self.call_input(),
+            Input => { self.mark_impure(); self.call_input() }
             Len => self.call_len(chunk, slots),
             Abs => self.call_abs(chunk, slots),
-            Str => self.call_str(argc, chunk, slots),
-            Int => self.call_int(argc, chunk, slots),
-            Float => self.call_float(argc, chunk, slots),
-            Bool => self.call_bool(argc, chunk, slots),
+            Str => self.call_str(operand, chunk, slots),
+            Int => self.call_int(operand, chunk, slots),
+            Float => self.call_float(operand, chunk, slots),
+            Bool => self.call_bool(operand, chunk, slots),
             Type => self.call_type(),
             Chr => self.call_chr(),
             Ord => self.call_ord(),
-            Sorted => self.call_sorted_with_key(sort_key, sort_reverse, chunk, slots),
+            Sorted => self.call_sorted(false, chunk, slots),
             Enumerate => self.call_enumerate(operand),
-            List => self.call_list(argc, chunk, slots),
-            Tuple => self.call_tuple(argc, chunk, slots),
+            List => self.call_list(operand, chunk, slots),
+            Tuple => self.call_tuple(operand, chunk, slots),
             Bin => self.call_bin(),
             Oct => self.call_oct(),
             Hex => self.call_hex(),
@@ -1053,34 +1052,34 @@ impl<'a> VM<'a> {
             Divmod => self.call_divmod(),
             IsInstance => self.call_isinstance(),
             IsSubclass => self.call_issubclass(),
-            HasAttr => self.call_hasattr(),
-            Next => self.call_next(argc, chunk, slots),
-            Run => self.call_run(argc),
+            HasAttr => self.call_hasattr(chunk, slots),
+            Next => self.call_next(operand, chunk, slots),
+            Run => self.call_run(operand),
             Sleep => self.call_sleep(),
             Receive => self.call_receive(),
             SendMsg => self.call_send(),
-            Map => self.call_map(argc, chunk, slots),
+            Map => self.call_map(operand, chunk, slots),
             Filter => self.call_filter(chunk, slots),
-            Iter => self.call_iter(argc, chunk, slots),
-            Bytes => self.call_bytes(argc),
-            Slice => self.call_slice(argc),
+            Iter => self.call_iter(operand, chunk, slots),
+            Bytes => self.call_bytes(operand),
+            Slice => self.call_slice(operand),
             Vars => self.call_vars(),
-            SetAttr => self.call_setattr(),
+            SetAttr => self.call_setattr(chunk, slots),
             DelAttr => self.call_delattr(),
             ImportModule => self.call_import_module(),
-            Gather => self.call_gather(argc),
+            Gather => self.call_gather(operand),
             WithTimeout => self.call_with_timeout(),
             Cancel => self.call_cancel(),
             BytesFromHex => self.call_bytes_fromhex(),
             IntFromBytes => self.call_int_from_bytes(),
             IntToBytes => self.call_int_to_bytes(),
-            FrozenSet => self.call_frozenset(argc),
+            FrozenSet => self.call_frozenset(operand, chunk, slots),
             Globals => self.call_globals(chunk, slots),
             Locals => self.call_locals(chunk, slots),
             Super => self.call_super(),
-            Property => self.call_property(argc),
-            StaticMethod => self.call_staticmethod(argc),
-            ClassMethod => self.call_classmethod(argc),
+            Property => self.call_property(operand),
+            StaticMethod => self.call_staticmethod(operand),
+            ClassMethod => self.call_classmethod(operand),
         }
     }
 }

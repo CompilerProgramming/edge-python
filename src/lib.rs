@@ -17,6 +17,7 @@ pub mod util {
     pub mod fstr;
     pub mod jesc;
     pub mod sha256;
+    pub mod uni;
 }
 
 /* NaN-boxed values and the mark-and-sweep heap, the layer both the frontend and the VM build on. */

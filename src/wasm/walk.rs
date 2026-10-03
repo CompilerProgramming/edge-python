@@ -80,16 +80,8 @@ fn drive() -> u32 {
         };
         let mut out = String::new();
         match step {
-            Step::Code { spec, src } => with_runtime(|rt| {
-                rt.registry.retain(|(s, _)| *s != spec);
-                rt.registry.push((spec, ModuleEntry::Code(src)));
-                rt.registry_changed();
-            }),
-            Step::Refuse { spec, msg } => with_runtime(|rt| {
-                rt.refusals.retain(|(s, _)| *s != spec);
-                rt.refusals.push((spec, msg));
-                rt.registry_changed();
-            }),
+            Step::Code { spec, src } => with_runtime(|rt| rt.register(spec, ModuleEntry::Code(src))),
+            Step::Refuse { spec, msg } => with_runtime(|rt| rt.refuse(spec, msg)),
             Step::Manifest { spec, manifest } => with_runtime(|rt| {
                 rt.manifests.retain(|(s, _)| *s != spec);
                 rt.manifests.push((spec, manifest));

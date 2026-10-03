@@ -1,4 +1,3 @@
-use alloc::{string::String, vec::Vec};
 
 use super::super::VM;
 use super::super::types::*;
@@ -93,7 +92,6 @@ impl<'a> VM<'a> {
     }
 
     pub fn call_hash(&mut self, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
-        use core::hash::{Hash, Hasher};
         let o = self.pop()?;
 
         // instance dispatch, user `__hash__` wins, `__eq__` without `__hash__` makes the instance unhashable.
@@ -132,135 +130,78 @@ impl<'a> VM<'a> {
             return Ok(());
         }
 
-        let mut h = crate::util::hash::FxHasher::default();
-        if o.is_float() {
-            let f = o.as_float();
-            // Integral floats hash as the equal int or LongInt, same unification hash_depth uses for dict keys.
-            if let Some(i) = float_exact_i128(f) {
-                let v = self.int_to_val(Some(py_int_hash(i)))?;
-                self.push(v);
-                return Ok(());
-            }
-            f.to_bits().hash(&mut h);
+        // Integral floats hash as the equal int or LongInt, same unification hash_depth uses for dict keys.
+        if o.is_float() && let Some(i) = float_exact_i128(o.as_float()) {
+            let v = self.int_to_val(Some(py_int_hash(i)))?;
+            self.push(v);
+            return Ok(());
         }
-        else if o.is_none() { 0u64.hash(&mut h); }
-        else if o.is_heap() {
-            self.require_hashable(o)?;
-            match self.heap.get(o) {
-                HeapObj::Str(s) => s.hash(&mut h),
-                HeapObj::Bytes(b) => b.hash(&mut h),
-                HeapObj::Tuple(items) => { for v in items { v.0.hash(&mut h); } }
-                HeapObj::GenericAlias(..) | HeapObj::Union(_) => crate::vm::eq::hash_val_with_heap(o, &self.heap).hash(&mut h),
-                _ => o.0.hash(&mut h),
-            }
-        }
-        self.push(Val::int(h.finish() as i64 & Val::INT_MAX));
+        // The rest hashes by content, the hash a dict key probes with, so equal tuples and frozensets agree.
+        if o.is_heap() { self.require_hashable(o)?; }
+        // A tuple holding a user-hashed item hashes through that item, as its dict key would.
+        let rich_tuple = matches!(self.heap.try_get(o), Some(HeapObj::Tuple(_))) && crate::vm::eq::is_rich_key(o, &self.heap);
+        let h = if rich_tuple { self.with_roots([o], |vm| vm.key_hash(o, chunk, slots))? }
+            else { crate::vm::eq::hash_val_with_heap(o, &self.heap) };
+        self.push(Val::int(h as i64 & Val::INT_MAX));
         Ok(())
     }
 
     /* Type-name based isinstance check. Accepts Type / NativeFn (builtin types) / user Class on the right, allows int<->bool aliasing and walks user inheritance via `is_subclass`. */
     pub fn call_isinstance(&mut self) -> Result<(), VmErr> {
         let (arg2, obj) = (self.pop()?, self.pop()?);
-        // User instances keep the "object" label here, class membership is decided via obj_class below.
-        let obj_ty = if obj.is_heap() && matches!(self.heap.get(obj), HeapObj::Instance(..)) {
-            "object"
-        } else {
-            self.type_name(obj)
-        };
-
-        // For exception matching, when `obj` is a Type itself or an ExcInstance, compare names against the asserted type.
-        let obj_type_name: Option<String> = if obj.is_heap() {
-            match self.heap.get(obj) {
-                HeapObj::Type(n) => Some(n.clone()),
-                HeapObj::ExcInstance(n, _) => Some(n.clone()),
-                _ => None,
-            }
-        } else { None };
-
-        // User-class membership uses heap identity, not type names, so capture the instance's class up-front.
-        let obj_class: Option<Val> = if obj.is_heap() {
-            if let HeapObj::Instance(cls, _) = self.heap.get(obj) { Some(*cls) } else { None }
-        } else { None };
-
-        let check_one = |t: Val, heap: &HeapPool| -> Result<bool, VmErr> {
-            if !t.is_heap() {
-                return Err(VmErr::Type("isinstance() arg 2 must be a type or tuple of types"));
-            }
-            let exc_match = |name: &str| -> bool {
-                obj_type_name.as_deref()
-                    .map(|n| matches_exc_class(n, name))
-                    .unwrap_or(false)
-            };
-            match heap.get(t) {
-                HeapObj::Type(name) => Ok(
-                    name == "object" // everything is an object
-                    || matches_exc_class(obj_ty, name)
-                    || (obj_ty == "bool" && name == "int")
-                    || exc_match(name)
-                ),
-                HeapObj::NativeFn(id) => {
-                    let name = id.name();
-                    if !matches!(name, "int"|"str"|"bytes"|"float"|"bool"|"list"|"tuple"|"dict"|"set") {
-                        return Err(VmErr::Type("isinstance() arg 2 must be a type or tuple of types"));
-                    }
-                    Ok(
-                        name == obj_ty
-                        || (obj_ty == "bool" && name == "int")
-                        )
-                }
-                HeapObj::Class(..) => Ok(obj_class.is_some_and(|c| heap.is_subclass(c, t))),
-                _ => Err(VmErr::Type("isinstance() arg 2 must be a type or tuple of types")),
-            }
-        };
-
-        let result = self.check_classinfo(arg2, check_one)?;
+        let result = self.check_classinfo(arg2, |t| self.is_instance_of(obj, t))?;
         self.push(Val::bool(result));
         Ok(())
     }
 
-    /* Shared `isinstance`/`issubclass` classinfo dispatch, a tuple matches if any member does, else a single check. `single` already emits the correct TypeError for non-heap / wrong-variant args. */
-    fn check_classinfo<F>(&self, arg2: Val, single: F) -> Result<bool, VmErr>
-    where F: Fn(Val, &HeapPool) -> Result<bool, VmErr> {
+    /* `isinstance(obj, t)` for one class, builtins by type name and user classes along the bases. */
+    fn is_instance_of(&self, obj: Val, t: Val) -> Result<bool, VmErr> {
+        let bad = || VmErr::Type("isinstance() arg 2 must be a type or tuple of types");
+        // A user instance is named "object" so a class named like a builtin never matches.
+        let (obj_ty, obj_class) = match self.heap.try_get(obj) {
+            Some(&HeapObj::Instance(cls, _)) => ("object", Some(cls)),
+            _ => (self.type_name(obj), None),
+        };
+        // An exception instance or a type object also matches through the exception tree by its own name.
+        let exc_name = match self.heap.try_get(obj) { Some(HeapObj::Type(n) | HeapObj::ExcInstance(n, _)) => Some(n.as_str()), _ => None };
+        match self.heap.try_get(t).ok_or_else(bad)? {
+            HeapObj::Type(name) => Ok(name == "object" || matches_exc_class(obj_ty, name) || (obj_ty == "bool" && name == "int")
+                || exc_name.is_some_and(|n| matches_exc_class(n, name))
+                || obj_class.and_then(|c| self.exc_base(c)).is_some_and(|b| matches_exc_class(b, name))),
+            HeapObj::NativeFn(id) if matches!(id.name(), "int" | "str" | "bytes" | "float" | "bool" | "list" | "tuple" | "dict" | "set") =>
+                Ok(id.name() == obj_ty || (obj_ty == "bool" && id.name() == "int")),
+            HeapObj::Class(..) => Ok(obj_class.is_some_and(|c| self.heap.is_subclass(c, t))),
+            _ => Err(bad()),
+        }
+    }
+
+    /* Shared `isinstance`/`issubclass` classinfo dispatch, a tuple or union matches if any member does, else a single check. */
+    fn check_classinfo(&self, arg2: Val, single: impl Fn(Val) -> Result<bool, VmErr>) -> Result<bool, VmErr> {
         // `int | str` checks like the tuple of its members.
         let arg2 = match self.heap.try_get(arg2) { Some(&HeapObj::Union(args)) => args, _ => arg2 };
-        let result = if arg2.is_heap() && let HeapObj::Tuple(items) = self.heap.get(arg2) {
-            // Propagate TypeError from a non-class member instead of silently ignoring it.
-            let items: Vec<Val> = items.clone();
-            let mut found = false;
-            for t in items { if single(t, &self.heap)? { found = true; break; } }
-            found
-        } else {
-            single(arg2, &self.heap)?
-        };
-        Ok(result)
+        if let Some(HeapObj::Tuple(items)) = self.heap.try_get(arg2) {
+            // A non-class member raises instead of being skipped.
+            for &t in items { if single(t)? { return Ok(true); } }
+            return Ok(false);
+        }
+        single(arg2)
     }
 
     /* `issubclass(C, B)`, both are classes (B may be a tuple). Walks the exception hierarchy for built-ins and the inheritance chain for user classes. Unlike `isinstance`, arg 1 must itself be a class. */
     pub fn call_issubclass(&mut self) -> Result<(), VmErr> {
         let (arg2, sub) = (self.pop()?, self.pop()?);
-
         // arg 1 must be a built-in/exception `Type` or a user `Class`.
-        let (sub_name, sub_class): (Option<String>, Option<Val>) = match sub.is_heap().then(|| self.heap.get(sub)) {
-            Some(HeapObj::Type(n)) => (Some(n.clone()), None),
-            Some(HeapObj::Class(..)) => (None, Some(sub)),
+        let sub_name = match self.heap.try_get(sub) {
+            Some(HeapObj::Type(n)) => Some(n.as_str()),
+            Some(HeapObj::Class(..)) => None,
             _ => return Err(VmErr::Type("issubclass() arg 1 must be a class")),
         };
-
-        let check_one = |t: Val, heap: &HeapPool| -> Result<bool, VmErr> {
-            if !t.is_heap() {
-                return Err(VmErr::Type("issubclass() arg 2 must be a class or tuple of classes"));
-            }
-            match heap.get(t) {
-                HeapObj::Type(name2) => Ok(match &sub_name {
-                    Some(name1) => matches_exc_class(name1, name2) || (name1 == "bool" && name2 == "int"),
-                    None => false, // user class is never a subclass of a built-in type
-                }),
-                HeapObj::Class(..) => Ok(sub_class.is_some_and(|c| heap.is_subclass(c, t))),
-                _ => Err(VmErr::Type("issubclass() arg 2 must be a class or tuple of classes")),
-            }
-        };
-
-        let result = self.check_classinfo(arg2, check_one)?;
+        let result = self.check_classinfo(arg2, |t| match self.heap.try_get(t) {
+            // A user class reaches a builtin type only through an exception base.
+            Some(HeapObj::Type(name)) => Ok(sub_name.or_else(|| self.exc_base(sub)).is_some_and(|n| matches_exc_class(n, name) || (n == "bool" && name == "int"))),
+            Some(HeapObj::Class(..)) => Ok(sub_name.is_none() && self.heap.is_subclass(sub, t)),
+            _ => Err(VmErr::Type("issubclass() arg 2 must be a class or tuple of classes")),
+        })?;
         self.push(Val::bool(result));
         Ok(())
     }

@@ -1,39 +1,43 @@
 use super::prelude::*;
 
-/* `list.__next__()` drains a flagged builtin-iterator list, plain lists raise TypeError like the next() builtin. */
-pub fn next_method(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
-    let HeapObj::List(rc) = vm.heap.get(recv) else { return Err(cold_type("__next__: receiver is not a list")); };
-    let rc = rc.clone();
-    if !vm.is_iter_list(&rc) { return Err(VmErr::TypeMsg(crate::s!("'list' object is not an iterator"))); }
-    let mut v = rc.borrow_mut();
-    if v.is_empty() { return Err(VmErr::Raised(crate::s!("StopIteration"))); }
-    let item = v.remove(0);
-    drop(v);
-    vm.push(item);
-    Ok(())
-}
-
-pub fn index(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let items = list_clone(vm, recv)?;
-    let len = items.len() as i64;
+/* `list.index`, `count` or `remove` named `name`, `eq` matches an item, the VM passes one that runs `__eq__`. */
+pub(crate) fn search(vm: &mut VM, recv: Val, name: &str, pos: &[Val], mut eq: impl FnMut(&mut VM, Val, Val) -> Result<bool, VmErr>) -> Result<(), VmErr> {
+    let len = list_clone(vm, recv)?.len() as i64;
     // Optional start/end clamp like Python, negatives count from the end. Bools count as ints.
     let as_i = |v: Val| -> i64 { if v.is_bool() { v.as_bool() as i64 } else { v.as_int() } };
     let norm = |v: Val| (if as_i(v) < 0 { len + as_i(v) } else { as_i(v) }).clamp(0, len) as usize;
-    let start = pos.get(1).filter(|v| v.is_int() || v.is_bool()).map_or(0, |&v| norm(v));
-    let stop = pos.get(2).filter(|v| v.is_int() || v.is_bool()).map_or(items.len(), |&v| norm(v)).max(start);
-    let idx = (start..stop)
-        .find(|&i| eq_vals_with_heap(items[i], pos[0], &vm.heap))
-        .map(|i| i as i64)
-        .ok_or(cold_value("value not found in list"))?;
-    vm.push(Val::int(idx));
-    Ok(())
+    let (start, stop) = if name == "index" {
+        let start = pos.get(1).filter(|v| v.is_int() || v.is_bool()).map_or(0, |&v| norm(v));
+        (start, pos.get(2).filter(|v| v.is_int() || v.is_bool()).map_or(len as usize, |&v| norm(v)).max(start))
+    } else { (0, len as usize) };
+    let mut hits = 0;
+    // Each item is read live, a `__eq__` that shrinks the list ends the walk early.
+    for i in start..stop {
+        let Some(v) = (match vm.heap.try_get(recv) { Some(HeapObj::List(rc)) => rc.borrow().get(i).copied(), _ => None }) else { break };
+        if !eq(vm, v, pos[0])? { continue; }
+        match name {
+            "count" => hits += 1,
+            "index" => { vm.push(Val::int(i as i64)); return Ok(()); }
+            _ => {
+                list_mut(vm, recv, "remove: receiver is not a list", |list| { if i < list.len() { list.remove(i); } Ok(()) })?;
+                vm.push(Val::none());
+                return Ok(());
+            }
+        }
+    }
+    match name {
+        "count" => { vm.push(Val::int(hits)); Ok(()) }
+        "index" => Err(cold_value("value not found in list")),
+        _ => Err(cold_value("list.remove: value not found")),
+    }
+}
+
+pub fn index(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
+    search(vm, recv, "index", pos, |vm, a, b| Ok(eq_member(a, b, &vm.heap)))
 }
 
 pub fn count(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let items = list_clone(vm, recv)?;
-    let n = items.iter().filter(|&&v| eq_vals_with_heap(v, pos[0], &vm.heap)).count() as i64;
-    vm.push(Val::int(n));
-    Ok(())
+    search(vm, recv, "count", pos, |vm, a, b| Ok(eq_member(a, b, &vm.heap)))
 }
 
 pub fn copy(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
@@ -86,14 +90,7 @@ pub fn insert(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 }
 
 pub fn remove(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let items = list_clone(vm, recv)?;
-    let idx = items.iter()
-        .position(|&v| eq_vals_with_heap(v, pos[0], &vm.heap))
-        .ok_or(cold_value("list.remove: value not found"))?;
-    list_mut(vm, recv, "remove: receiver is not a list", |list| {
-        list.remove(idx); Ok(())
-    })?;
-    vm.push(Val::none()); Ok(())
+    search(vm, recv, "remove", pos, |vm, a, b| Ok(eq_member(a, b, &vm.heap)))
 }
 
 pub fn pop(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
@@ -113,7 +110,3 @@ pub fn pop(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     vm.push(popped); Ok(())
 }
 
-// list.sort() is intercepted in try_dispatch_non_func_callable, which has chunk/slots for __lt__.
-pub fn sort(_vm: &mut VM, _recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
-    Err(cold_type("list.sort dispatched without a frame"))
-}

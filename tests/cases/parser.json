@@ -255,7 +255,7 @@
     "src": "def add(a, b): return a + b\nresult = add(1, 2)", 
     "constants": ["1", "2"], 
     "names": ["add_1", "result_1"], 
-    "instructions": [["MakeFunction",0], ["StoreName",0], ["LoadName",0], ["BeginArgs",0], ["LoadConst",0], ["LoadConst",1], ["Call",2], ["StoreName",1], ["ReturnValue",0]],
+    "instructions": [["MakeFunction",0], ["StoreName",0], ["LoadName",0], ["LoadConst",0], ["LoadConst",1], ["Call",2], ["StoreName",1], ["ReturnValue",0]],
     "functions": 1
   },
   {
@@ -399,7 +399,7 @@
     "src": "x = s.replace('a', 'b')", 
     "constants": ["a", "b"], 
     "names": ["s_0", "replace", "x_1"], 
-    "instructions": [["LoadName",0], ["LoadAttr",1], ["BeginArgs",0], ["LoadConst",0], ["LoadConst",1], ["Call",2], ["StoreName",2], ["ReturnValue",0]]
+    "instructions": [["LoadName",0], ["LoadAttr",1], ["LoadConst",0], ["LoadConst",1], ["Call",2], ["StoreName",2], ["ReturnValue",0]]
   },
   {
     "src": "print(s.upper())", 
@@ -736,14 +736,14 @@
     "src": "@deco(7)\ndef f():\n    pass",
     "constants": ["7"],
     "names": ["deco_0", "f_1"],
-    "instructions": [["LoadName",0], ["BeginArgs",0], ["LoadConst",0], ["Call",1], ["MakeFunction",0], ["Call",1], ["StoreName",1], ["ReturnValue",0]],
+    "instructions": [["LoadName",0], ["LoadConst",0], ["Call",1], ["MakeFunction",0], ["Call",1], ["StoreName",1], ["ReturnValue",0]],
     "functions": 1
   },
   {
     "src": "@a(1)\n@b(2)\ndef f():\n    pass",
     "constants": ["1", "2"],
     "names": ["a_0", "b_0", "f_1"],
-    "instructions": [["LoadName",0], ["BeginArgs",0], ["LoadConst",0], ["Call",1], ["LoadName",1], ["BeginArgs",0], ["LoadConst",1], ["Call",1], ["MakeFunction",0], ["Call",1], ["Call",1], ["StoreName",2], ["ReturnValue",0]],
+    "instructions": [["LoadName",0], ["LoadConst",0], ["Call",1], ["LoadName",1], ["LoadConst",1], ["Call",1], ["MakeFunction",0], ["Call",1], ["Call",1], ["StoreName",2], ["ReturnValue",0]],
     "functions": 1
   },
   {
@@ -771,13 +771,13 @@
     "src": "f(*x)", 
     "constants": [], 
     "names": ["f_0", "x_0"], 
-    "instructions": [["LoadName",0], ["BeginArgs",0], ["LoadName",1], ["UnpackArgs",1], ["Call",1], ["PopTop",0], ["ReturnValue",0]]
+    "instructions": [["LoadName",0], ["BeginArgs",0], ["LoadName",1], ["UnpackArgs",1], ["CallSpread",1], ["PopTop",0], ["ReturnValue",0]]
   },
   {
     "src": "f(**d)", 
     "constants": [], 
     "names": ["f_0", "d_0"], 
-    "instructions": [["LoadName",0], ["BeginArgs",0], ["LoadName",1], ["UnpackArgs",2], ["Call",1], ["PopTop",0], ["ReturnValue",0]]
+    "instructions": [["LoadName",0], ["BeginArgs",0], ["LoadName",1], ["UnpackArgs",2], ["CallSpread",1], ["PopTop",0], ["ReturnValue",0]]
   },
   {
       "src": "x = [i for i in range(3)]",
@@ -822,13 +822,13 @@
     "src": "match x:\n    case 1:\n        y = 10\n    case _:\n        y = 20",
     "constants": ["1", "10", "20"],
     "names": ["x_0", "#match1", "y_1", "y_2"],
-    "instructions": [["LoadName",0], ["StoreName",1], ["LoadName",1], ["LoadConst",0], ["Eq",0], ["JumpIfFalse",10], ["Jump",7], ["LoadConst",1], ["StoreName",2], ["Jump",14], ["Jump",11], ["LoadConst",2], ["StoreName",2], ["Jump",14], ["ReturnValue",0]]
+    "instructions": [["LoadName",0], ["StoreName",1], ["LoadName",1], ["LoadConst",0], ["Eq",0], ["JumpIfFalse",9], ["LoadConst",1], ["StoreName",2], ["Jump",11], ["LoadConst",2], ["StoreName",2], ["ReturnValue",0]]
   },
   {
     "src": "match x:\n    case 1:\n        y = 1\n    case 2:\n        y = 2\n    case _:\n        y = 3",
     "constants": ["1", "1", "2", "2", "3"],
     "names": ["x_0", "#match1", "y_1", "y_2", "y_3"],
-    "instructions": [["LoadName",0], ["StoreName",1], ["LoadName",1], ["LoadConst",0], ["Eq",0], ["JumpIfFalse",10], ["Jump",7], ["LoadConst",1], ["StoreName",2], ["Jump",22], ["LoadName",1], ["LoadConst",2], ["Eq",0], ["JumpIfFalse",18], ["Jump",15], ["LoadConst",3], ["StoreName",2], ["Jump",22], ["Jump",19], ["LoadConst",4], ["StoreName",2], ["Jump",22], ["ReturnValue",0]]
+    "instructions": [["LoadName",0], ["StoreName",1], ["LoadName",1], ["LoadConst",0], ["Eq",0], ["JumpIfFalse",9], ["LoadConst",1], ["StoreName",2], ["Jump",18], ["LoadName",1], ["LoadConst",2], ["Eq",0], ["JumpIfFalse",16], ["LoadConst",3], ["StoreName",2], ["Jump",18], ["LoadConst",4], ["StoreName",2], ["ReturnValue",0]]
   },
   {
     "src": "raise x from y", 
@@ -1014,7 +1014,7 @@
     "src": "await f()", 
     "constants": [], 
     "names": ["f_0"], 
-    "instructions": [["LoadName",0], ["BeginArgs",0], ["Call",0], ["Await",0], ["PopTop",0], ["ReturnValue",0]]
+    "instructions": [["LoadName",0], ["Call",0], ["Await",0], ["PopTop",0], ["ReturnValue",0]]
   },
   {
     "src": "def f(a, b, /, c):\n    pass", 
@@ -1379,13 +1379,13 @@
     "src": "a.x += 1", 
     "constants": ["1"], 
     "names": ["a_0","x"], 
-    "instructions": [["LoadName",0],["LoadName",0],["LoadAttr",1],["LoadConst",0],["InPlaceAdd",0],["StoreAttr",1],["ReturnValue",0]]
+    "instructions": [["LoadName",0],["Dup",0],["LoadAttr",1],["LoadConst",0],["InPlaceAdd",0],["StoreAttr",1],["ReturnValue",0]]
   },
   {
     "src": "obj.count -= 1", 
     "constants": ["1"], 
     "names": ["obj_0","count"], 
-    "instructions": [["LoadName",0],["LoadName",0],["LoadAttr",1],["LoadConst",0],["InPlaceSub",0],["StoreAttr",1],["ReturnValue",0]]
+    "instructions": [["LoadName",0],["Dup",0],["LoadAttr",1],["LoadConst",0],["InPlaceSub",0],["StoreAttr",1],["ReturnValue",0]]
   },
   {
     "src": "a = b = 1", 

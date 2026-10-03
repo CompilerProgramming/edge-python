@@ -7,7 +7,7 @@ impl<'a> VM<'a> {
 
     /* `print(*args, sep=' ', end='\n')` joins args with `sep`, appends `end`, streams exact bytes via `print_hook` or buffers. Leaves no value (statement-shaped), value uses get a None pushed by the parser / the generic Call path. */
     pub fn call_print(&mut self, op: u16, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
-        let (positional, kw_flat, _np, _nk) = self.parse_call_args(op)?;
+        let (positional, kw_flat) = self.parse_call_args(op)?;
         let mut sep = String::from(" ");
         let mut end = String::from("\n");
         for pair in kw_flat.as_chunks::<2>().0 {
@@ -104,17 +104,12 @@ impl<'a> VM<'a> {
         }
         let spec_val = if op == 2 { Some(self.pop()?) } else { None };
         let val = self.pop()?;
-        let result = match spec_val {
-            Some(sv) => {
-                // `sv` may be a non-heap value (int/float), guard before indexing the heap.
-                let spec = match sv.is_heap().then(|| self.heap.get(sv)) {
-                    Some(HeapObj::Str(s)) => s.clone(),
-                    _ => return Err(cold_type("format() spec must be a string")),
-                };
-                self.format_op(val, &spec, chunk, slots)?
-            }
-            None => self.display_op(val, chunk, slots)?,
+        let spec = match spec_val.map(|sv| self.heap.try_get(sv)) {
+            None => String::new(),
+            Some(Some(HeapObj::Str(s))) => s.clone(),
+            Some(_) => return Err(cold_type("format() spec must be a string")),
         };
+        let result = self.format_op(val, &spec, chunk, slots)?;
         self.alloc_and_push_str(result)
     }
 }

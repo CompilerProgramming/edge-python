@@ -57,6 +57,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 // Parsed entry programs kept for slots that boot the same source.
 const CHUNK_CACHE: usize = 8;
 
+#[derive(Clone)]
 pub(super) enum ModuleEntry {
     Code(String),
     Native(Vec<(String, u32)>),
@@ -165,6 +166,20 @@ impl WasmRuntime {
     /* Any registration can change what a source compiles to, so parsed chunks go stale. */
     pub fn registry_changed(&mut self) {
         self.chunk_cache.clear();
+    }
+
+    /* Registers `spec`, replacing what an earlier registration of it left. */
+    pub fn register(&mut self, spec: String, entry: ModuleEntry) {
+        self.registry.retain(|(s, _)| *s != spec);
+        self.registry.push((spec, entry));
+        self.registry_changed();
+    }
+
+    /* Makes an import of `spec` fail with `msg`. */
+    pub fn refuse(&mut self, spec: String, msg: String) {
+        self.refusals.retain(|(s, _)| *s != spec);
+        self.refusals.push((spec, msg));
+        self.registry_changed();
     }
 }
 

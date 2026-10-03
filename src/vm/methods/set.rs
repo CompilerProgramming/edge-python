@@ -1,12 +1,5 @@
 use super::prelude::*;
 
-/* Content-hashed set from materialized items, for O(1) membership tests against another set. */
-fn valset_of(items: &[Val], heap: &HeapPool) -> ValSet {
-    let mut s = ValSet::with_capacity(items.len());
-    for &v in items { s.insert(v, heap); }
-    s
-}
-
 /* A set probes as the frozenset it equals and never matches the set being changed, anything else must hash. */
 fn probes(vm: &VM, recv: Val, v: Val) -> Result<bool, VmErr> {
     if v.0 == recv.0 { return Ok(false); }
@@ -88,7 +81,7 @@ pub fn union(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 pub fn intersection(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let args = collect_args(vm, pos)?;
     let lhs = set_clone(vm, recv)?;
-    let arg_sets: Vec<ValSet> = args.iter().map(|it| valset_of(it, &vm.heap)).collect();
+    let arg_sets: Vec<ValSet> = args.iter().map(|it| ValSet::from_vals(it, &vm.heap)).collect();
     let out: Vec<Val> = lhs.into_iter().filter(|&v| arg_sets.iter().all(|s| s.contains(v, &vm.heap))).collect();
     vm.alloc_and_push_set(out)
 }
@@ -96,7 +89,7 @@ pub fn intersection(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 pub fn difference(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let args = collect_args(vm, pos)?;
     let lhs = set_clone(vm, recv)?;
-    let arg_sets: Vec<ValSet> = args.iter().map(|it| valset_of(it, &vm.heap)).collect();
+    let arg_sets: Vec<ValSet> = args.iter().map(|it| ValSet::from_vals(it, &vm.heap)).collect();
     let out: Vec<Val> = lhs.into_iter().filter(|&v| !arg_sets.iter().any(|s| s.contains(v, &vm.heap))).collect();
     vm.alloc_and_push_set(out)
 }
@@ -104,8 +97,8 @@ pub fn difference(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 pub fn symmetric_difference(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let lhs = set_clone(vm, recv)?;
     let rhs = iter_to_vec(vm, pos[0])?;
-    let lset = valset_of(&lhs, &vm.heap);
-    let rset = valset_of(&rhs, &vm.heap);
+    let lset = ValSet::from_vals(&lhs, &vm.heap);
+    let rset = ValSet::from_vals(&rhs, &vm.heap);
     let mut out: Vec<Val> = lhs.iter().filter(|&&v| !rset.contains(v, &vm.heap)).copied().collect();
     out.extend(rhs.iter().filter(|&&v| !lset.contains(v, &vm.heap)).copied());
     vm.alloc_and_push_set(out)
@@ -114,7 +107,7 @@ pub fn symmetric_difference(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), V
 pub fn intersection_update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let args = collect_args(vm, pos)?;
     set_mut(vm, recv, "intersection_update: receiver is not a set", |set, heap| {
-        let arg_sets: Vec<ValSet> = args.iter().map(|it| valset_of(it, heap)).collect();
+        let arg_sets: Vec<ValSet> = args.iter().map(|it| ValSet::from_vals(it, heap)).collect();
         let keep: Vec<Val> = set.iter().filter(|&&v| arg_sets.iter().all(|s| s.contains(v, heap))).copied().collect();
         set.clear();
         for v in keep { set.insert(v, heap); }
@@ -142,25 +135,22 @@ pub fn symmetric_difference_update(vm: &mut VM, recv: Val, pos: &[Val]) -> Resul
 }
 
 pub fn issubset(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let lhs = set_clone(vm, recv)?;
-    let rhs_items = iter_to_vec(vm, pos[0])?;
-    let rhs = valset_of(&rhs_items, &vm.heap);
-    vm.push(Val::bool(lhs.iter().all(|&v| rhs.contains(v, &vm.heap))));
+    let rhs = ValSet::from_vals(&iter_to_vec(vm, pos[0])?, &vm.heap);
+    let hit = set_ref(vm, recv, |lhs, heap| lhs.iter().all(|&v| rhs.contains(v, heap)))?;
+    vm.push(Val::bool(hit));
     Ok(())
 }
 
 pub fn issuperset(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let lhs_items = set_clone(vm, recv)?;
-    let lhs = valset_of(&lhs_items, &vm.heap);
     let rhs = iter_to_vec(vm, pos[0])?;
-    vm.push(Val::bool(rhs.iter().all(|&v| lhs.contains(v, &vm.heap))));
+    let hit = set_ref(vm, recv, |lhs, heap| rhs.iter().all(|&v| lhs.contains(v, heap)))?;
+    vm.push(Val::bool(hit));
     Ok(())
 }
 
 pub fn isdisjoint(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let lhs_items = set_clone(vm, recv)?;
-    let lhs = valset_of(&lhs_items, &vm.heap);
     let rhs = iter_to_vec(vm, pos[0])?;
-    vm.push(Val::bool(!rhs.iter().any(|&v| lhs.contains(v, &vm.heap))));
+    let hit = set_ref(vm, recv, |lhs, heap| !rhs.iter().any(|&v| lhs.contains(v, heap)))?;
+    vm.push(Val::bool(hit));
     Ok(())
 }

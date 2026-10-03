@@ -7,138 +7,39 @@ use super::super::types::*;
 
 impl<'a> VM<'a> {
 
-    // `getattr(obj, name [, default])`.
-    pub fn call_getattr(&mut self, op: u16) -> Result<(), VmErr> {
+    // `getattr(obj, name [, default])` reads like `obj.name`, a default answers only an AttributeError.
+    pub fn call_getattr(&mut self, op: u16, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         if op != 2 && op != 3 {
             return Err(cold_type("getattr() takes 2 or 3 arguments"));
         }
         let default = if op == 3 { Some(self.pop()?) } else { None };
         let name = self.expect_str_arg("getattr() name must be a string")?;
         let obj = self.pop()?;
-
-        // A module answers from its own table, the way `mod.name` reads it.
-        if obj.is_heap() && let HeapObj::Module(module, attrs) = self.heap.get(obj) {
-            if let Some(v) = attrs.iter().find(|(n, _)| *n == name).map(|(_, v)| *v).or(default) {
-                self.push(v);
-                return Ok(());
-            }
-            return Err(VmErr::Attribute(s!("module '", str module, "' has no attribute '", str &name, "'")));
+        match (self.with_roots(default, |vm| vm.load_attr(obj, &name, chunk, slots)), default) {
+            (Err(e), Some(d)) if self.absorb_attr_err(&e) => { self.push(d); Ok(()) }
+            (r, _) => r,
         }
-
-        // Instance attribute, instance dict first, then the user class chain (mirrors obj.name).
-        let mut bind: Option<(Val, Val)> = None;
-        if obj.is_heap() && let HeapObj::Instance(cls_val, attrs) = self.heap.get(obj) {
-            let cls_val = *cls_val;
-            let found = attrs.borrow().iter()
-                .find(|(k, _)| k.is_heap() && matches!(self.heap.get(*k), HeapObj::Str(s) if s.as_str() == name))
-                .map(|(_, v)| v);
-            if let Some(v) = found { self.push(v); return Ok(()); }
-            if let Some((mv, defining)) = self.lookup_class_member(cls_val, &name) {
-                if mv.is_heap() && matches!(self.heap.get(mv), HeapObj::Func(..)) { bind = Some((mv, defining)); }
-                else { self.push(mv); return Ok(()); }
-            }
-        }
-        if let Some((func, defining)) = bind {
-            let b = self.heap.alloc(HeapObj::BoundUserMethod(obj, func, defining))?;
-            self.push(b); return Ok(());
-        }
-
-        // Class target, resolve a class attribute (incl. ones added via setattr / a decorator).
-        if obj.is_heap() && matches!(self.heap.get(obj), HeapObj::Class(..))
-            && let Some((v, _)) = self.lookup_class_member(obj, &name) {
-            self.push(v);
-            return Ok(());
-        }
-        let func_attr = if obj.is_heap() && let HeapObj::Func(_, _, _, attrs) = self.heap.get(obj) {
-            attrs.borrow().iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
-        } else { None };
-        if let Some(v) = func_attr {
-            self.push(v);
-            return Ok(());
-        }
-        let bound_attr = if obj.is_heap() {
-            match self.heap.get(obj) {
-                HeapObj::BoundUserMethod(recv, func, _) => match name.as_str() {
-                    "__self__" => Some(*recv),
-                    "__func__" => Some(*func),
-                    _ => None,
-                },
-                HeapObj::BoundMethod(recv, _) if name == "__self__" => Some(*recv),
-                _ => None,
-            }
-        } else { None };
-        if let Some(v) = bound_attr {
-            self.push(v);
-            return Ok(());
-        }
-        let ty = self.type_name(obj);
-        if let Some(method_id) = crate::vm::methods::lookup_method(ty, &name).or_else(|| self.object_attr(obj, &name)) {
-            let bound = self.heap.alloc(HeapObj::BoundMethod(obj, method_id))?;
-            self.push(bound);
-            return Ok(());
-        }
-        if let Some(d) = default {
-            self.push(d);
-            return Ok(());
-        }
-        Err(VmErr::Attribute(s!("'", str ty, "' object has no attribute '", str &name, "'")))
     }
 
-    // `hasattr(obj, name)`.
-    pub fn call_hasattr(&mut self) -> Result<(), VmErr> {
+    // `hasattr(obj, name)` is True when `getattr` would not raise AttributeError.
+    pub fn call_hasattr(&mut self, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let name = self.expect_str_arg("hasattr() name must be a string")?;
         let obj = self.pop()?;
-        // Instance attribute, instance dict or the user class chain.
-        if obj.is_heap() && let HeapObj::Instance(cls_val, attrs) = self.heap.get(obj) {
-            let cls_val = *cls_val;
-            let in_dict = attrs.borrow().iter()
-                .any(|(k, _)| k.is_heap() && matches!(self.heap.get(k), HeapObj::Str(s) if s.as_str() == name));
-            if in_dict || self.lookup_class_member(cls_val, &name).is_some() {
-                self.push(Val::bool(true)); return Ok(());
-            }
-        }
-        let is_class_attr = obj.is_heap()
-            && matches!(self.heap.get(obj), HeapObj::Class(..))
-            && self.lookup_class_member(obj, &name).is_some();
-        let is_func_attr = obj.is_heap()
-            && matches!(self.heap.get(obj), HeapObj::Func(_, _, _, attrs) if attrs.borrow().iter().any(|(n, _)| *n == name));
-        let is_module_attr = obj.is_heap()
-            && matches!(self.heap.get(obj), HeapObj::Module(_, attrs) if attrs.iter().any(|(n, _)| *n == name));
-        let is_bound_attr = obj.is_heap() && match self.heap.get(obj) {
-            HeapObj::BoundUserMethod(..) => matches!(name.as_str(), "__self__" | "__func__"),
-            HeapObj::BoundMethod(..) => name == "__self__",
-            _ => false,
+        let found = match self.load_attr(obj, &name, chunk, slots) {
+            Ok(()) => { self.pop()?; true }
+            Err(e) if self.absorb_attr_err(&e) => false,
+            Err(e) => return Err(e),
         };
-        let ty = self.type_name(obj);
-        let exists = is_class_attr || is_func_attr || is_module_attr || is_bound_attr || self.object_attr(obj, &name).is_some() || crate::vm::methods::lookup_method(ty, &name).is_some();
-        self.push(Val::bool(exists));
+        self.push(Val::bool(found));
         Ok(())
     }
 
-    /* `setattr(obj, name, value)`, mirrors `obj.name = value`. Instance-only because builtin types have no mutable attribute table. */
-    pub fn call_setattr(&mut self) -> Result<(), VmErr> {
+    // `setattr(obj, name, value)` writes like `obj.name = value`, property setters included.
+    pub fn call_setattr(&mut self, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let value = self.pop()?;
         let name = self.expect_str_arg("setattr() name must be a string")?;
         let obj = self.pop()?;
-        // Class target, insert or replace in the mutable members store.
-        if obj.is_heap() && let HeapObj::Class(_, _, members) = self.heap.get(obj) {
-            set_member(members, &name, value);
-            self.push(Val::none());
-            return Ok(());
-        }
-        if obj.is_heap() && let HeapObj::Func(_, _, _, attrs) = self.heap.get(obj) {
-            set_member(attrs, &name, value);
-            self.templates.clear();
-            self.push(Val::none());
-            return Ok(());
-        }
-        if !obj.is_heap() || !matches!(self.heap.get(obj), HeapObj::Instance(..)) {
-            return Err(cold_type("setattr() target must be an instance, class, or function"));
-        }
-        let key = self.heap.alloc(HeapObj::Str(name))?;
-        if let HeapObj::Instance(_, attrs) = self.heap.get(obj) {
-            attrs.borrow_mut().insert(key, value, &self.heap);
-        }
+        self.store_attr(obj, &name, value, chunk, slots)?;
         self.push(Val::none());
         Ok(())
     }
@@ -161,39 +62,26 @@ impl<'a> VM<'a> {
 
     /* Shared attribute removal for `delattr()` and `del obj.attr`, AttributeError when absent. */
     fn delete_attr_named(&mut self, obj: Val, name: &str) -> Result<(), VmErr> {
-        if obj.is_heap() && matches!(self.heap.get(obj), HeapObj::Class(..)) {
-            if let HeapObj::Class(_, _, members) = self.heap.get(obj) {
-                members.borrow_mut().retain(|(n, _)| n != name);
+        let removed = match self.heap.try_get(obj) {
+            Some(HeapObj::Class(_, _, members) | HeapObj::Func(_, _, _, members)) => {
+                let mut m = members.borrow_mut();
+                let before = m.len();
+                m.retain(|(n, _)| n != name);
+                m.len() < before
             }
-            return Ok(());
-        }
-        if obj.is_heap() && let HeapObj::Func(_, _, _, attrs) = self.heap.get(obj) {
-            let attrs = attrs.clone();
-            let had = attrs.borrow().iter().any(|(n, _)| n == name);
-            if !had {
-                return Err(VmErr::Attribute(s!("'function' object has no attribute '", str name, "'")));
+            Some(HeapObj::Instance(_, attrs)) => {
+                let key = attrs.borrow().iter().find(|(k, _)| matches!(self.heap.try_get(*k), Some(HeapObj::Str(s)) if s == name)).map(|(k, _)| k);
+                key.is_some_and(|k| attrs.borrow_mut().remove(&k, &self.heap).is_some())
             }
-            attrs.borrow_mut().retain(|(n, _)| n != name);
-            self.templates.clear();
-            return Ok(());
-        }
-        if !obj.is_heap() || !matches!(self.heap.get(obj), HeapObj::Instance(..)) {
-            return Err(cold_type("delattr() target must be an instance or class"));
-        }
-        // Strings <=128 bytes are interned, so re-alloc'ing yields the same Val key StoreAttr used.
-        let key = self.heap.alloc(HeapObj::Str(name.to_string()))?;
-        let existed = if let HeapObj::Instance(_, attrs) = self.heap.get(obj) {
-            let had = attrs.borrow().iter()
-                .any(|(k, _)| k.is_heap() && matches!(self.heap.get(k), HeapObj::Str(s) if s.as_str() == name));
-            if had { attrs.borrow_mut().remove(&key, &self.heap); }
-            had
-        } else { false };
-        // Deleting a missing attribute raises AttributeError, matching Python.
-        if !existed {
-            let ty = self.type_name(obj);
-            return Err(VmErr::Attribute(s!("'", str ty, "' object has no attribute '", str name, "'")));
-        }
-        Ok(())
+            _ => return Err(cold_type("delattr() target must be an instance or class")),
+        };
+        // A cached result may have read a function attribute.
+        if matches!(self.heap.get(obj), HeapObj::Func(..)) { self.templates.clear(); }
+        if removed { return Ok(()); }
+        Err(VmErr::Attribute(match self.heap.get(obj) {
+            HeapObj::Class(n, ..) => s!("type object '", str n, "' has no attribute '", str name, "'"),
+            _ => s!("'", str self.type_name(obj), "' object has no attribute '", str name, "'"),
+        }))
     }
 
     // Returns v's String, or errors with `msg` when it isn't a heap string.

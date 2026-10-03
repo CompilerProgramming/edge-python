@@ -32,6 +32,22 @@ pub fn fpowf(base: f64, exp: f64) -> f64 {
 #[inline]
 pub fn ffloor(x: f64) -> f64 { libm::floor(x) }
 
+/* Floor quotient and remainder of ints, None for a zero divisor or `i128::MIN / -1`. */
+pub fn int_divmod(a: i128, b: i128) -> Option<(i128, i128)> {
+    let q = a.checked_div(b)?;
+    let r = a - q * b;
+    Some(if r != 0 && (r < 0) != (b < 0) { (q - 1, r + b) } else { (q, r) })
+}
+
+/* Floor quotient and remainder of floats, exact where `a - floor(a/b)*b` loses precision. */
+pub fn float_divmod(a: f64, b: f64) -> (f64, f64) {
+    let m = libm::fmod(a, b);
+    let mut d = (a - m) / b;
+    let m = if m == 0.0 { libm::copysign(0.0, b) } else if (b < 0.0) != (m < 0.0) { d -= 1.0; m + b } else { m };
+    let q = if d == 0.0 { libm::copysign(0.0, a / b) } else { let f = libm::floor(d); if d - f > 0.5 { f + 1.0 } else { f } };
+    (q, m)
+}
+
 #[inline]
 pub fn fabs(x: f64) -> f64 {
     f64::from_bits(f64::to_bits(x) & 0x7FFF_FFFF_FFFF_FFFF)

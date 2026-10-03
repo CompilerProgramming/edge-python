@@ -42,7 +42,7 @@ impl<'a> VM<'a> {
     }
 
     /* The name `type(x)` reports, a user instance's own class, an exception's concrete class, else the builtin type name. */
-    fn type_repr_name(&self, o: Val) -> alloc::string::String {
+    pub(crate) fn type_repr_name(&self, o: Val) -> alloc::string::String {
         if o.is_heap() {
             match self.heap.get(o) {
                 // Exception instances report their concrete class (e.g. `ZeroDivisionError`).

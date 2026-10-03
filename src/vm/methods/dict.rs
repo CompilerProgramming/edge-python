@@ -70,21 +70,7 @@ pub fn get(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 pub fn update(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     // Merge each source in order, dispatcher packs kwargs as trailing dict.
     let mut pairs: Vec<(Val, Val)> = Vec::new();
-    for &src in pos {
-        if let Some(HeapObj::Dict(rc)) = vm.heap.try_get(src) {
-            pairs.extend(rc.borrow().iter());
-        } else {
-            for it in vm.extract_iter(src)? {
-                let pair = match vm.heap.try_get(it) {
-                    Some(HeapObj::Tuple(v)) if v.len() == 2 => (v[0], v[1]),
-                    Some(HeapObj::List(v)) if v.borrow().len() == 2 => { let v = v.borrow(); (v[0], v[1]) }
-                    _ => return Err(cold_value("dictionary update sequence element must have length 2")),
-                };
-                vm.require_hashable(pair.0)?;
-                pairs.push(pair);
-            }
-        }
-    }
+    for &src in pos { pairs.extend(vm.pairs_of(src)?); }
     dict_mut(vm, recv, "update: receiver is not a dict", |dict, heap| {
         for (k, v) in pairs { dict.insert(k, v, heap); }
         Ok(())

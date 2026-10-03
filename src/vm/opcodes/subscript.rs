@@ -4,7 +4,6 @@ use alloc::{rc::Rc, string::{String, ToString}, vec::Vec};
 use super::super::VM;
 use super::super::types::*;
 use crate::vm::eq::range_len;
-use crate::vm::globals::sequence::range_int;
 
 fn normalize_index(i: i64, len: usize) -> usize {
     (if i < 0 { len as i64 + i } else { i }) as usize
@@ -32,19 +31,27 @@ pub(crate) fn slice_bounds(start: Val, stop: Val, step: Val, len: i64) -> Result
 
 impl<'a> VM<'a> {
 
-    pub fn get_item(&mut self, ip: usize, chunk: &crate::parser::SSAChunk, slots: &mut [Val], cache: &mut crate::vm::cache::OpcodeCache) -> Result<bool, VmErr> {
+    pub fn get_item(&mut self, ip: usize, chunk: &crate::parser::SSAChunk, slots: &mut [Val], cache: &mut crate::vm::cache::OpcodeCache) -> Result<(), VmErr> {
         let idx = self.pop()?;
         let obj = self.pop()?;
 
         // instance `__getitem__` runs before built-in indexing, and slices pass through as a single Slice arg.
         if let Some(r) = self.try_call_dunder(obj, "__getitem__", &[idx], chunk, slots)? {
-            // Record monomorphic hit so the next iteration skips `resolve_attr_silent`.
+            // Record monomorphic hit so the next iteration skips the class lookup.
             self.record_dunder_hit(ip, cache, obj, "__getitem__", 2);
             self.push(r);
-            return Ok(true);
+            return Ok(());
         }
 
         let idx = self.coerce_index(obj, idx, chunk, slots)?;
+        // A dict answers here, through the user `__hash__` and `__eq__` when its keys need them.
+        if obj.is_heap() && let HeapObj::Dict(p) = self.heap.get(obj) {
+            let fast = { let m = p.borrow(); (!m.is_rich() && !is_rich_key(idx, &self.heap)).then(|| m.get(&idx, &self.heap).copied()) };
+            let found = match fast { Some(hit) => hit, None => self.dict_get(obj, idx, chunk, slots)? };
+            let Some(v) = found else { self.require_hashable(idx)?; return Err(self.key_error(idx)) };
+            self.push(v);
+            return Ok(());
+        }
         match self.get_item_builtin(obj, idx) {
             Err(e) if obj.is_heap() && matches!(self.heap.get(obj), HeapObj::Class(..)) => self.class_getitem(obj, idx, e, chunk, slots),
             r => r,
@@ -52,20 +59,28 @@ impl<'a> VM<'a> {
     }
 
     /* `A[int]` on a class calls its `__class_getitem__`, a class with type parameters builds a generic alias. */
-    fn class_getitem(&mut self, cls: Val, idx: Val, err: VmErr, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<bool, VmErr> {
+    fn class_getitem(&mut self, cls: Val, idx: Val, err: VmErr, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         if let Some((f, _)) = self.lookup_class_member(cls, "__class_getitem__") {
             // An implicit classmethod, decorated or not.
             let f = match self.heap.try_get(f) { Some(&HeapObj::ClassMethod(inner)) => inner, _ => f };
             self.push(f);
             self.push(cls);
             self.push(idx);
-            self.exec_call(2, chunk, slots)?;
-            return Ok(false);
+            return self.exec_call(2, chunk, slots);
         }
         if self.lookup_class_member(cls, "__type_params__").is_none() { return Err(err); }
         let alias = self.generic_alias(cls, idx)?;
         self.push(alias);
-        Ok(false)
+        Ok(())
+    }
+
+    /* KeyError carrying the missing key itself, so `e.args[0]` keeps its type and its text is the repr. */
+    pub(crate) fn key_error(&mut self, key: Val) -> VmErr {
+        let msg = self.repr(key);
+        match self.heap.alloc(HeapObj::ExcInstance(String::from("KeyError"), alloc::vec![key])) {
+            Ok(exc) => { self.pending.exc_val = Some(exc); VmErr::Raised(crate::s!("KeyError: ", str &msg)) }
+            Err(e) => e,
+        }
     }
 
     /* Instance indexes coerce via `__index__`, including slice bounds. Dict keys never coerce, they look up by hash and eq. */
@@ -74,7 +89,7 @@ impl<'a> VM<'a> {
         if idx.is_bool() && !(cont.is_heap() && matches!(self.heap.get(cont), HeapObj::Dict(_))) { return Ok(Val::int(idx.as_bool() as i64)); }
         if !idx.is_heap() { return Ok(idx); }
         if cont.is_heap() && matches!(self.heap.get(cont), HeapObj::Dict(_)) { return Ok(idx); }
-        match self.heap.get(idx).clone() {
+        match *self.heap.get(idx) {
             HeapObj::Instance(..) => match self.try_call_dunder(idx, "__index__", &[], chunk, slots)? {
                 Some(r) if r.is_int() || r.is_bool() => {
                     // Normalize bool to int, the builtin paths below accept only `is_int`.
@@ -97,12 +112,12 @@ impl<'a> VM<'a> {
     }
 
     /* No-dunder indexing path. Used by callers without a bytecode frame (FFI re-entry) and as the post-dunder fallback inside `get_item`. */
-    pub fn get_item_builtin(&mut self, obj: Val, idx: Val) -> Result<bool, VmErr> {
+    pub fn get_item_builtin(&mut self, obj: Val, idx: Val) -> Result<(), VmErr> {
         if idx.is_heap()
-            && let HeapObj::Slice(start, stop, step) = self.heap.get(idx).clone() {
+            && let &HeapObj::Slice(start, stop, step) = self.heap.get(idx) {
                 let v = self.slice_val(obj, start, stop, step)?;
                 self.push(v);
-                return Ok(true);
+                return Ok(());
         }
 
         let ascii = idx.is_int() && self.heap.str_is_ascii(obj);
@@ -119,7 +134,7 @@ impl<'a> VM<'a> {
                 };
                 let val = self.heap.alloc(HeapObj::Str(one))?;
                 self.push(val);
-                return Ok(true);
+                return Ok(());
         }
 
         // `bytes[i]` returns the byte as int (`0..=255`), unlike `str[i]` (length-1 str).
@@ -129,29 +144,12 @@ impl<'a> VM<'a> {
                 let ui = normalize_index(i, b.len());
                 let byte = *b.get(ui).ok_or(cold_index("bytes index out of range"))?;
                 self.push(Val::int(byte as i64));
-                return Ok(true);
-        }
-
-        // Dict miss raises KeyError holding the real key, so `e.args[0]` keeps its type.
-        let dict_hit = if obj.is_heap() {
-            if let HeapObj::Dict(p) = self.heap.get(obj) { Some(p.borrow().get(&idx, &self.heap).copied()) } else { None }
-        } else { None };
-        if let Some(hit) = dict_hit {
-            match hit {
-                Some(v) => { self.push(v); return Ok(false); }
-                None => {
-                    self.require_hashable(idx)?;
-                    let msg = self.repr(idx);
-                    let exc = self.heap.alloc(HeapObj::ExcInstance(alloc::string::String::from("KeyError"), alloc::vec![idx]))?;
-                    self.pending.exc_val = Some(exc);
-                    return Err(VmErr::Raised(crate::s!("KeyError: ", str &msg)));
-                }
-            }
+                return Ok(());
         }
 
         let v = self.getitem_val(obj, idx)?;
         self.push(v);
-        Ok(false)
+        Ok(())
     }
 
     fn slice_val(&mut self, obj: Val, start: Val, stop: Val, step: Val) -> Result<Val, VmErr> {
@@ -216,39 +214,42 @@ impl<'a> VM<'a> {
     }
 
     pub fn getitem_val(&mut self, obj: Val, idx: Val) -> Result<Val, VmErr> {
-        if !obj.is_heap() { return Err(cold_type("object is not subscriptable")); }
+        if !obj.is_heap() { return Err(VmErr::TypeMsg(crate::s!("'", str self.type_name(obj), "' object is not subscriptable"))); }
+        let bad = |vm: &Self, kind: &str| VmErr::TypeMsg(crate::s!(str kind, " indices must be integers or slices, not ", str vm.type_name(idx)));
         match self.heap.get(obj) {
             HeapObj::List(v) => {
-                if !idx.is_int() { return Err(cold_type("list indices must be integers")); }
+                if !idx.is_int() { return Err(bad(self, "list")); }
                 let b = v.borrow(); let i = idx.as_int();
                 let ui = normalize_index(i, b.len());
                 b.get(ui).copied().ok_or(cold_index("list index out of range"))
             }
             HeapObj::Tuple(v) => {
-                if !idx.is_int() { return Err(cold_type("tuple indices must be integers")); }
+                if !idx.is_int() { return Err(bad(self, "tuple")); }
                 let i = idx.as_int();
                 let ui = normalize_index(i, v.len());
                 v.get(ui).copied().ok_or(cold_index("tuple index out of range"))
             }
             HeapObj::Dict(p) => {
-                match p.borrow().get(&idx, &self.heap).copied() {
+                let hit = p.borrow().get(&idx, &self.heap).copied();
+                match hit {
                     Some(v) => Ok(v),
-                    // raises KeyError, and its str is the key's repr.
-                    None => { self.require_hashable(idx)?; Err(VmErr::Raised(crate::s!("KeyError: ", str &self.repr(idx)))) }
+                    None => { self.require_hashable(idx)?; Err(self.key_error(idx)) }
                 }
             }
+            HeapObj::Str(_) => Err(bad(self, "string")),
+            HeapObj::Bytes(_) => Err(bad(self, "byte")),
             // `range(n)[i]` is computed, never materialised.
             &HeapObj::Range(s, e, st) => {
-                if !idx.is_int() { return Err(cold_type("range indices must be integers")); }
+                if !idx.is_int() { return Err(bad(self, "range")); }
                 let (i, len) = (idx.as_int(), range_len(s, e, st) as i64);
                 let i = if i < 0 { i + len } else { i };
                 if !(0..len).contains(&i) { return Err(cold_index("range object index out of range")); }
-                range_int(&mut self.heap, s + i * st)
+                self.heap.int((s + i * st) as i128)
             }
             // `list[int]` and `Pair[int]` build a generic alias, the args kept as one tuple.
             HeapObj::Type(n) if matches!(n.as_str(), "list" | "tuple" | "dict" | "set" | "frozenset" | "type") => self.generic_alias(obj, idx),
             HeapObj::TypeAlias(..) => self.generic_alias(obj, idx),
-            _ => Err(cold_type("object is not subscriptable")),
+            _ => Err(VmErr::TypeMsg(crate::s!("'", str self.type_name(obj), "' object is not subscriptable"))),
         }
     }
 
@@ -298,18 +299,25 @@ impl<'a> VM<'a> {
             return Ok(());
         }
         let idx_val = self.coerce_index(cont, idx_val, chunk, slots)?;
+        // A dict stores here, through the user `__hash__` and `__eq__` when its keys need them.
+        if let HeapObj::Dict(p) = self.heap.get(cont) && !matches!(self.heap.try_get(idx_val), Some(HeapObj::Slice(..))) {
+            if p.borrow().is_rich() || is_rich_key(idx_val, &self.heap) { return self.dict_set(cont, idx_val, value, chunk, slots); }
+            self.require_hashable(idx_val)?;
+            p.borrow_mut().insert(idx_val, value, &self.heap);
+            return Ok(());
+        }
         self.store_item_builtin(cont, idx_val, value)
     }
 
     /* No-dunder item-assignment path. Used by callers without a bytecode frame (FFI re-entry) and as the post-dunder fallback inside `store_item`. */
     pub fn store_item_builtin(&mut self, cont: Val, idx_val: Val, value: Val) -> Result<(), VmErr> {
         if !cont.is_heap() { return Err(cold_type("object does not support item assignment")); }
-        // Slice assignment `xs[a:b] = iterable` (step must be 1 for resize). Resolves the target range, materialises RHS, and splices in place.
+        // Slice assignment `xs[a:b] = iterable` materialises the RHS and splices it in place.
         if idx_val.is_heap()
-            && let HeapObj::Slice(start, stop, step) = self.heap.get(idx_val).clone()
+            && let &HeapObj::Slice(start, stop, step) = self.heap.get(idx_val)
         {
             let new_items = self.extract_iter(value)?;
-            return self.store_slice(cont, start, stop, step, new_items);
+            return self.store_slice(cont, start, stop, step, Some(new_items));
         }
         // Reject mutable keys before borrowing the container mutably below.
         if matches!(self.heap.get(cont), HeapObj::Dict(_)) {
@@ -340,11 +348,13 @@ impl<'a> VM<'a> {
             return Ok(());
         }
         let idx_val = self.coerce_index(cont, idx_val, chunk, slots)?;
-        // Slice deletion `del xs[a:b]` has the same step=1 restriction as `store_slice`. Reuses `store_slice` with an empty replacement vec.
         if idx_val.is_heap()
-            && let HeapObj::Slice(start, stop, step) = self.heap.get(idx_val).clone()
+            && let &HeapObj::Slice(start, stop, step) = self.heap.get(idx_val)
         {
-            return self.store_slice(cont, start, stop, step, Vec::new());
+            return self.store_slice(cont, start, stop, step, None);
+        }
+        if self.dict_needs_vm(cont, idx_val) {
+            return match self.dict_del(cont, idx_val, chunk, slots)? { Some(_) => Ok(()), None => Err(self.key_error(idx_val)) };
         }
         match self.heap.get(cont) {
             HeapObj::List(v) => {
@@ -356,7 +366,8 @@ impl<'a> VM<'a> {
             }
             HeapObj::Dict(p) => {
                 if p.borrow_mut().remove(&idx_val, &self.heap).is_none() {
-                    return Err(cold_key("key not found"));
+                    self.require_hashable(idx_val)?;
+                    return Err(self.key_error(idx_val));
                 }
             }
             HeapObj::Tuple(_) => return Err(cold_type("tuple does not support item deletion")),
@@ -365,50 +376,29 @@ impl<'a> VM<'a> {
         Ok(())
     }
 
-    /* Splice for `xs[a:b] = items` and `del xs[a:b]`. step=1 resizes, step≠1 demands exact-length RHS. Lists only since tuples/strings are immutable. */
-    fn store_slice(&mut self, cont: Val,start: Val, stop: Val, step: Val, new_items: Vec<Val>) -> Result<(), VmErr> {
-        let st = if step.is_none() { 1 }
-            else if step.is_int() { step.as_int() }
-            else { return Err(cold_type("slice step must be an integer")); };
-        if st == 0 { return Err(cold_value("slice step cannot be zero")); }
-
-        let HeapObj::List(rc) = self.heap.get_mut(cont) else {
+    /* `xs[a:b] = items` or, without items, `del xs[a:b]`, an extended slice needs an exact count. */
+    fn store_slice(&mut self, cont: Val, start: Val, stop: Val, step: Val, items: Option<Vec<Val>>) -> Result<(), VmErr> {
+        let HeapObj::List(rc) = self.heap.get(cont) else {
             return Err(cold_type("object does not support slice assignment"));
         };
         let mut b = rc.borrow_mut();
-        let len = b.len() as i64;
-
-        let clamp = |v: Val, def: i64| -> i64 {
-            if v.is_none() { def }
-            else if v.is_int() { let i = v.as_int(); if i < 0 { (len + i).max(0) } else { i.min(len) } }
-            else { def }
-        };
-
+        let (s, e, st) = slice_bounds(start, stop, step, b.len() as i64)?;
         if st == 1 {
-            let s = clamp(start, 0).max(0) as usize;
-            let e = clamp(stop, len).max(s as i64) as usize;
-            b.splice(s..e, new_items);
+            b.splice(s as usize..e.max(s) as usize, items.unwrap_or_default());
             return Ok(());
         }
-
-        // Extended slice (step!=1) collects indices, RHS length must match exactly. Negative-step start caps at len-1 since clamp's min(len) alone would yield an out-of-range len.
-        let (s, e) = if st > 0 { (clamp(start, 0), clamp(stop, len)) } else { (clamp(start, len - 1).min(len - 1), clamp(stop, -1)) };
-        let mut indices: Vec<usize> = Vec::new();
-        let mut cur = s;
-        if st > 0 { while cur < e { indices.push(cur as usize); cur += st; } }
-        else { while cur > e { indices.push(cur as usize); cur += st; } }
-
-        if new_items.is_empty() {
-            // Remove highest-index first so earlier indices stay valid.
-            let mut sorted = indices.clone();
-            sorted.sort_unstable();
-            for &i in sorted.iter().rev() { b.remove(i); }
+        // Selected positions sit `st` apart from `s`, strictly before `e`.
+        let picked = |k: i64| (if st > 0 { k < e && k >= s } else { k > e && k <= s }) && (k - s) % st == 0;
+        let Some(items) = items else {
+            let mut k = -1;
+            b.retain(|_| { k += 1; !picked(k) });
             return Ok(());
-        }
-        if new_items.len() != indices.len() {
+        };
+        let span = if st > 0 { (e - s + st - 1) / st } else { (s - e - st - 1) / -st };
+        if items.len() as i64 != span.max(0) {
             return Err(cold_value("attempt to assign sequence of one size to extended slice of another"));
         }
-        for (i, v) in indices.into_iter().zip(new_items) { b[i] = v; }
+        for (k, v) in items.into_iter().enumerate() { b[(s + k as i64 * st) as usize] = v; }
         Ok(())
     }
 

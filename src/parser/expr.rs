@@ -1,4 +1,3 @@
-use crate::s;
 
 use super::Parser;
 use super::types::{OpCode, Value, MAX_EXPR_DEPTH, Instruction};
@@ -7,6 +6,12 @@ use super::types::{parse_string, parse_bytes_literal};
 use crate::lexer::{Token, TokenType};
 
 use alloc::{string::ToString, vec::Vec, string::String};
+
+/* The comparison operators, all at one precedence and all chaining, `not` here only opens `not in`. */
+fn is_comparison(tok: TokenType) -> bool {
+    matches!(tok, TokenType::EqEqual | TokenType::NotEqual | TokenType::Less | TokenType::Greater
+        | TokenType::LessEqual | TokenType::GreaterEqual | TokenType::In | TokenType::Is | TokenType::Not)
+}
 
 impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
@@ -53,17 +58,13 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     /* Re-append drained instructions, shifting internal jump targets by `delta`. */
     pub(super) fn push_shifted(&mut self, ins: Vec<Instruction>, delta: i64) {
         for i in ins {
-            let operand = if matches!(i.opcode, OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfFalseOrPop | OpCode::JumpIfTrueOrPop | OpCode::ForIter) {
-                (i.operand as i64 + delta) as u16
-            } else {
-                i.operand
-            };
+            let operand = if i.opcode.is_jump() { (i.operand as i64 + delta) as u16 } else { i.operand };
             self.chunk.instructions.push(Instruction { opcode: i.opcode, operand });
         }
     }
 
     pub(super) fn expr_tails(&mut self, start: usize) {
-        self.postfix_tail();
+        if self.postfix_tail(false) { self.chunk.emit(OpCode::LoadNone, 0); }
         self.infix_bp(0);
         self.ternary_tail(start);
     }
@@ -91,25 +92,24 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     // An operator never continues past the logical line, so `@deco` on the next line stays a decorator.
     pub(super) fn infix_bp(&mut self, min_bp: u8) {
         while let Some(tok) = self.peek_same_line() {
-            if tok == TokenType::Is {
+            if is_comparison(tok) {
                 if 7 < min_bp { break; }
-                self.advance();
-                if self.eat_if(TokenType::Not) {
-                    self.expr_bp(8);
-                    self.chunk.emit(OpCode::IsNot, 0);
-                } else {
-                    self.expr_bp(8);
-                    self.chunk.emit(OpCode::Is, 0);
-                }
-                continue;
-            }
-
-            if tok == TokenType::Not {
-                if 7 < min_bp { break; }
-                self.advance();
-                self.eat(TokenType::In);
+                let op = self.comparison_op();
                 self.expr_bp(8);
-                self.chunk.emit(OpCode::NotIn, 0);
+                // `a < b in c` tests `b` again and stops at the first false, the tail holds no `and` or `or`.
+                if self.peek_same_line().is_some_and(is_comparison) {
+                    let ver = self.increment_version(super::SSA_TMP_CMP);
+                    let tmp = self.push_ssa_name(super::SSA_TMP_CMP, ver);
+                    self.chunk.emit(OpCode::StoreName, tmp);
+                    self.chunk.emit(OpCode::LoadName, tmp);
+                    self.chunk.emit(op, 0);
+                    let jmp = self.emit_jump(OpCode::JumpIfFalseOrPop);
+                    self.chunk.emit(OpCode::LoadName, tmp);
+                    self.infix_bp(7);
+                    self.patch(jmp);
+                } else {
+                    self.chunk.emit(op, 0);
+                }
                 continue;
             }
 
@@ -126,24 +126,23 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             }
 
             self.expr_bp(r_bp);
-
-            if matches!(op, OpCode::Eq | OpCode::NotEq | OpCode::Lt | OpCode::Gt | OpCode::LtEq | OpCode::GtEq)
-                && let Some(next_tok) = self.peek_same_line()
-                && matches!(next_tok, TokenType::Less | TokenType::Greater | TokenType::LessEqual | TokenType::GreaterEqual | TokenType::EqEqual | TokenType::NotEqual)
-            {
-                let ver = self.increment_version(super::SSA_TMP_CMP);
-                let tmp = self.push_ssa_name(super::SSA_TMP_CMP, ver);
-                self.chunk.emit(OpCode::StoreName, tmp);
-                self.chunk.emit(OpCode::LoadName, tmp);
-                self.chunk.emit(op, 0);
-                let jmp = self.emit_jump(OpCode::JumpIfFalseOrPop);
-                self.chunk.emit(OpCode::LoadName, tmp);
-                self.infix_bp(min_bp);
-                self.patch(jmp);
-                return;
-            }
-
             self.chunk.emit(op, 0);
+        }
+    }
+
+    /* Consumes one comparison operator, `not in` and `is not` included. */
+    fn comparison_op(&mut self) -> OpCode {
+        match self.advance().kind {
+            TokenType::Is if self.eat_if(TokenType::Not) => OpCode::IsNot,
+            TokenType::Is => OpCode::Is,
+            TokenType::Not => { self.eat(TokenType::In); OpCode::NotIn }
+            TokenType::In => OpCode::In,
+            TokenType::EqEqual => OpCode::Eq,
+            TokenType::NotEqual => OpCode::NotEq,
+            TokenType::Less => OpCode::Lt,
+            TokenType::Greater => OpCode::Gt,
+            TokenType::LessEqual => OpCode::LtEq,
+            _ => OpCode::GtEq,
         }
     }
 
@@ -151,13 +150,6 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         match tok {
             TokenType::Or => Some((1, 2, OpCode::Or)),
             TokenType::And => Some((3, 4, OpCode::And)),
-            TokenType::EqEqual => Some((7, 8, OpCode::Eq)),
-            TokenType::NotEqual => Some((7, 8, OpCode::NotEq)),
-            TokenType::Less => Some((7, 8, OpCode::Lt)),
-            TokenType::Greater => Some((7, 8, OpCode::Gt)),
-            TokenType::LessEqual => Some((7, 8, OpCode::LtEq)),
-            TokenType::GreaterEqual => Some((7, 8, OpCode::GtEq)),
-            TokenType::In => Some((7, 8, OpCode::In)),
             TokenType::Vbar => Some((9, 10, OpCode::BitOr)),
             TokenType::Circumflex => Some((11, 12, OpCode::BitXor)),
             TokenType::Amper => Some((13, 14, OpCode::BitAnd)),
@@ -256,7 +248,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 }
             }
         }
-        self.postfix_tail();
+        if self.postfix_tail(false) { self.chunk.emit(OpCode::LoadNone, 0); }
     }
 
     /* Adjacent str/f-string literals concat into one value. */
@@ -298,6 +290,12 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         }
     }
 
+    /* A name-led operand with its trailers, for callers that took the name token themselves. */
+    pub(super) fn name_operand(&mut self, t: Token) {
+        self.name(t);
+        if self.postfix_tail(false) { self.chunk.emit(OpCode::LoadNone, 0); }
+    }
+
     /* Name, assignment, walrus `:=`, call, or plain load. */
     pub(super) fn name(&mut self, t: Token) {
         let name = self.lexeme(&t).to_string();
@@ -307,18 +305,12 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 self.assign(name.clone());
                 self.emit_load_ssa(name);
             }
+            // Walrus stores like an assignment, an enclosing `global` included, and leaves the value.
             Some(TokenType::ColonEqual) => {
                 self.advance();
                 self.expr();
-                if self.globals_decl.contains(&name) {
-                    // Walrus must honor an enclosing `global` declaration.
-                    let i = self.chunk.push_name(&name);
-                    self.chunk.emit(OpCode::StoreGlobal, i);
-                    self.chunk.emit(OpCode::LoadGlobal, i);
-                } else {
-                    let i = self.emit_store_new(&name);
-                    self.chunk.emit(OpCode::LoadName, i);
-                }
+                self.store_name(name.clone());
+                self.emit_load_ssa(name);
             }
             Some(TokenType::Lpar) => {
                 // A void call (`print(...)`) in value position must still leave a value, materialise its None.
@@ -326,7 +318,6 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             }
             _ => self.emit_load_ssa(name),
         }
-        self.postfix_tail();
     }
 
     fn parse_int_prefix(s: &str) -> (&str, u32) {
@@ -337,40 +328,31 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     }
 
     pub(super) fn parse_number(&mut self, raw: &str, kind: TokenType) {
-        let s = raw.replace('_', "");
         if kind == TokenType::Float {
             // A malformed float (e.g. empty exponent `1e`) is a syntax error, not 0.0.
-            match s.parse() {
+            match raw.replace('_', "").parse() {
                 Ok(f) => self.emit_const(Value::Float(f)),
                 Err(_) => self.error("invalid float literal"),
             }
             return;
         }
+        match Self::int_literal(raw) {
+            Ok(v) => self.emit_const(v),
+            Err(m) => self.error(m),
+        }
+    }
+
+    /* An int literal in any base with `_` separators, the value or the syntax error it raises. */
+    pub(super) fn int_literal(raw: &str) -> Result<Value, &'static str> {
+        let s = raw.replace('_', "");
         let (digits, base) = Self::parse_int_prefix(&s);
         // No leading zeros, all-zero runs still valid.
         if base == 10 && digits.len() > 1 && digits.starts_with('0') && digits.bytes().any(|b| b != b'0') {
-            self.error("leading zeros in decimal integer literals are not permitted");
-            return;
+            return Err("leading zeros in decimal integer literals are not permitted");
         }
-        let parsed_i64 = if base == 10 {
-            digits.parse::<i64>().ok()
-        } else {
-            i64::from_str_radix(digits, base).ok()
-        };
-        if let Some(v) = parsed_i64 {
-            self.emit_const(Value::Int(v));
-            return;
-        }
-        // Doesn't fit in i64, try i128 for the wide-int path.
-        let parsed_i128 = if base == 10 {
-            digits.parse::<i128>().ok()
-        } else {
-            i128::from_str_radix(digits, base).ok()
-        };
-        match parsed_i128 {
-            Some(v) => self.emit_const(Value::LongInt(v)),
-            None => self.error("integer literal too large to represent (max ±2^127)"),
-        }
+        // i64 first, wasm emulates the i128 parse the wide-int path needs.
+        if let Ok(v) = i64::from_str_radix(digits, base) { return Ok(Value::Int(v)); }
+        i128::from_str_radix(digits, base).map(Value::LongInt).map_err(|_| "integer literal too large to represent (max ±2^127)")
     }
 
     /* Subscript after `[`, comma-separated items build one tuple key. Eats the closing `]`, returns true for a lone slice. */
@@ -414,106 +396,87 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         }
     }
 
-    /* Postfix trailers, `.attr`, [i], [s:e], (args), chained. A trailer must start on the same line, so a statement boundary ends the chain (else `x = []` ⏎ `[i]` parses as `[][i]`). */
-    pub(super) fn postfix_tail(&mut self) {
+    /* Same-line `.attr`, `[i]` and `(args)` trailers, true when the chain ends in a store. */
+    pub(super) fn postfix_tail(&mut self, stmt: bool) -> bool {
         loop {
             match self.peek_same_line() {
                 Some(TokenType::Lsqb) => {
                     self.advance();
                     self.parse_subscript();
-                    // Subscript assignment, StoreItem, for slices runtime replaces the range.
-                    if !self.in_target_list && matches!(self.peek_same_line(), Some(TokenType::Equal)) {
-                        self.advance();
-                        self.expr();
-                        self.chunk.emit(OpCode::StoreItem, 0);
-                        self.chunk.emit(OpCode::LoadNone, 0);
-                        return;
-                    }
-                    if let Some(op) = self.peek_same_line().and_then(|t| Self::augmented_op(&t)) {
-                        self.emit_augmented_subscript(op);
-                        self.chunk.emit(OpCode::LoadNone, 0);
-                        return;
-                    }
+                    if self.store_trailer(stmt, None) { return true; }
                     self.chunk.emit(OpCode::GetItem, 0);
                 }
                 Some(TokenType::Dot) => {
                     self.advance();
                     let t = self.advance();
-                    let (start, end) = (t.start, t.end);
-                    let idx = self.chunk.push_name(&self.source[start..end]);
-                    // Attribute assignment, StoreAttr, mirroring the subscript case. In f-strings `=` is the debug marker.
-                    if !self.in_fstring_expr && !self.in_target_list && matches!(self.peek_same_line(), Some(TokenType::Equal)) {
-                        self.advance();
-                        self.expr();
-                        self.chunk.emit(OpCode::StoreAttr, idx);
-                        self.chunk.emit(OpCode::LoadNone, 0);
-                        return;
-                    }
-                    if let Some(op) = self.peek_same_line().and_then(|t| Self::augmented_op(&t)) {
-                        self.advance();
-                        self.chunk.emit(OpCode::Dup, 0);
-                        self.chunk.emit(OpCode::LoadAttr, idx);
-                        self.expr();
-                        self.emit_inplace(op);
-                        self.chunk.emit(OpCode::StoreAttr, idx);
-                        self.chunk.emit(OpCode::LoadNone, 0);
-                        return;
-                    }
+                    let source = self.source;
+                    let name = &source[t.start..t.end];
+                    if self.store_trailer(stmt, Some(name)) { return true; }
                     // LoadAttr adjacent to Call lets `fuse_method_calls` collapse them.
+                    let idx = self.chunk.push_name(name);
                     self.chunk.emit(OpCode::LoadAttr, idx);
                 }
                 Some(TokenType::Lpar) => {
                     // Call after any trailer.
                     let call_pos = self.last_end as u32;
-                    let is_method = matches!(self.chunk.instructions.last().map(|i| i.opcode), Some(OpCode::LoadAttr));
                     self.advance();
-                    // Skip only zero-arg methods so LoadAttr+Call(0) fusion survives.
-                    let empty = matches!(self.peek(), Some(TokenType::Rpar));
-                    if !(is_method && empty) { self.chunk.emit(OpCode::BeginArgs, 0); }
-                    let (pos, kw) = self.parse_args_body();
-                    self.chunk.emit(OpCode::Call, super::pack_call(pos, kw));
-                    self.chunk.record_call_pos(call_pos);
+                    self.call_rest(call_pos);
                 }
-                _ => break
+                _ => return false,
             }
         }
     }
 
-    /* lambda, fresh chunk, compiles body to Return, emits MakeFunction. */
-    pub(super) fn parse_lambda(&mut self) {
-        let mut params = Vec::new();
-        let mut defaults = 0u16;
-        if !matches!(self.peek(), Some(TokenType::Colon)) {
-            loop {
-                // Match parse_params prefix detection so *args/**kw names align with ParamKind.
-                let prefix = if self.eat_if(TokenType::DoubleStar) { "**" }
-                    else if self.eat_if(TokenType::Star) { "*"  }
-                    else { "" };
-                let nm = self.advance_text();
-                params.push(if prefix.is_empty() { nm } else { s!(str prefix, str &nm) });
-                if prefix.is_empty() && self.eat_if(TokenType::Equal) {
-                    self.expr();
-                    defaults += 1;
-                    // Trailing `=` marks this param as carrying a default value.
-                    if let Some(last) = params.last_mut() { last.push('='); }
-                }
-                if !self.eat_if(TokenType::Comma) {
-                    break;
-                }
+    /* Ends a trailer in `= v`, `op= v` or a statement annotation, f-strings keep `=` as debug. */
+    fn store_trailer(&mut self, stmt: bool, attr: Option<&str>) -> bool {
+        if self.in_fstring_expr || self.in_target_list { return false; }
+        if stmt && matches!(self.peek_same_line(), Some(TokenType::Colon)) {
+            self.advance();
+            // A bare annotation evaluates the target and stores nothing.
+            if !self.skip_annotation() {
+                self.chunk.emit(OpCode::PopTop, 0);
+                if attr.is_none() { self.chunk.emit(OpCode::PopTop, 0); }
+                return true;
             }
         }
+        let (load, store) = if attr.is_some() { (OpCode::LoadAttr, OpCode::StoreAttr) } else { (OpCode::GetItem, OpCode::StoreItem) };
+        match self.peek_same_line() {
+            Some(TokenType::Equal) => {
+                self.advance();
+                self.rhs_tuple();
+            }
+            Some(t) if let Some(op) = Self::augmented_op(&t) => {
+                self.advance();
+                let idx = attr.map_or(0, |a| self.chunk.push_name(a));
+                self.chunk.emit(if attr.is_some() { OpCode::Dup } else { OpCode::Dup2 }, 0);
+                self.chunk.emit(load, idx);
+                self.rhs_tuple();
+                self.emit_inplace(op);
+            }
+            _ => return false,
+        }
+        let idx = attr.map_or(0, |a| self.chunk.push_name(a));
+        self.chunk.emit(store, idx);
+        true
+    }
+
+    /* lambda, fresh chunk, compiles body to Return, emits MakeFunction. */
+    pub(super) fn parse_lambda(&mut self) {
+        let (params, defaults) = self.param_list(TokenType::Colon, false);
         self.eat(TokenType::Colon);
+        let body = self.expr_body(&params);
+        self.push_function(params, body, defaults, None, OpCode::MakeFunction);
+    }
 
+    /* A body returning one expression, for lambdas and type aliases, the outer names visible and `params` shadowing them. */
+    pub(super) fn expr_body(&mut self, params: &[String]) -> super::types::SSAChunk {
         let outer_versions = self.ssa_versions.clone();
-
-        let body = self.with_fresh_chunk(|s| {
+        self.with_fresh_chunk(|s| {
             s.ssa_versions = outer_versions;
             // Base name shadows the enclosing scope, prefix/`=` marker must be stripped.
-            for p in &params { s.ssa_versions.insert(super::types::param_base_name(p).to_string(), 0); }
+            for p in params { s.ssa_versions.insert(super::types::param_base_name(p).to_string(), 0); }
             s.expr();
             s.chunk.emit(OpCode::ReturnValue, 0);
-        });
-
-        self.push_function(params, body, defaults, None, OpCode::MakeFunction);
+        })
     }
 }

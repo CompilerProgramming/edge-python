@@ -1,6 +1,6 @@
 use crate::s;
 use crate::util::hash::FxHashMap as HashMap;
-use crate::value::ExternFn;
+use crate::value::{ExternFn, NativeFnId as F};
 
 use alloc::{string::{String, ToString}, vec, vec::Vec};
 
@@ -12,7 +12,7 @@ pub(crate) const MAX_INSTRUCTIONS: usize = 65_535;
 pub enum OpCode {
     LoadConst, LoadName, StoreName, Call, PopTop, ReturnValue, BuildString, CallPrint, CallLen, 
     FormatValue, CallAbs, Minus, CallStr, CallInt, CallRange, Phi, CallChr, CallType, MakeFunction, 
-    Add, Sub, Mul, Div, Eq, CallFloat, CallBool, CallRound, CallMin, CallMax, CallSum, CallSorted, 
+    Add, Sub, Mul, Div, Eq, CallFloat, CallBool, CallRound, CallMin, CallMax, CallSum, 
     CallEnumerate, CallZip, CallList, CallTuple, CallDict, CallIsInstance, CallSet, CallInput, 
     CallOrd, BuildDict, BuildList, NotEq, Lt, Gt, LtEq, GtEq, And, Or, Not, JumpIfFalse, Jump, 
     GetIter, ForIter, GetItem, Mod, Pow, FloorDiv, LoadTrue, LoadFalse, LoadNone, LoadAttr, StoreAttr, 
@@ -27,10 +27,6 @@ pub enum OpCode {
     JumpIfFalseOrPop, JumpIfTrueOrPop, Dup, CallMethod, CallMethodArgs, CallAll, CallAny, CallBin,
     CallOct, CallHex, CallDivmod, CallPow, CallRepr, CallReversed, CallCallable, CallId, CallHash,
     PopIter, DelItem, DelAttr, CallExtern,
-    /* Pushes HeapObj::Extern, operand indexes extern_table. Used by native `import X`. */
-    LoadExtern,
-    /* Builds HeapObj::Module from stack-held name + operand (attr_name, attr_value) pairs. */
-    BuildModule,
     /* Constant-time lookup of chunk.imports[operand] from `vm.module_table`. */
     LoadModule,
     /* Read/write a `global`-declared name from/to `self.globals`, operand indexes the bare name in `chunk.names`. */
@@ -67,43 +63,36 @@ pub enum OpCode {
     MatchClass,
     // Pop a value, push whether it matches a mapping pattern (dict).
     MatchMap,
+    // `Call` whose args hold a `*` or `**`, closing the spread frame its first spread opened.
+    CallSpread,
 }
 
-// Python builtin name -> (specialised OpCode, `leaves_value_on_stack`).
-pub(super) fn builtin(name: &str) -> Option<(OpCode, bool)> {
-    match name {
-        "len" => Some((OpCode::CallLen, true)),
-        "abs" => Some((OpCode::CallAbs, true)),
-        "str" => Some((OpCode::CallStr, true)),
-        "int" => Some((OpCode::CallInt, true)),
-        "type" => Some((OpCode::CallType, true)),
-        "float" => Some((OpCode::CallFloat, true)),
-        "bool" => Some((OpCode::CallBool, true)),
-        "round" => Some((OpCode::CallRound, true)),
-        "sum" => Some((OpCode::CallSum, true)),
-        // dict/min/max/enumerate and sorted need the keyword-aware path in `call()`, not this table.
-        "zip" => Some((OpCode::CallZip, true)),
-        "list" => Some((OpCode::CallList, true)),
-        "tuple" => Some((OpCode::CallTuple, true)),
-        "set" => Some((OpCode::CallSet, true)),
-        "input" => Some((OpCode::CallInput, true)),
-        "isinstance" => Some((OpCode::CallIsInstance, true)),
-        "chr" => Some((OpCode::CallChr, true)),
-        "ord" => Some((OpCode::CallOrd, true)),
-        "all" => Some((OpCode::CallAll, true)),
-        "any" => Some((OpCode::CallAny, true)),
-        "bin" => Some((OpCode::CallBin, true)),
-        "oct" => Some((OpCode::CallOct, true)),
-        "hex" => Some((OpCode::CallHex, true)),
-        "divmod" => Some((OpCode::CallDivmod, true)),
-        "pow" => Some((OpCode::CallPow, true)),
-        "repr" => Some((OpCode::CallRepr, true)),
-        "reversed" => Some((OpCode::CallReversed, true)),
-        "callable" => Some((OpCode::CallCallable, true)),
-        "id" => Some((OpCode::CallId, true)),
-        "hash" => Some((OpCode::CallHash, true)),
-        _ => None,
-    }
+// Each fused builtin opcode and the builtin it runs, with the name that alone picks the opcode.
+macro_rules! fused {
+    ( $( $op:ident => $id:ident $(, $name:literal)? ; )* ) => {
+        // Builtin name -> its fused opcode.
+        pub(super) fn builtin(name: &str) -> Option<OpCode> {
+            match name { $( $( $name => Some(OpCode::$op), )? )* _ => None }
+        }
+
+        // The builtin a fused opcode runs, powers the rebind redirect and the shared arity guard.
+        pub(crate) fn fused_native(op: OpCode) -> Option<F> {
+            match op { $( OpCode::$op => Some(F::$id), )* _ => None }
+        }
+    };
+}
+
+fused! {
+    CallLen => Len, "len"; CallAbs => Abs, "abs"; CallStr => Str, "str"; CallInt => Int, "int";
+    CallType => Type, "type"; CallFloat => Float, "float"; CallBool => Bool, "bool"; CallRound => Round, "round";
+    CallSum => Sum, "sum"; CallZip => Zip, "zip"; CallList => List, "list"; CallTuple => Tuple, "tuple";
+    CallSet => Set, "set"; CallInput => Input, "input"; CallIsInstance => IsInstance, "isinstance"; CallChr => Chr, "chr";
+    CallOrd => Ord, "ord"; CallAll => All, "all"; CallAny => Any, "any"; CallBin => Bin, "bin";
+    CallOct => Oct, "oct"; CallHex => Hex, "hex"; CallDivmod => Divmod, "divmod"; CallPow => Pow, "pow";
+    CallRepr => Repr, "repr"; CallReversed => Reversed, "reversed"; CallCallable => Callable, "callable"; CallId => Id, "id";
+    CallHash => Hash, "hash";
+    // dict, min, max, enumerate, print and range need the keyword-aware path in `call()`.
+    CallPrint => Print; CallRange => Range; CallDict => Dict; CallMin => Min; CallMax => Max; CallEnumerate => Enumerate;
 }
 
 // Constant literals stored in the bytecode constants pool.
@@ -116,6 +105,13 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     None,
+}
+
+impl OpCode {
+    /* Its operand is an instruction index, so moving code retargets it. */
+    pub const fn is_jump(self) -> bool {
+        matches!(self, Self::Jump | Self::JumpIfFalse | Self::JumpIfFalseOrPop | Self::JumpIfTrueOrPop | Self::ForIter | Self::SetupExcept | Self::SetupFinally)
+    }
 }
 
 // One bytecode instruction, opcode + 16-bit operand.
@@ -287,18 +283,38 @@ impl SSAChunk {
             body.finalize_prev_slots();
         }
 
-        let phi_count = self.instructions.iter().filter(|i| i.opcode == OpCode::Phi).count();
-        if phi_count > 0 {
-            self.phi_map = vec![0; self.instructions.len()];
-            let mut phi_idx = 0;
-            for (i, ins) in self.instructions.iter().enumerate() {
-                if ins.opcode == OpCode::Phi {
-                    self.phi_map[i] = phi_idx;
-                    phi_idx += 1;
-                }
-            }
-        }
+        self.index_phis();
     }
+
+    /* Names only attribute ops use, no variable to capture or read from a caller. */
+    pub(crate) fn attr_only_names(&self) -> Vec<bool> {
+        // Bit 1 marks an attribute use, bit 2 any other.
+        let mut uses = vec![0u8; self.names.len()];
+        for ins in &self.instructions {
+            let attr = matches!(ins.opcode, OpCode::LoadAttr | OpCode::StoreAttr | OpCode::DelAttr);
+            if let Some(u) = uses.get_mut(ins.operand as usize) { *u |= if attr { 1 } else { 2 }; }
+        }
+        for &(a, b) in &self.phi_sources {
+            for i in [a, b] { if let Some(u) = uses.get_mut(i as usize) { *u |= 2; } }
+        }
+        uses.into_iter().map(|u| u == 1).collect()
+    }
+
+    /* Maps each Phi to its `phi_sources` entry by order, empty when no Phi is left. */
+    pub(crate) fn index_phis(&mut self) {
+        self.phi_map.clear();
+        if !self.instructions.iter().any(|i| i.opcode == OpCode::Phi) { return; }
+        let mut next = 0;
+        self.phi_map = self.instructions.iter().map(|i| if i.opcode == OpCode::Phi { next += 1; next - 1 } else { 0 }).collect();
+    }
+}
+
+/* An open loop, its `continue` target, pending `break` jumps, kind and finally depth at entry. */
+pub(crate) struct LoopCtx {
+    pub(super) start: u16,
+    pub(super) breaks: Vec<usize>,
+    pub(super) is_for: bool,
+    pub(super) cleanup_base: usize,
 }
 
 // SSA version snapshots for branch join, `then` is None until mid_block runs.
@@ -392,9 +408,7 @@ impl Diagnostic {
         let col = display_width(&src[line_start..byte]) + 1;
         (line, col)
     }
-}
 
-impl Diagnostic {
     /* rustc-style render, error+arrow+source line+caret, path defaults to `<input>`. */
     pub fn render(&self, src: &str, path: Option<&str>) -> alloc::string::String {
         let path = path.unwrap_or("<input>");
@@ -466,6 +480,12 @@ pub(super) fn parse_bytes_literal(s: &str) -> alloc::vec::Vec<u8> {
     } else {
         bytes.get(i + 1..bytes.len().saturating_sub(1)).unwrap_or(&[])
     };
+    // Source CR and CRLF read as LF, like a str literal.
+    let owned;
+    let body: &[u8] = if body.contains(&b'\r') {
+        owned = String::from_utf8_lossy(body).replace("\r\n", "\n").replace('\r', "\n").into_bytes();
+        &owned
+    } else { body };
     if is_raw { return body.to_vec(); }
 
     let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(body.len());
@@ -473,17 +493,10 @@ pub(super) fn parse_bytes_literal(s: &str) -> alloc::vec::Vec<u8> {
     while j < body.len() {
         if body[j] != b'\\' { out.push(body[j]); j += 1; continue; }
         if j + 1 >= body.len() { out.push(b'\\'); break; }
+        if let Some(b) = simple_escape(body[j + 1]) { out.push(b); j += 2; continue; }
         match body[j + 1] {
-            b'n' => { out.push(b'\n'); j += 2; }
-            b't' => { out.push(b'\t'); j += 2; }
-            b'r' => { out.push(b'\r'); j += 2; }
-            b'a' => { out.push(0x07); j += 2; }
-            b'b' => { out.push(0x08); j += 2; }
-            b'f' => { out.push(0x0C); j += 2; }
-            b'v' => { out.push(0x0B); j += 2; }
-            b'\\' => { out.push(b'\\'); j += 2; }
-            b'\'' => { out.push(b'\''); j += 2; }
-            b'"' => { out.push(b'"'); j += 2; }
+            // A backslash before a newline joins the lines.
+            b'\n' => j += 2,
             b'0'..=b'7' => {
                 // Octal takes up to 3 digits, mirroring push_escape, truncated to one byte.
                 let mut v = (body[j + 1] - b'0') as u32;
@@ -524,23 +537,26 @@ fn unescape(s: &str) -> String {
     out
 }
 
+/* The byte a one-character escape such as `\n` stands for, shared by str and bytes literals. */
+fn simple_escape(c: u8) -> Option<u8> {
+    Some(match c {
+        b'n' => b'\n', b't' => b'\t', b'r' => b'\r', b'a' => 0x07, b'b' => 0x08, b'f' => 0x0C, b'v' => 0x0B,
+        b'\\' | b'\'' | b'"' => c,
+        _ => return None,
+    })
+}
+
 /* Decodes one backslash escape (cursor already past the `\`) into `out`, unknown escapes keep the backslash. */
 pub(super) fn push_escape(out: &mut String, chars: &mut core::iter::Peekable<core::str::Chars>) {
     let take_hex = |chars: &mut core::iter::Peekable<core::str::Chars>, n: usize| -> char {
         let hex: String = chars.by_ref().take(n).collect();
         u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32).unwrap_or('\u{FFFD}')
     };
-    match chars.next() {
-        Some('n') => out.push('\n'),
-        Some('t') => out.push('\t'),
-        Some('r') => out.push('\r'),
-        Some('a') => out.push('\u{07}'),
-        Some('b') => out.push('\u{08}'),
-        Some('f') => out.push('\u{0C}'),
-        Some('v') => out.push('\u{0B}'),
-        Some('\\') => out.push('\\'),
-        Some('\'') => out.push('\''),
-        Some('"') => out.push('"'),
+    let next = chars.next();
+    if let Some(b) = next.and_then(|c| u8::try_from(c).ok()).and_then(simple_escape) { out.push(b as char); return; }
+    match next {
+        // A backslash before a newline joins the lines.
+        Some('\n') => {}
         Some('x') => out.push(take_hex(chars, 2)),
         Some('u') => out.push(take_hex(chars, 4)),
         Some('U') => out.push(take_hex(chars, 8)),

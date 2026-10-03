@@ -23,6 +23,19 @@ pub struct MethodDesc {
     pub mutating: bool,
     pub min_args: u8,
     pub max_args: u8, // 255 = unbounded (variadic).
+    pub kind: MethodKind,
+}
+
+/* How a call reaches a method, plain through the table, or with the frame for user code. */
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MethodKind {
+    Plain,
+    // Its arguments are iterables, so a user `__iter__` may stand in for them.
+    Iterates,
+    Sort,
+    Format,
+    // `index`, `count` and `remove`, on a list a user `__eq__` decides the match.
+    Search,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -30,6 +43,8 @@ pub struct BuiltinMethodId(u8);
 
 impl BuiltinMethodId {
     #[inline] pub fn name(self) -> &'static str { ALL_METHODS[self.0 as usize].name }
+    #[inline] pub(crate) fn kind(self) -> MethodKind { ALL_METHODS[self.0 as usize].kind }
+    pub(crate) fn ty(self) -> &'static str { ALL_METHODS[self.0 as usize].ty }
     pub(crate) fn raw(self) -> u8 { self.0 }
     /* Bounds-checked decode for snapshot restore. */
     pub(crate) fn from_raw(i: u8) -> Option<Self> {
@@ -39,14 +54,22 @@ impl BuiltinMethodId {
 
 // Builds `ALL_METHODS` grouped by receiver type. `ro`/`rw` = read-only/mutating, `min..max` is the arity (max 255 = variadic).
 macro_rules! methods {
-    ( $( $ty:literal { $( $name:literal => $func:path, $m:ident, $min:literal .. $max:literal );* $(;)? } )* ) => {
+    ( $( $ty:literal { $( $name:tt => $func:path, $m:ident, $min:literal .. $max:literal );* $(;)? } )* ) => {
         &[ $( $( MethodDesc {
             ty: $ty, name: $name, func: $func,
-            mutating: methods!(@m $m), min_args: $min, max_args: $max,
+            mutating: methods!(@m $m), min_args: $min, max_args: $max, kind: methods!(@k $name),
         } ),* ),* ]
     };
     (@m ro) => { false };
     (@m rw) => { true };
+    (@k "sort") => { MethodKind::Sort }; (@k "format") => { MethodKind::Format };
+    (@k "index") => { MethodKind::Search }; (@k "count") => { MethodKind::Search }; (@k "remove") => { MethodKind::Search };
+    (@k "join") => { MethodKind::Iterates }; (@k "extend") => { MethodKind::Iterates }; (@k "update") => { MethodKind::Iterates };
+    (@k "fromkeys") => { MethodKind::Iterates }; (@k "union") => { MethodKind::Iterates }; (@k "intersection") => { MethodKind::Iterates };
+    (@k "difference") => { MethodKind::Iterates }; (@k "symmetric_difference") => { MethodKind::Iterates };
+    (@k "intersection_update") => { MethodKind::Iterates }; (@k "difference_update") => { MethodKind::Iterates };
+    (@k "symmetric_difference_update") => { MethodKind::Iterates }; (@k "issubset") => { MethodKind::Iterates };
+    (@k "issuperset") => { MethodKind::Iterates }; (@k "isdisjoint") => { MethodKind::Iterates }; (@k $other:tt) => { MethodKind::Plain };
 }
 
 // Lookup scans by (ty, name), so order is irrelevant, group however reads best.
@@ -90,18 +113,18 @@ pub static ALL_METHODS: &[MethodDesc] = methods! {
         "isupper" => string::isupper, ro, 0..0;
         "islower" => string::islower, ro, 0..0;
         "istitle" => string::istitle, ro, 0..0;
-        "format" => string::format, ro, 0..255;
+        "format" => framed, ro, 0..255;
     }
     "bytes" {
         "decode" => bytes::decode, ro, 0..2;
         "hex" => bytes::hex, ro, 0..0;
         "startswith" => bytes::startswith, ro, 1..1;
         "endswith" => bytes::endswith, ro, 1..1;
-        "find" => bytes::find, ro, 1..1;
-        "index" => bytes::index, ro, 1..1;
-        "count" => bytes::count, ro, 1..1;
-        "replace" => bytes::replace, ro, 2..2;
-        "split" => bytes::split, ro, 1..1;
+        "find" => bytes::find, ro, 1..3;
+        "index" => bytes::index, ro, 1..3;
+        "count" => bytes::count, ro, 1..3;
+        "replace" => bytes::replace, ro, 2..3;
+        "split" => bytes::split, ro, 0..2;
         "lower" => bytes::lower, ro, 0..0;
         "upper" => bytes::upper, ro, 0..0;
         "strip" => bytes::strip, ro, 0..1;
@@ -121,8 +144,7 @@ pub static ALL_METHODS: &[MethodDesc] = methods! {
         "insert" => list::insert, rw, 2..2;
         "remove" => list::remove, rw, 1..1;
         "pop" => list::pop, rw, 0..1;
-        "sort" => list::sort, rw, 0..0;
-        "__next__" => list::next_method, rw, 0..0;
+        "sort" => framed, rw, 0..0;
     }
     "dict" {
         "keys" => dict::keys, ro, 0..0;
@@ -174,7 +196,18 @@ pub static ALL_METHODS: &[MethodDesc] = methods! {
     "object" {
         "__hash__" => object::hash, ro, 0..1;
     }
+    "BaseException" {
+        "__init__" => object::exc_init, rw, 0..255;
+        "__str__" => object::exc_str, ro, 0..0;
+    }
+    "iterator" {
+        "__next__" => object::iter_next, rw, 0..0;
+        "__iter__" => object::iter_self, ro, 0..0;
+    }
 };
+
+// Methods that run user code, `exec_bound_method` calls them with the frame this table cannot carry.
+fn framed(_: &mut VM, _: Val, _: &[Val]) -> Result<(), VmErr> { Err(cold_type("method dispatched without a frame")) }
 
 #[inline]
 pub(crate) fn dispatch_method(vm: &mut VM, id: BuiltinMethodId, recv: Val, pos: &[Val], kw: &[Val]) -> Result<(), VmErr> {
@@ -202,6 +235,16 @@ pub(crate) fn dispatch_method(vm: &mut VM, id: BuiltinMethodId, recv: Val, pos: 
         vm.mark_impure();
     }
     result
+}
+
+/* The arity check and impurity mark `dispatch_method` applies, for a method the VM runs itself. */
+pub(crate) fn method_frame(vm: &mut VM, id: BuiltinMethodId, n: usize) -> Result<(), VmErr> {
+    let m = &ALL_METHODS[id.0 as usize];
+    if n < m.min_args as usize || (m.max_args != 255 && n > m.max_args as usize) {
+        return Err(arity_error(m.name, m.min_args, m.max_args, n));
+    }
+    if m.mutating { vm.mark_impure(); }
+    Ok(())
 }
 
 pub fn lookup_method(ty: &str, attr: &str) -> Option<BuiltinMethodId> {

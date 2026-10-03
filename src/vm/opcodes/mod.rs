@@ -6,8 +6,8 @@ pub(crate) mod stack;
 pub(crate) mod subscript;
 
 pub(super) use crate::vm::{
-    VM, Val, VmErr, HeapObj, DictMap, cache, value_ops,
-    types::{BodyRef, ExceptionFrame, IterFrame, SyncFrame, cold_depth, cold_type, cold_value, cold_runtime, cold_overflow, eq_vals_with_heap, ffloor}
+    VM, Val, VmErr, HeapObj, HeapPool, DictMap, cache, value_ops,
+    types::{BodyRef, SyncFrame, cold_depth, cold_type, cold_value, cold_runtime, cold_overflow, eq_member, eq_checked, is_rich_key, float_divmod}
 };
 
 pub(super) use crate::parser::{OpCode, SSAChunk, ssa_strip};

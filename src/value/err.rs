@@ -40,25 +40,6 @@ impl VmErr {
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::CallDepth => "RecursionError: max depth",
-            Self::Heap => "MemoryError: heap limit",
-            Self::Budget => "RuntimeError: budget exceeded",
-            Self::ZeroDiv => "ZeroDivisionError: division by zero",
-            Self::Overflow => "OverflowError: integer too large for 128-bit int range",
-            Self::Type(s) => s,
-            Self::Value(s) => s,
-            Self::Runtime(s) => s,
-            Self::TypeMsg(_) => "TypeError",
-            Self::Attribute(_) => "AttributeError",
-            Self::Name(_) => "NameError",
-            Self::Raised(_) => "Exception",
-            Self::HostYield(_) => "host yield requested",
-            Self::HostCallDeferred => "native call deferred to host",
-        }
-    }
-
     pub fn render(&self) -> alloc::string::String {
         use crate::s;
         match self {
@@ -72,7 +53,7 @@ impl VmErr {
             Self::Attribute(m) => s!("AttributeError: ", str m),
             Self::HostYield(_) => alloc::string::String::from("RuntimeError: scheduler suspended; embedder must drive `run_start` / `run_resume`"),
             Self::HostCallDeferred => alloc::string::String::from("RuntimeError: HostCallDeferred leaked past `call_extern` (compiler bug)"),
-            other => alloc::string::String::from(other.as_str()),
+            other => s!(str &other.class_name(), ": ", str &other.message()),
         }
     }
 

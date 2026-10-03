@@ -149,16 +149,9 @@ impl WasmHostResolver {
         if let Some(msg) = refusal(spec) {
             return Err(msg);
         }
-        let entry = with_runtime(|rt| {
-            rt.registry.iter().find(|(s, _)| s == spec).map(|(s, e)| {
-                let cloned = match e {
-                    ModuleEntry::Code(src) => ModuleEntry::Code(src.clone()),
-                    ModuleEntry::Native(funcs) => ModuleEntry::Native(funcs.clone()),
-                };
-                (s.clone(), cloned)
-            })
-        }).ok_or_else(|| s!("module '", str spec, "' not registered (host did not pre-fetch / register before run())"))?;
-        match entry.1 {
+        let entry = with_runtime(|rt| rt.registry.iter().find(|(s, _)| s == spec).map(|(_, e)| e.clone()))
+            .ok_or_else(|| s!("module '", str spec, "' not registered (host did not pre-fetch / register before run())"))?;
+        match entry {
             ModuleEntry::Code(src) => Ok(Resolved::Code {
                 src,
                 canonical: spec.to_string(),

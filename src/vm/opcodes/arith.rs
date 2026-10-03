@@ -30,7 +30,7 @@ impl<'a> VM<'a> {
             let a_is_list = a.is_heap() && matches!(self.heap.get(a), HeapObj::List(_));
             if a_is_list {
                 // Snapshot rhs first so `xs += xs` doubles correctly, TypeError if rhs isn't iterable.
-                let rhs = self.iter_to_vec_general(b)?;
+                let rhs = self.extract_iter(b)?;
                 if let HeapObj::List(la) = self.heap.get(a) { la.borrow_mut().extend_from_slice(&rhs); }
                 self.push(a);
                 return Ok(());
@@ -41,17 +41,13 @@ impl<'a> VM<'a> {
         // `name -= rhs` removes from a left set in place (alias-visible), every other type behaves as Sub.
         let op = if op == OpCode::InPlaceSub {
             if self.is_set_like(a) && self.is_set_like(b) {
+                if self.sets_rich(a, b) { return self.rich_set_op(a, b, OpCode::Sub, true, chunk, slots); }
                 return self.set_iop_and_push(a, b, OpCode::Sub);
             }
             OpCode::Sub
         } else { op };
 
-        // Root operands since the dunder runs user code that can GC, and we read a/b after it (record + fallback).
-        let roots = self.temp_roots.len();
-        self.temp_roots.push(a);
-        self.temp_roots.push(b);
         let dunder = self.try_binary_dunder(op, a, b, inplace, chunk, slots);
-        self.temp_roots.truncate(roots);
 
         // instance dunder protocol, try user-defined operator before any builtin coercion.
         if let Some(r) = dunder? {
@@ -68,6 +64,10 @@ impl<'a> VM<'a> {
             cached_binop!(self.heap, rip, &op, a, b, cache);
         }
 
+        // Sets of user-hashed items subtract through their own `__eq__`.
+        if op == OpCode::Sub && self.is_set_like(a) && self.is_set_like(b) && self.sets_rich(a, b) {
+            return self.rich_set_op(a, b, op, false, chunk, slots);
+        }
         let result = match op {
             OpCode::Add => self.add_vals(a, b)?,
             OpCode::Sub => self.sub_vals(a, b)?,
@@ -109,20 +109,21 @@ impl<'a> VM<'a> {
         if a.is_heap() && matches!(self.heap.get(a), HeapObj::Str(_)) {
             return self.str_percent_format(a, b, chunk, slots);
         }
+        Ok(self.divmod_vals(a, b, "% requires numeric operands")?.1)
+    }
+
+    /* `(a // b, a % b)`, floats when either side is one, signed like the divisor. */
+    pub(crate) fn divmod_vals(&mut self, a: Val, b: Val, err: &'static str) -> Result<(Val, Val), VmErr> {
         if a.is_float() || b.is_float() {
-            let af = self.to_f64_coerce(a).map_err(|_| cold_type("% requires numeric operands"))?;
-            let bf = self.to_f64_coerce(b).map_err(|_| cold_type("% requires numeric operands"))?;
+            let (Some(af), Some(bf)) = (crate::vm::num_as_f64(a, &self.heap), crate::vm::num_as_f64(b, &self.heap)) else { return Err(cold_type(err)); };
             if bf == 0.0 { return Err(VmErr::ZeroDiv); }
-            // Floor-division semantics, the result takes the divisor's sign.
-            let r = af - ffloor(af / bf) * bf;
-            return Ok(Val::float(r));
+            let (q, r) = float_divmod(af, bf);
+            return Ok((Val::float(q), Val::float(r)));
         }
-        let (Some(ai), Some(bi)) = (self.as_i128(a), self.as_i128(b)) else { return Err(cold_type("% requires numeric operands")); };
+        let (Some(ai), Some(bi)) = (self.as_i128(a), self.as_i128(b)) else { return Err(cold_type(err)); };
         if bi == 0 { return Err(VmErr::ZeroDiv); }
-        // Floor-mod on i128, the result takes the divisor's sign. `checked_rem` guards against i128::MIN % -1 (which would overflow).
-        let r = ai.checked_rem(bi).ok_or(cold_overflow())?;
-        let r = if (r != 0) && ((r < 0) != (bi < 0)) { r + bi } else { r };
-        self.int_to_val(Some(r))
+        let (q, r) = crate::vm::int_divmod(ai, bi).ok_or(cold_overflow())?;
+        Ok((self.int_to_val(Some(q))?, self.int_to_val(Some(r))?))
     }
 
     /* printf-style `str % args` translates each `%[flags][width][.prec]conv` into the `{:spec}` mini-language and reuses `format_value`. A tuple spreads, else one value. */
@@ -180,8 +181,9 @@ impl<'a> VM<'a> {
             ai += 1;
             // Map printf conversion -> (format value, spec type char, is-numeric).
             let (fval, ty, numeric): (Val, Option<char>, bool) = match conv {
-                's' => { let s = self.display(val); (self.heap.alloc(HeapObj::Str(s))?, None, false) }
-                'r' => { let s = self.repr(val); (self.heap.alloc(HeapObj::Str(s))?, None, false) }
+                's' => { let s = self.display_op(val, chunk, slots)?; (self.heap.alloc(HeapObj::Str(s))?, None, false) }
+                'r' => { let s = self.repr_op(val, chunk, slots)?; (self.heap.alloc(HeapObj::Str(s))?, None, false) }
+                'a' => { let s = crate::vm::format_spec::ascii_escape(&self.repr_op(val, chunk, slots)?); (self.heap.alloc(HeapObj::Str(s))?, None, false) }
                 'd' | 'i' | 'u' => (self.coerce_format_int(val, chunk, slots)?, Some('d'), true),
                 'x' => (self.coerce_format_int(val, chunk, slots)?, Some('x'), true),
                 'X' => (self.coerce_format_int(val, chunk, slots)?, Some('X'), true),
@@ -234,20 +236,7 @@ impl<'a> VM<'a> {
     }
 
     fn exec_floordiv(&mut self, a: Val, b: Val) -> Result<Val, VmErr> {
-        if a.is_float() || b.is_float() {
-            let af = self.to_f64_coerce(a).map_err(|_| cold_type("// requires numeric operands"))?;
-            let bf = self.to_f64_coerce(b).map_err(|_| cold_type("// requires numeric operands"))?;
-            if bf == 0.0 { return Err(VmErr::ZeroDiv); }
-            // ffloor() handles all magnitudes, `as i64` would overflow for large floats.
-            return Ok(Val::float(ffloor(af / bf)));
-        }
-        let (Some(ai), Some(bi)) = (self.as_i128(a), self.as_i128(b)) else { return Err(cold_type("// requires numeric operands")); };
-        if bi == 0 { return Err(VmErr::ZeroDiv); }
-        // Floor-div on i128, round toward negative infinity. checked_div guards i128::MIN / -1 overflow.
-        let q = ai.checked_div(bi).ok_or(cold_overflow())?;
-        let r = ai - q * bi;
-        let q = if (r != 0) && ((r < 0) != (bi < 0)) { q - 1 } else { q };
-        self.int_to_val(Some(q))
+        Ok(self.divmod_vals(a, b, "// requires numeric operands")?.0)
     }
 
     fn exec_pow(&mut self, a: Val, b: Val) -> Result<Val, VmErr> {
@@ -279,21 +268,21 @@ impl<'a> VM<'a> {
         let (a, b) = self.pop2()?;
 
         // User instance operands dispatch __or__/__and__/__xor__ (and reflected) first.
-        let roots = self.temp_roots.len();
-        self.temp_roots.push(a);
-        self.temp_roots.push(b);
         let dunder = self.try_binary_dunder(op, a, b, inplace || operand == crate::parser::INPLACE, chunk, slots);
-        self.temp_roots.truncate(roots);
         if let Some(r) = dunder? { self.push(r); return Ok(()); }
 
         if self.is_set_like(a) && self.is_set_like(b)
             && matches!(op, OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor) {
+            if self.sets_rich(a, b) { return self.rich_set_op(a, b, op, inplace, chunk, slots); }
             return if inplace { self.set_iop_and_push(a, b, op) } else { self.set_binop_and_push(a, b, op) };
         }
         // `dict | dict` (and `|=`) merges, right operand winning.
         if op == OpCode::BitOr && a.is_heap() && b.is_heap()
             && matches!(self.heap.get(a), HeapObj::Dict(_))
             && matches!(self.heap.get(b), HeapObj::Dict(_)) {
+            if [a, b].iter().any(|&d| matches!(self.heap.get(d), HeapObj::Dict(rc) if rc.borrow().is_rich())) {
+                return self.rich_dict_merge(a, b, chunk, slots);
+            }
             let mut merged = DictMap::with_capacity(0);
             if let HeapObj::Dict(d) = self.heap.get(a) { for (k, v) in d.borrow().iter() { merged.insert(k, v, &self.heap); } }
             if let HeapObj::Dict(d) = self.heap.get(b) { for (k, v) in d.borrow().iter() { merged.insert(k, v, &self.heap); } }
@@ -334,7 +323,7 @@ impl<'a> VM<'a> {
         }
         let mut unique: Vec<Val> = Vec::new();
         for m in members {
-            if !unique.iter().any(|&u| eq_vals_with_heap(u, m, &self.heap)) { unique.push(m); }
+            if !unique.iter().any(|&u| eq_member(u, m, &self.heap)) { unique.push(m); }
         }
         if unique.len() == 1 { return Ok(Some(unique[0])); }
         let args = self.heap.alloc(HeapObj::Tuple(unique))?;
@@ -344,12 +333,8 @@ impl<'a> VM<'a> {
     /* `a @ b` has no builtin meaning, only `__matmul__` or `__rmatmul__` answer it. */
     pub(crate) fn handle_matmul(&mut self, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let (a, b) = self.pop2()?;
-        let roots = self.temp_roots.len();
-        self.temp_roots.push(a);
-        self.temp_roots.push(b);
         let dunder = self.try_binary_dunder(OpCode::MatMul, a, b, operand == crate::parser::INPLACE, chunk, slots);
-        self.temp_roots.truncate(roots);
-        let r = dunder?.ok_or_else(|| VmErr::TypeMsg(crate::s!("unsupported operand type(s) for @: '", str self.type_name(a), "' and '", str self.type_name(b), "'")))?;
+        let r = dunder?.ok_or_else(|| self.unsupported("@", a, b))?;
         self.push(r);
         Ok(())
     }
@@ -377,12 +362,7 @@ impl<'a> VM<'a> {
         // Record type-key for every compare op, `cache::specialize` picks the FastOp variant.
         cached_binop!(self.heap, rip, &op, a, b, cache);
 
-        // Root operands since the dunder runs user code that can GC, and we read a/b after it (record + fallback).
-        let roots = self.temp_roots.len();
-        self.temp_roots.push(a);
-        self.temp_roots.push(b);
         let dunder = self.try_compare_dunder(op, a, b, chunk, slots);
-        self.temp_roots.truncate(roots);
 
         // try the user-defined comparison dunder before falling back to numeric/string compare.
         if let Some(r) = dunder? {
@@ -396,16 +376,29 @@ impl<'a> VM<'a> {
 
         // Set/Set uses subset/superset, NOT total order, the numeric `LtEq = !lt_vals(b, a)` identity is wrong here ({1,2} <= {2,3} would come back True), so we bypass `lt_vals`.
         if self.is_set_like(a) && self.is_set_like(b) {
-            return self.set_compare_and_push(a, b, op);
+            if !self.sets_rich(a, b) { return self.set_compare_and_push(a, b, op); }
+            // Sets of user-hashed items probe each other through their own dunders.
+            let r = self.with_roots([a, b], |vm| -> Result<bool, VmErr> {
+                Ok(match op {
+                    OpCode::Eq => vm.values_eq(a, b, chunk, slots)?,
+                    OpCode::NotEq => !vm.values_eq(a, b, chunk, slots)?,
+                    OpCode::LtEq => vm.set_within(a, b, chunk, slots)?,
+                    OpCode::GtEq => vm.set_within(b, a, chunk, slots)?,
+                    OpCode::Lt => vm.set_within(a, b, chunk, slots)? && !vm.values_eq(a, b, chunk, slots)?,
+                    _ => vm.set_within(b, a, chunk, slots)? && !vm.values_eq(a, b, chunk, slots)?,
+                })
+            })?;
+            self.push(Val::bool(r));
+            return Ok(());
         }
 
         let result = match op {
-            OpCode::Eq => eq_vals_with_heap(a, b, &self.heap),
-            OpCode::NotEq => !eq_vals_with_heap(a, b, &self.heap),
-            OpCode::Lt => self.lt_vals(a, b)?,
-            OpCode::Gt => self.lt_vals(b, a)?,
-            OpCode::LtEq => !self.lt_vals(b, a)?,
-            OpCode::GtEq => !self.lt_vals(a, b)?,
+            OpCode::Eq => self.values_eq(a, b, chunk, slots)?,
+            OpCode::NotEq => !self.values_eq(a, b, chunk, slots)?,
+            OpCode::Lt => self.values_lt(a, b, chunk, slots)?,
+            OpCode::Gt => self.values_lt(b, a, chunk, slots)?,
+            OpCode::LtEq => !self.values_lt(b, a, chunk, slots)?,
+            OpCode::GtEq => !self.values_lt(a, b, chunk, slots)?,
             _ => return Err(cold_runtime("non-compare opcode in handle_compare")),
         };
         self.push(Val::bool(result));

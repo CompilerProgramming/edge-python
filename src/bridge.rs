@@ -33,6 +33,13 @@ pub(crate) fn with_bridge<R>(f: impl FnOnce(&mut BridgeState) -> R) -> R {
 }
 
 pub fn put_val(v: Val) -> u32 { with_bridge(|b| b.handles.put(v.0)) }
+
+/* Marks the values live handles hold, a plugin keeps a value only by handle. */
+pub(crate) fn mark_handles(vm: *const u8, heap: &mut crate::vm::types::HeapPool) {
+    with_bridge(|b| if b.current_vm.is_some_and(|p| p.as_ptr() as *const u8 == vm) {
+        for v in b.handles.live() { heap.mark(Val(v)); }
+    });
+}
 pub fn get_val(h: u32) -> Option<Val> { with_bridge(|b| b.handles.get(h).map(Val)) }
 
 // Release a batch of handles in one bridge borrow.
@@ -161,7 +168,9 @@ pub fn error_from_kind(kind: u32, msg: String) -> VmErr {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn host_edge_op(op: u32, recv: u32, name_ptr: *const u8, name_len: u32,argv_ptr: *const u32, argc: u32, out_handle: *mut u32) -> i32 {
     let name = unsafe { safe_str_owned(name_ptr, name_len) };
-    let args: Vec<Val> = unsafe { safe_handles(argv_ptr, argc) }.iter().filter_map(|&h| get_val(h)).collect();
+    // A stale argument handle fails the op, dropping it would shift the arguments after it.
+    let args: Option<Vec<Val>> = unsafe { safe_handles(argv_ptr, argc) }.iter().map(|&h| get_val(h)).collect();
+    let Some(args) = args else { stash_error(VmErr::TypeMsg("edge_op: invalid argument handle".into())); return 1; };
 
     let result: Result<Val, VmErr> = match Op::from_u32(op) {
         Some(Op::Call) => dispatch_call(recv, &name, &args),
@@ -193,89 +202,42 @@ pub unsafe extern "C" fn host_edge_op(op: u32, recv: u32, name_ptr: *const u8, n
 
 fn dispatch_call(recv_h: u32, name: &str, args: &[Val]) -> Result<Val, VmErr> {
     with_recv("edge_op call: invalid receiver handle", recv_h, |vm, recv| {
-        // `__call__` invokes `recv` itself through `exec_call`, so any callable a plugin holds takes the normal dispatch path.
+        // `__call__` invokes `recv` itself, so any callable a plugin holds takes the normal dispatch path.
         if name == "__call__" {
-            // The Call operand packs argc in one byte, past 255 positional args it wraps into kw.
-            if args.len() > 255 {
-                return Err(VmErr::TypeMsg(s!("edge_op call(__call__): too many arguments (max 255, got ", int args.len() as i64, ")")));
-            }
-            // Callee at the bottom then positional args, `parse_call_args` pops args first and `exec_call` the callee.
-            let stack_before = vm.stack.len();
-            vm.stack.push(recv);
-            for a in args { vm.stack.push(*a); }
-            let operand = args.len() as u16; // (num_kw<<8)|num_pos, no kwargs from FFI hooks.
-            let chunk: &crate::parser::SSAChunk = unsafe { &*(vm.chunk as *const _) };
-            let mut empty_slots: [Val; 0] = [];
-            vm.exec_call(operand, chunk, &mut empty_slots)?;
-            if vm.stack.len() != stack_before + 1 {
-                return Err(VmErr::Runtime("edge_op call(__call__): callable left no result"));
-            }
-            return vm.stack.pop().ok_or(VmErr::Runtime("edge_op call(__call__): stack drained"));
+            let chunk = vm.chunk;
+            return take_result(vm, "edge_op call(__call__): callable left no result", |vm| vm.call_with(recv, None, args, &[], chunk, &mut []));
         }
         let ty = vm.type_name(recv);
         let mid = lookup_method(ty, name).ok_or_else(|| VmErr::Attribute(s!("'", str ty, "' object has no method '", str name, "'")))?;
-        let stack_before = vm.stack.len();
-        dispatch_method(vm, mid, recv, args, &[])?;
-        if vm.stack.len() != stack_before + 1 {
-            return Err(VmErr::Runtime("edge_op call: method left no result"));
-        }
-        // The length check guarantees a value, `ok_or` keeps the FFI boundary panic-free if that ever changes.
-        vm.stack.pop().ok_or(VmErr::Runtime("edge_op call: stack drained mid-dispatch"))
+        take_result(vm, "edge_op call: method left no result", |vm| dispatch_method(vm, mid, recv, args, &[]))
     })
 }
 
-/* GetAttr, module/instance attr, or bind builtin method as BoundMethod. */
+/* Runs `f` frameless, a hook has no frame, and pops the one value it leaves. */
+fn take_result(vm: &mut VM<'static>, what: &'static str, f: impl FnOnce(&mut VM<'static>) -> Result<(), VmErr>) -> Result<Val, VmErr> {
+    let before = vm.stack.len();
+    f(vm)?;
+    if vm.stack.len() != before + 1 { return Err(VmErr::Runtime(what)); }
+    vm.stack.pop().ok_or(VmErr::Runtime(what))
+}
+
+/* GetAttr reads like `recv.name`. */
 fn dispatch_get_attr(recv_h: u32, name: &str) -> Result<Val, VmErr> {
     with_recv("edge_op get_attr: invalid receiver handle", recv_h, |vm, recv| {
-        // Module attribute.
-        if recv.is_heap() && let HeapObj::Module(_, attrs) = vm.heap.get(recv)
-        {
-            let bare = name;
-            if let Some((_, v)) = attrs.iter().find(|(n, _)| n == bare) {
-                return Ok(*v);
-            }
-            return Err(VmErr::Attribute(s!("module has no attribute '", str name, "'")));
-        }
-        // Instance attribute.
-        if recv.is_heap() && let HeapObj::Instance(_cls, attrs) = vm.heap.get(recv)
-        {
-            let entries: Vec<(Val, Val)> = attrs.borrow().iter().collect();
-            for (k, v) in &entries {
-                if k.is_heap()
-                    && let HeapObj::Str(s) = vm.heap.get(*k)
-                    && s == name
-                {
-                    return Ok(*v);
-                }
-            }
-            return Err(VmErr::Attribute(s!("instance has no attribute '", str name, "'")));
-        }
-        // Builtin method -> BoundMethod.
-        let ty = vm.type_name(recv);
-        if let Some(mid) = lookup_method(ty, name) {
-            return vm.heap.alloc(HeapObj::BoundMethod(recv, mid));
-        }
-        Err(VmErr::Attribute(s!("'", str ty, "' object has no attribute '", str name, "'")))
+        let chunk = vm.chunk;
+        take_result(vm, "edge_op get_attr: lookup left no result", |vm| vm.load_attr(recv, name, chunk, &mut []))
     })
 }
 
-/* SetAttr writes to instance `__dict__`, rejects modules and builtins. */
+/* SetAttr writes like `recv.name = value`. */
 fn dispatch_set_attr(recv_h: u32, name: &str, args: &[Val]) -> Result<Val, VmErr> {
-    if args.len() != 1 {
+    let &[value] = args else {
         return Err(VmErr::TypeMsg(s!("set_attr expects exactly 1 value, got ", int args.len() as i64)));
-    }
-    let value = args[0];
+    };
     with_recv("edge_op set_attr: invalid receiver handle", recv_h, |vm, recv| {
-        if !recv.is_heap() {
-            return Err(VmErr::Type("cannot set attribute on this type"));
-        }
-        if let HeapObj::Instance(_cls, attrs) = vm.heap.get(recv) {
-            let attrs = attrs.clone();
-            let key = vm.heap.alloc(HeapObj::Str(name.to_string()))?;
-            attrs.borrow_mut().insert(key, value, &vm.heap);
-            return Ok(Val::none());
-        }
-        Err(VmErr::Type("cannot set attribute on this type"))
+        let chunk = vm.chunk;
+        vm.store_attr(recv, name, value, chunk, &mut [])?;
+        Ok(Val::none())
     })
 }
 
@@ -286,12 +248,7 @@ fn dispatch_get_item(recv_h: u32, args: &[Val]) -> Result<Val, VmErr> {
     }
     let idx = args[0];
     with_recv("edge_op get_item: invalid receiver handle", recv_h, |vm, recv| {
-        let stack_before = vm.stack.len();
-        let _ = vm.get_item_builtin(recv, idx)?; // Discard the bool (slice-path indicator).
-        if vm.stack.len() != stack_before + 1 {
-            return Err(VmErr::Runtime("edge_op get_item: get_item left no result"));
-        }
-        vm.stack.pop().ok_or(VmErr::Runtime("edge_op get_item: stack drained mid-dispatch"))
+        take_result(vm, "edge_op get_item: get_item left no result", |vm| vm.get_item_builtin(recv, idx))
     })
 }
 
@@ -308,60 +265,30 @@ fn dispatch_set_item(recv_h: u32, args: &[Val]) -> Result<Val, VmErr> {
     })
 }
 
+/* Len runs the VM `len` builtin, so its caps and charges apply. */
 fn dispatch_len(recv_h: u32) -> Result<Val, VmErr> {
     with_recv("edge_op len: invalid receiver handle", recv_h, |vm, recv| {
-        let n: i64 = match vm.heap.get(recv) {
-            HeapObj::Str(s) => s.chars().count() as i64,
-            HeapObj::Bytes(b) => b.len() as i64,
-            HeapObj::List(rc) => rc.borrow().len() as i64,
-            HeapObj::Dict(rc) => rc.borrow().len() as i64,
-            HeapObj::Set(rc) => rc.borrow().len() as i64,
-            HeapObj::Tuple(t) => t.len() as i64,
-            _ => return Err(VmErr::TypeMsg(s!("object of type '", str vm.type_name(recv), "' has no len()"))),
-        };
-        Ok(Val::int(n))
+        let n = vm.builtin_len(recv)?;
+        vm.int_to_val(Some(n))
     })
 }
 
 /* Iter, flatten any iterable into a List for guest GetItem/Len access. */
 fn dispatch_iter(recv_h: u32) -> Result<Val, VmErr> {
     with_recv("edge_op iter: invalid receiver handle", recv_h, |vm, recv| {
-        let items: Vec<Val> = match vm.heap.get(recv) {
-            HeapObj::List(rc) => rc.borrow().clone(),
-            HeapObj::Tuple(t) => t.clone(),
-            HeapObj::Set(rc) => rc.borrow().iter().copied().collect(),
-            HeapObj::Dict(rc) => rc.borrow().keys().collect(),
-            HeapObj::Bytes(b) => b.iter().map(|&byte| Val::int(byte as i64)).collect(),
-            HeapObj::Range(s, e, st) => {
-                let mut out = Vec::new();
-                let (mut cur, end, step) = (*s, *e, *st);
-                if step > 0 {
-                    while cur < end { out.push(Val::int(cur)); cur += step; }
-                } else if step < 0 {
-                    while cur > end { out.push(Val::int(cur)); cur += step; }
-                }
-                out
-            }
-            HeapObj::Str(s) => {
-                let chars: Vec<String> = s.chars().map(|c| c.to_string()).collect();
-                chars.into_iter()
-                    .map(|cs| vm.heap.alloc(HeapObj::Str(cs)))
-                    .collect::<Result<Vec<_>, _>>()?
-            }
-            _ => return Err(VmErr::TypeMsg(s!("object of type '", str vm.type_name(recv), "' is not iterable"))),
-        };
+        let items = vm.extract_iter(recv)?;
         vm.heap.alloc(HeapObj::List(Rc::new(RefCell::new(items))))
     })
 }
 
-/* IterNext pops the list head, raises StopIteration when empty. */
+/* IterNext pops the head of the list Op::Iter made or steps a builtin iterator, StopIteration once spent. */
 fn dispatch_iter_next(recv_h: u32) -> Result<Val, VmErr> {
     with_recv("edge_op iter_next: invalid receiver handle", recv_h, |vm, recv| {
-        if let HeapObj::List(rc) = vm.heap.get(recv) {
+        if matches!(vm.heap.try_get(recv), Some(HeapObj::Iter(..))) {
+            vm.iter_step(recv)?.ok_or_else(|| VmErr::Raised(s!("StopIteration")))
+        } else if let Some(HeapObj::List(rc)) = vm.heap.try_get(recv) {
             let mut v = rc.borrow_mut();
-            if v.is_empty() {
-                return Err(VmErr::Raised(s!("StopIteration")));
-            }
+            if v.is_empty() { return Err(VmErr::Raised(s!("StopIteration"))); }
             Ok(v.remove(0))
         } else {
             Err(VmErr::TypeMsg(s!("iter_next expects a List iterator (produced by Op::Iter), got '", str vm.type_name(recv), "'")))
@@ -408,10 +335,7 @@ fn wire_to_val(vm: &mut crate::vm::VM, w: &crate::abi::WireValue) -> Result<Val,
     Ok(match w {
         WireValue::None => Val::none(),
         WireValue::Bool(b) => Val::bool(*b),
-        WireValue::Int(i) => match crate::abi::inline_int_bits(*i) {
-            Some(bits) => Val(bits),
-            None => vm.heap.alloc(HeapObj::LongInt(*i))?,
-        },
+        WireValue::Int(i) => vm.heap.int(*i)?,
         WireValue::Float(f) => Val::float(*f),
         WireValue::Bytes(b) => {
             let s = core::str::from_utf8(b).map_err(|_| VmErr::Value("invalid UTF-8 in wire str"))?;

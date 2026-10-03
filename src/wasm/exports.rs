@@ -222,10 +222,7 @@ pub unsafe extern "C" fn register_native_module(spec_ptr: *const u8, spec_len: u
         .enumerate()
         .map(|(i, name)| (name.to_string(), base_id + i as u32))
         .collect();
-    with_runtime(|rt| {
-        rt.registry.push((spec, ModuleEntry::Native(funcs)));
-        rt.registry_changed();
-    });
+    with_runtime(|rt| rt.register(spec, ModuleEntry::Native(funcs)));
 }
 
 /* A spec or bare name the host cannot load, importing it fails at the import with `msg`. */
@@ -233,11 +230,7 @@ pub unsafe extern "C" fn register_native_module(spec_ptr: *const u8, spec_len: u
 pub unsafe extern "C" fn register_module_error(spec_ptr: *const u8, spec_len: u32, msg_ptr: *const u8, msg_len: u32) {
     let spec = unsafe { safe_str_owned(spec_ptr, spec_len) };
     let msg = unsafe { safe_str_owned(msg_ptr, msg_len) };
-    with_runtime(|rt| {
-        rt.refusals.retain(|(s, _)| *s != spec);
-        rt.refusals.push((spec, msg));
-        rt.registry_changed();
-    });
+    with_runtime(|rt| rt.refuse(spec, msg));
 }
 
 #[unsafe(no_mangle)]

@@ -30,8 +30,6 @@ pub(super) const fn bracket_pair(k: TokenType) -> (TokenType, &'static str, &'st
 pub(super) const fn open_str(k: TokenType) -> &'static str { bracket_pair(k).1 }
 #[inline]
 pub(super) const fn close_str(k: TokenType) -> &'static str { bracket_pair(k).2 }
-#[inline]
-pub(super) const fn match_close_str(open: TokenType) -> &'static str { bracket_pair(open).2 }
 
 // Call operand, high byte keyword count, low byte positional count.
 #[inline]
@@ -45,6 +43,9 @@ pub const INPLACE: u16 = 1;
 // Marks a fused builtin call given `*` or `**`, whose packed operand the VM runs as a plain call.
 pub const SPREAD_ARGS: u16 = 0x8000;
 
+// Marks a fused builtin run as a plain call, for uncounted keywords or a bad count.
+pub const KEYWORDS: u16 = 0x4000;
+
 // Shared spec -> compiled-chunk cache, a Vec (linear scan) avoids a hashbrown monomorphization.
 pub(crate) type ModuleCache = alloc::rc::Rc<core::cell::RefCell<Vec<(String, alloc::rc::Rc<SSAChunk>)>>>;
 
@@ -56,17 +57,12 @@ pub struct Parser<'src, I: Iterator<Item = Token>> {
     /* Names declared `global` in the current function body, redirects load/store to `self.globals`. */
     pub(super) globals_decl: crate::util::hash::FxHashSet<String>,
     pub(super) join_stack: Vec<JoinNode>,
-    pub(super) loop_starts: Vec<u16>,
     pub(super) last_line: usize,
     /* Last token's end offset, anchors diagnostics when `peek()` already skipped a Newline. */
     pub(super) last_end: usize,
-    pub(super) loop_breaks: Vec<Vec<usize>>,
-    // `true=for` (PopIter on break), false=while, parallels loop_starts/loop_breaks.
-    pub(super) loop_kinds: Vec<bool>,
+    pub(super) loops: Vec<LoopCtx>,
     /* Open finally/with cleanup blocks in the current function, break/continue cross these. */
     pub(super) cleanup_count: usize,
-    // `cleanup_count` snapshot at each loop's entry, parallels loop_starts.
-    pub(super) loop_cleanup_base: Vec<usize>,
     pub(super) expr_depth: usize,
     pub(super) saw_newline: bool,
     /* True inside f-string brace expr, disables `=` assignment so `f"{x=}"` parses as debug form. */
@@ -164,8 +160,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     pub(super) fn push_function(&mut self, params: Vec<String>, body: SSAChunk, defaults: u16, fname: Option<&str>, op: OpCode) {
         let param_slots: crate::util::hash::FxHashSet<String> = params.iter()
             .map(|p| s!(str types::param_base_name(p), "_0")).collect();
-        for name in &body.names {
-            if !param_slots.contains(name.as_str()) {
+        for (name, attr) in body.names.iter().zip(body.attr_only_names()) {
+            if !attr && !param_slots.contains(name.as_str()) {
                 self.chunk.push_name(name);
             }
         }
@@ -191,13 +187,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         let saved_ver = core::mem::take(&mut self.ssa_versions);
         let saved_globals = core::mem::take(&mut self.globals_decl);
         // Nested body owns its loops and block stack, isolate, then restore the enclosing ones.
-        let saved_loops = (
-            core::mem::take(&mut self.loop_starts),
-            core::mem::take(&mut self.loop_breaks),
-            core::mem::take(&mut self.loop_kinds),
-            core::mem::take(&mut self.loop_cleanup_base),
-            core::mem::replace(&mut self.cleanup_count, 0),
-        );
+        let saved_loops = (core::mem::take(&mut self.loops), core::mem::replace(&mut self.cleanup_count, 0));
         // Copy parent externs so nested def bodies can call imported natives, extras don't leak up.
         self.chunk.extern_table = saved_chunk.extern_table.clone();
         self.chunk.extern_index = saved_chunk.extern_index.clone();
@@ -209,8 +199,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         self.chunk = saved_chunk;
         self.ssa_versions = saved_ver;
         self.globals_decl = saved_globals;
-        (self.loop_starts, self.loop_breaks, self.loop_kinds,
-         self.loop_cleanup_base, self.cleanup_count) = saved_loops;
+        (self.loops, self.cleanup_count) = saved_loops;
         body
     }
 }
@@ -314,7 +303,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 } else if let Some(&(top_k, _, _, _)) = self.bracket_stack.last() {
                     self.errors.push(Diagnostic {
                         start: tok.start, end: tok.end,
-                        msg: s!(str close_str(tok.kind), " does not match ", str open_str(top_k), ", expected ", str match_close_str(top_k)),
+                        msg: s!(str close_str(tok.kind), " does not match ", str open_str(top_k), ", expected ", str close_str(top_k)),
                     });
                     self.bracket_stack.pop();
                 } else {
@@ -516,11 +505,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             ssa_versions: HashMap::default(),
             globals_decl: crate::util::hash::FxHashSet::default(),
             join_stack: Vec::new(),
-            loop_starts: Vec::new(),
-            loop_breaks: Vec::new(),
-            loop_kinds: Vec::new(),
+            loops: Vec::new(),
             cleanup_count: 0,
-            loop_cleanup_base: Vec::new(),
             saw_newline: false,
             in_fstring_expr: false,
             in_target_list: false,
@@ -564,7 +550,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             self.chunk.name_index.clear();
             self.chunk.nonlocals.clear();
             self.chunk.stmt_pos.clear();
-            self.loop_kinds.clear();
+            self.loops.clear();
         }
 
         self.chunk.emit(OpCode::ReturnValue, 0);

@@ -50,22 +50,9 @@ pub fn constant_fold(chunk: &mut SSAChunk) {
 
     if dead.iter().any(|&d| d) {
         compact_with_jump_remap(chunk, &dead);
-        // Rebuild phi_map, surviving Phis keep their relative order, so pair them sequentially.
-        if !surviving_pairs.is_empty() {
-            chunk.phi_sources = surviving_pairs;
-            chunk.phi_map = vec![0; chunk.instructions.len()];
-            let mut idx = 0usize;
-            for (i, ins) in chunk.instructions.iter().enumerate() {
-                if ins.opcode == OpCode::Phi {
-                    chunk.phi_map[i] = idx;
-                    idx += 1;
-                }
-            }
-        } else if !chunk.phi_map.is_empty() {
-            // All Phis were eliminated, clear both metadata vectors.
-            chunk.phi_sources.clear();
-            chunk.phi_map.clear();
-        }
+        // Surviving Phis keep their relative order, so they pair with the kept sources in sequence.
+        chunk.phi_sources = surviving_pairs;
+        chunk.index_phis();
     }
 
     for (_, body, _, _) in chunk.functions.iter_mut() {
@@ -74,20 +61,6 @@ pub fn constant_fold(chunk: &mut SSAChunk) {
     for class_body in chunk.classes.iter_mut() {
         constant_fold(class_body);
     }
-}
-
-#[inline]
-fn is_jump_op(op: OpCode) -> bool {
-    matches!(
-        op,
-        OpCode::Jump
-        | OpCode::JumpIfFalse
-        | OpCode::JumpIfFalseOrPop
-        | OpCode::JumpIfTrueOrPop
-        | OpCode::ForIter
-        | OpCode::SetupExcept
-        | OpCode::SetupFinally
-    )
 }
 
 /* Build remap[i] = new index after compaction, dead entries forward to next live, n->new_len. */
@@ -111,7 +84,7 @@ fn compact_with_jump_remap(chunk: &mut SSAChunk, dead: &[bool]) {
     for (ip, _) in dead.iter().enumerate().take(n) {
         if dead[ip] { continue; }
         let ins = &mut chunk.instructions[ip];
-        if !is_jump_op(ins.opcode) { continue; }
+        if !ins.opcode.is_jump() { continue; }
         let target = ins.operand as usize;
         let new_target = if target > n { target } else { remap[target] };
         if let Ok(v) = u16::try_from(new_target) { ins.operand = v; }
@@ -195,7 +168,7 @@ fn prev_live(dead: &[bool], from: usize) -> Option<usize> {
 /* True when the jump just before `start` lands in `(start, end]`, where `or`, `and` and ternaries join. */
 fn skips_into(chunk: &SSAChunk, start: usize, end: usize) -> bool {
     let Some(j) = start.checked_sub(1).map(|i| chunk.instructions[i]) else { return false };
-    is_jump_op(j.opcode) && (start + 1..=end).contains(&(j.operand as usize))
+    j.opcode.is_jump() && (start + 1..=end).contains(&(j.operand as usize))
 }
 
 fn try_fold_binop(chunk: &mut SSAChunk, dead: &mut [bool], ip: usize) {
@@ -273,9 +246,9 @@ fn fold_binop(op: OpCode, a: Val, b: Val) -> Option<Val> {
             OpCode::Add => ai.checked_add(bi)?,
             OpCode::Sub => ai.checked_sub(bi)?,
             OpCode::Mul => ai.checked_mul(bi)?,
-            // floored mod/div (sign follows divisor), not Euclidean, matches the runtime path.
-            OpCode::Mod => if bi == 0 { return None; } else { let r = ai % bi; if r != 0 && (r < 0) != (bi < 0) { r + bi } else { r } },
-            OpCode::FloorDiv => if bi == 0 { return None; } else { let q = ai / bi; let r = ai - q * bi; if r != 0 && (r < 0) != (bi < 0) { q - 1 } else { q } },
+            // Floored like the runtime path, the sign follows the divisor.
+            OpCode::Mod => crate::value::int_divmod(ai, bi)?.1,
+            OpCode::FloorDiv => crate::value::int_divmod(ai, bi)?.0,
             OpCode::BitAnd => ai & bi,
             OpCode::BitOr => ai | bi,
             OpCode::BitXor => ai ^ bi,

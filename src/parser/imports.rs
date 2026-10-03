@@ -3,7 +3,7 @@ use crate::s;
 use super::Parser;
 use super::types::{Diagnostic, ImportEntry, ImportKind, NativeClassEntry, OpCode, SSAChunk, parse_string, ssa_strip};
 use crate::lexer::{Token, TokenType, lex};
-use crate::modules::{Resolved, binding_to_extern};
+use crate::modules::Resolved;
 use crate::util::hash::FxHashSet;
 
 use alloc::{string::{String, ToString}, vec::Vec};
@@ -184,13 +184,27 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     /* Build a Native ImportKind from resolved bindings/classes/consts. */
     fn native_import_kind(bindings: &[crate::modules::NativeBinding], classes: &[crate::modules::NativeClass], consts: &[crate::modules::NativeBinding]) -> ImportKind {
         ImportKind::Native {
-            funcs: bindings.iter().map(binding_to_extern).collect(),
+            funcs: bindings.to_vec(),
             classes: classes.iter().map(|c| NativeClassEntry {
                 name: c.name.clone(),
-                methods: c.methods.iter().map(binding_to_extern).collect(),
+                methods: c.methods.clone(),
             }).collect(),
-            consts: consts.iter().map(binding_to_extern).collect(),
+            consts: consts.to_vec(),
         }
+    }
+
+    /* The host resolution of `spec`, a failure reported at `span`. */
+    fn resolve_at(&mut self, spec: &str, span: (usize, usize)) -> Option<Resolved> {
+        self.resolver.resolve(spec).map_err(|msg| self.error_at(span.0, span.1, &msg)).ok()
+    }
+
+    /* Binds native `b` for direct CallExtern under `alias`, false once the 256 slot table is full. */
+    fn push_extern(&mut self, b: &crate::modules::NativeBinding, alias: &str, span: (usize, usize)) -> bool {
+        let idx = self.chunk.extern_table.len() as u16;
+        if idx > 0xFF { self.error_at(span.0, span.1, "too many native imports (max 256 per module)"); return false; }
+        self.chunk.extern_table.push(b.clone());
+        self.chunk.extern_index.insert(alias.to_string(), idx);
+        true
     }
 
     /* Emit `LoadModule + LoadAttr(name) + StoreName(alias)` to bind a module attribute under `alias`. */
@@ -203,14 +217,9 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
     /* Named import registers module, emits LoadModule+LoadAttr+StoreName, Native also populates extern_table for functions. */
     fn resolve_and_bind_named(&mut self, spec: &str, span: (usize, usize), names: Vec<(String, String)>) {
-        let resolved = match self.resolver.resolve(spec) {
-            Ok(r) => r,
-            Err(msg) => { self.error_at(span.0, span.1, &msg); return; }
-        };
-        let url = match &resolved {
-            Resolved::Code { canonical, .. } => canonical.clone(),
-            Resolved::Native { canonical, .. } => canonical.clone(),
-        };
+        let Some(resolved) = self.resolve_at(spec, span) else { return; };
+        let (Resolved::Code { canonical, .. } | Resolved::Native { canonical, .. }) = &resolved;
+        let url = canonical.clone();
         match resolved {
             Resolved::Native { bindings, classes, consts, .. } => {
                 // Register module first so LoadModule can target it for class and const imports.
@@ -226,10 +235,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                             &s!("module '", str &url, "' has no export '", str name, "'"));
                         continue;
                     };
-                    let idx = self.chunk.extern_table.len() as u16;
-                    if idx > 0xFF { self.error_at(span.0, span.1, "too many native imports (max 256 per module)"); continue; }
-                    self.chunk.extern_table.push(binding_to_extern(b));
-                    self.chunk.extern_index.insert(alias.clone(), idx);
+                    if !self.push_extern(b, alias, span) { continue; }
                     self.bind_module_attr(import_idx, name, alias);
                 }
             }
@@ -251,10 +257,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
     /* `import X` registers module, emits LoadModule+StoreName, VM builds a singleton Val at init. */
     fn resolve_and_bind_all(&mut self, spec: &str, span: (usize, usize), alias: &str) {
-        let resolved = match self.resolver.resolve(spec) {
-            Ok(r) => r,
-            Err(msg) => { self.error_at(span.0, span.1, &msg); return; }
-        };
+        let Some(resolved) = self.resolve_at(spec, span) else { return; };
         let import_idx = match resolved {
             Resolved::Native { bindings, classes, consts, canonical } => {
                 self.register_import(&canonical, Self::native_import_kind(&bindings, &classes, &consts))
@@ -270,17 +273,11 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
     /* Star import, Native fills extern_index, Code scans top-level and emits LoadModule+LoadAttr+StoreName per export. */
     fn resolve_and_bind_star(&mut self, spec: &str, span: (usize, usize)) {
-        let resolved = match self.resolver.resolve(spec) {
-            Ok(r) => r,
-            Err(msg) => { self.error_at(span.0, span.1, &msg); return; }
-        };
+        let Some(resolved) = self.resolve_at(spec, span) else { return; };
         match resolved {
             Resolved::Native { bindings, classes, consts, canonical } => {
                 for b in &bindings {
-                    let idx = self.chunk.extern_table.len() as u16;
-                    if idx > 0xFF { self.error_at(span.0, span.1, "too many native imports (max 256 per module)"); break; }
-                    self.chunk.extern_table.push(binding_to_extern(b));
-                    self.chunk.extern_index.insert(b.name.clone(), idx);
+                    if !self.push_extern(b, &b.name, span) { break; }
                 }
                 let import_idx = self.register_import(&canonical, Self::native_import_kind(&bindings, &classes, &consts));
                 // Star import binds each export via LoadModule+LoadAttr+StoreName under its name.

@@ -16,15 +16,10 @@ pub use manifest::{Manifest, parse_manifest, parent_dir, walk_up_dirs, dir_of, e
 pub type ExternFnPlain = fn(&mut HeapPool, &[Val], Option<Val>) -> Result<Val, VmErr>;
 
 /* Arc-wrapped callable for EdgePython natives, supports stateful loaders. */
-pub type ExternFnPtr = Arc<dyn Fn(&mut HeapPool, &[Val], Option<Val>) -> Result<Val, VmErr> + Send + Sync>;
+pub type ExternFnPtr = crate::value::ExternCallable;
 
-/* Named native binding with purity flag, pure=true enables VM memoization, false for I/O or side-effects. */
-#[derive(Clone)]
-pub struct NativeBinding {
-    pub name: String,
-    pub func: ExternFnPtr,
-    pub pure: bool,
-}
+/* A native binding is the extern a call site binds, `pure` lets the VM memoize it. */
+pub type NativeBinding = crate::value::ExternFn;
 
 impl NativeBinding {
     /* Convenience constructor wrapping a plain fn pointer into an Arc for hand-written Rust natives. */
@@ -124,23 +119,10 @@ impl Resolver for NoopResolver {
     }
 }
 
-/* Boxes a concrete Resolver into `Box<dyn Resolver>`, removing boilerplate casts at call sites. */
-pub fn boxed<R: Resolver + 'static>(r: R) -> Box<dyn Resolver> {
-    Box::new(r)
-}
-
 impl Default for Box<dyn Resolver> {
     fn default() -> Self { Box::new(NoopResolver) }
 }
 
-/* Converts public NativeBinding into internal ExternFn, two structs separate host API from VM storage. */
-pub(crate) fn binding_to_extern(b: &NativeBinding) -> crate::value::ExternFn {
-    crate::value::ExternFn {
-        name: b.name.clone(),
-        func: b.func.clone(),
-        pure: b.pure,
-    }
-}
 
 /* A scanned import, paths carry the .py suffix with dots already mapped to slashes. */
 #[derive(Debug, Clone, PartialEq)]

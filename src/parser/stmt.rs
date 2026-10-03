@@ -100,7 +100,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             }
             Some(TokenType::Class) => {
                 self.advance();
-                self.class_def();
+                self.class_def_with(0);
                 false
             }
             Some(TokenType::Pass) => {
@@ -113,12 +113,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 let name = self.advance_text();
                 self.type_params();
                 self.eat(TokenType::Equal);
-                let outer_versions = self.ssa_versions.clone();
-                let body = self.with_fresh_chunk(|s| {
-                    s.ssa_versions = outer_versions;
-                    s.expr();
-                    s.chunk.emit(OpCode::ReturnValue, 0);
-                });
+                let body = self.expr_body(&[]);
                 self.push_function(Vec::new(), body, 0, None, OpCode::MakeFunction);
                 let idx = self.chunk.push_name(&name);
                 self.chunk.emit(OpCode::MakeTypeAlias, idx);
@@ -176,10 +171,11 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             }
             Some(TokenType::Raise) => {
                 self.advance();
-                // `peek_same_line` keeps the line boundary so a bare `raise` is detected, not parsed as an expr.
-                if self.peek_same_line().is_some() {
+                // A line end or semicolon ends a bare `raise`, and `from` must share its line.
+                if !matches!(self.peek_same_line(), None | Some(TokenType::Semi | TokenType::Dedent)) {
                     self.expr();
-                    if self.eat_if(TokenType::From) {
+                    if matches!(self.peek_same_line(), Some(TokenType::From)) {
+                        self.advance();
                         self.expr();
                         self.chunk.emit(OpCode::RaiseFrom, 0);
                     } else {
@@ -193,24 +189,22 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             }
             Some(TokenType::Break) => {
                 self.advance();
-                if self.loop_breaks.is_empty() {
-                    self.error("'break' outside loop");
-                } else {
-                    self.emit_loop_unwind();
-                    // For-loop, PopIter before break so `iter_stack` stays clean.
-                    if let Some(true) = self.loop_kinds.last() {
-                        self.chunk.emit(OpCode::PopIter, 0);
-                    }
-                    let j = self.emit_jump(OpCode::Jump);
-                    if let Some(breaks) = self.loop_breaks.last_mut() {
-                        breaks.push(j);
+                match self.loops.last() {
+                    None => self.error("'break' outside loop"),
+                    Some(l) => {
+                        let is_for = l.is_for;
+                        self.emit_loop_unwind();
+                        // For-loop, PopIter before break so `iter_stack` stays clean.
+                        if is_for { self.chunk.emit(OpCode::PopIter, 0); }
+                        let j = self.emit_jump(OpCode::Jump);
+                        if let Some(l) = self.loops.last_mut() { l.breaks.push(j); }
                     }
                 }
                 false
             }
             Some(TokenType::Continue) => {
                 self.advance();
-                if let Some(&start) = self.loop_starts.last() {
+                if let Some(start) = self.loops.last().map(|l| l.start) {
                     self.emit_loop_unwind();
                     self.chunk.emit(OpCode::Jump, start);
                 } else {
@@ -234,7 +228,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             }
             Some(TokenType::Return) => {
                 self.advance();
-                if matches!(self.peek(), Some(TokenType::Newline | TokenType::Endmarker | TokenType::Dedent) | None) {
+                // A bare `return` ends at the line, the next statement is never its value.
+                if matches!(self.peek_same_line(), None | Some(TokenType::Semi | TokenType::Dedent)) {
                     self.chunk.emit(OpCode::LoadNone, 0);
                 } else {
                     self.expr_or_tuple(|s| s.peek_same_line().is_none());
@@ -290,7 +285,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
 
     /* Runs the finally/with blocks a break/continue crosses before its jump. */
     fn emit_loop_unwind(&mut self) {
-        let base = self.loop_cleanup_base.last().copied().unwrap_or(0);
+        let base = self.loops.last().map_or(0, |l| l.cleanup_base);
         let count = self.cleanup_count - base;
         if count > 0 {
             self.chunk.emit(OpCode::UnwindFinally, count as u16);
@@ -314,7 +309,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     }
 
     /* Assignment RHS, one expression or a comma tuple, ends at the line boundary. */
-    fn rhs_tuple(&mut self) {
+    pub(super) fn rhs_tuple(&mut self) {
         self.expr_or_tuple(|s| s.peek_same_line().is_none());
     }
 
@@ -388,7 +383,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
     }
 
     /* Annotation discards tokens up to `=`, Edge Python is dynamically typed. Returns true when an assignment follows. */
-    fn skip_annotation(&mut self) -> bool {
+    pub(super) fn skip_annotation(&mut self) -> bool {
         while !matches!(self.peek_same_line(), Some(TokenType::Equal) | None) {
             self.advance();
         }
@@ -611,121 +606,15 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 self.store_name(name);
                 false
             }
-            Some(TokenType::Lsqb) => {
+            Some(TokenType::Lsqb | TokenType::Dot) => {
                 self.emit_load_ssa(name);
-                self.advance();
-                // Slice form, BuildSlice+StoreItem, runtime recognises HeapObj::Slice as splice index.
-                if self.parse_subscript() {
-                    if matches!(self.peek_same_line(), Some(TokenType::Equal)) {
-                        self.advance();
-                        self.expr();
-                        self.chunk.emit(OpCode::StoreItem, 0);
-                        return false;
-                    }
-                    self.chunk.emit(OpCode::GetItem, 0);
-                    self.expr_tails(start);
-                    if matches!(self.peek_same_line(), Some(TokenType::Comma)) {
-                        return self.unpack_or_tuple(start, None);
-                    }
-                    return true;
-                }
-                if matches!(self.peek_same_line(), Some(TokenType::Equal)) {
-                    self.advance();
-                    self.expr();
-                    self.chunk.emit(OpCode::StoreItem, 0);
-                    false
-                } else if let Some(op) = self.peek_same_line().and_then(|t| Self::augmented_op(&t)) {
-                    self.emit_augmented_subscript(op);
-                    false
-                } else {
-                    self.chunk.emit(OpCode::GetItem, 0);
-                    self.expr_tails(start);
-                    if matches!(self.peek_same_line(), Some(TokenType::Comma)) {
-                        return self.unpack_or_tuple(start, None);
-                    }
-                    true
-                }
-            }
-            Some(TokenType::Dot) => {
-                // Collect the whole `a.b.c` attribute chain, the last attr is the target.
-                self.advance();
-                let mut attrs = vec![self.advance_text()];
-                while matches!(self.peek_same_line(), Some(TokenType::Dot)) {
-                    self.advance();
-                    attrs.push(self.advance_text());
-                }
-                if matches!(self.peek_same_line(), Some(TokenType::Colon)) {
-                    self.advance();
-                    if !self.skip_annotation() { return false; }
-                }
-                let last = attrs.pop().unwrap();
-                // Receiver = base object plus every intermediate attribute load.
-                self.emit_load_ssa(name.clone());
-                for a in &attrs {
-                    let idx = self.chunk.push_name(a);
-                    self.chunk.emit(OpCode::LoadAttr, idx);
-                }
-                if matches!(self.peek_same_line(), Some(TokenType::Equal)) {
-                    self.advance();
-                    self.expr();
-                    let idx = self.chunk.push_name(&last);
-                    self.chunk.emit(OpCode::StoreAttr, idx);
-                    false
-                } else if let Some(op) = self.peek_same_line().and_then(|t| Self::augmented_op(&t)) {
-                    self.advance();
-                    let idx = self.chunk.push_name(&last);
-                    // Need the receiver twice, reload a plain name, else Dup the computed object.
-                    if attrs.is_empty() { self.emit_load_ssa(name); } else { self.chunk.emit(OpCode::Dup, 0); }
-                    self.chunk.emit(OpCode::LoadAttr, idx);
-                    self.expr();
-                    self.emit_inplace(op);
-                    self.chunk.emit(OpCode::StoreAttr, idx);
-                    false
-                } else {
-                    let idx = self.chunk.push_name(&last);
-                    self.chunk.emit(OpCode::LoadAttr, idx);
-                    if matches!(self.peek_same_line(), Some(TokenType::Lpar)) {
-                        let call_pos = self.last_end as u32;
-                        let (pos, kw) = self.parse_args();
-                        self.chunk.emit(OpCode::Call, super::pack_call(pos, kw));
-                        self.chunk.record_call_pos(call_pos);
-                    } else if matches!(self.peek_same_line(), Some(TokenType::Lsqb)) {
-                        self.advance();
-                        self.expr();
-                        self.eat(TokenType::Rsqb);
-                        if matches!(self.peek_same_line(), Some(TokenType::Equal)) {
-                            self.advance();
-                            self.expr();
-                            self.chunk.emit(OpCode::StoreItem, 0);
-                            return false;
-                        }
-                        if let Some(op) = self.peek_same_line().and_then(|t| Self::augmented_op(&t)) {
-                            self.emit_augmented_subscript(op);
-                            return false;
-                        }
-                        self.chunk.emit(OpCode::GetItem, 0);
-                    }
-                    self.expr_tails(start);
-                    if matches!(self.peek_same_line(), Some(TokenType::Comma)) {
-                        return self.unpack_or_tuple(start, None);
-                    }
-                    true
-                }
+                self.stmt_tails(start)
             }
             Some(TokenType::Comma) => {
                 self.unpack_or_tuple(start, Some(name))
             }
-            Some(TokenType::Lpar) => {
-                // `name(...)` at statement level, allow postfix chains like `super().__init__(x)`.
-                let leaves = self.call(name);
-                if leaves {
-                    self.expr_tails(start);
-                    if matches!(self.peek_same_line(), Some(TokenType::Comma)) {
-                        return self.unpack_or_tuple(start, None);
-                    }
-                }
-                leaves
-            }
+            // `name(...)` at statement level, allow postfix chains like `super().__init__(x)`.
+            Some(TokenType::Lpar) => self.call(name) && self.stmt_tails(start),
             _ => {
                 self.emit_load_ssa(name);
                 self.expr_tails(start);
@@ -735,14 +624,15 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
         }
     }
 
-    /* `x[i] op= rhs`, Dup2 preserves container+index, GetItem, apply op, StoreItem. */
-    pub(super) fn emit_augmented_subscript(&mut self, op: OpCode) {
-        self.advance();
-        self.chunk.emit(OpCode::Dup2, 0);
-        self.chunk.emit(OpCode::GetItem, 0);
-        self.expr();
-        self.emit_inplace(op);
-        self.chunk.emit(OpCode::StoreItem, 0);
+    /* Trailers and operators after a statement head, true when a value is left on the stack. */
+    fn stmt_tails(&mut self, start: usize) -> bool {
+        if self.postfix_tail(true) { return false; }
+        self.infix_bp(0);
+        self.ternary_tail(start);
+        if matches!(self.peek_same_line(), Some(TokenType::Comma)) {
+            return self.unpack_or_tuple(start, None);
+        }
+        true
     }
 
     /* `op=` in its in-place form, so list `+=` and set `|=`/`&=`/`^=`/`-=` mutate the shared object and `__iop__` answers first. */
@@ -788,7 +678,7 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
                 self.chunk.emit(OpCode::Del, idx);
                 return;
             }
-            self.name(t);
+            self.name_operand(t);
         } else {
             self.expr();
         }
@@ -837,7 +727,8 @@ impl<'src, I: Iterator<Item = Token>> Parser<'src, I> {
             self.patch(fi);
             self.chunk.emit(OpCode::LoadYieldFrom, 0);
         } else {
-            self.expr();
+            // `yield a, b` yields one tuple, a closer or the line end stops it.
+            self.expr_or_tuple(|s| matches!(s.peek_same_line(), None | Some(TokenType::Rpar | TokenType::Rsqb | TokenType::Rbrace)));
             self.chunk.emit(OpCode::Yield, 0);
         }
     }

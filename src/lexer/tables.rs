@@ -121,38 +121,18 @@ pub fn keyword(s: &[u8]) -> Option<TokenType> {
 }
 
 
-/* f-string prefix, f, F, fr, Fr, fR, FR, rf, rF, Rf, RF. */
+/* What a prefix opens before a quote, an f-string, a string or bytes, in any case. */
 #[inline]
-pub fn is_fstring_prefix(s: &[u8]) -> bool {
-    match s.len() {
-        1 => matches!(s[0], b'f' | b'F'),
-        2 => matches!(
-            (s[0], s[1]),
-            (b'f' | b'F', b'r' | b'R') | (b'r' | b'R', b'f' | b'F')
-        ),
-        _ => false,
+pub fn string_prefix(s: &[u8]) -> Option<TokenType> {
+    let mut seen = 0u8;
+    for &c in s {
+        seen |= match c.to_ascii_lowercase() { b'f' => 1, b'r' => 2, b'u' => 4, b'b' => 8, _ => return None };
     }
-}
-
-/* Regular string prefix, r, R, u, U. The b/B variants live in `is_bytes_prefix` to emit a distinct `Bytes` token. */
-#[inline]
-pub fn is_string_prefix(s: &[u8]) -> bool {
-    match s.len() {
-        1 => matches!(s[0], b'r' | b'R' | b'u' | b'U'),
-        _ => false,
-    }
-}
-
-/* Bytes literal prefix, b, B, br, Br, bR, BR, rb, Rb, rB, RB. Emitted as `Bytes` so the parser produces `Value::Bytes`. */
-#[inline]
-pub fn is_bytes_prefix(s: &[u8]) -> bool {
-    match s.len() {
-        1 => matches!(s[0], b'b' | b'B'),
-        2 => matches!(
-            (s[0], s[1]),
-            (b'b' | b'B', b'r' | b'R') | (b'r' | b'R', b'b' | b'B')
-        ),
-        _ => false,
+    match (s.len(), seen) {
+        (1, 1) | (2, 3) => Some(TokenType::FstringStart),
+        (1, 2) | (1, 4) => Some(TokenType::String),
+        (1, 8) | (2, 10) => Some(TokenType::Bytes),
+        _ => None,
     }
 }
 

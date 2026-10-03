@@ -3,7 +3,6 @@ use alloc::{string::{String, ToString}, vec, vec::Vec};
 
 use super::VM;
 use super::types::*;
-use super::globals::sequence::range_int;
 
 impl<'a> VM<'a> {
 
@@ -91,29 +90,62 @@ impl<'a> VM<'a> {
         Ok(self.stack.split_off(at))
     }
 
-    /* Materialise an iterable into Vec<Val> for `*args` positional spread. */
-    pub(crate) fn iter_to_vec_for_spread(&mut self, v: Val) -> Result<Vec<Val>, VmErr> {
-        if !v.is_heap() { return Err(VmErr::Type("argument after * must be an iterable")); }
-        Ok(match self.heap.get(v) {
-            HeapObj::List(rc) => rc.borrow().clone(),
-            HeapObj::Tuple(t) => t.clone(),
-            HeapObj::Set(rc) => rc.borrow().iter().cloned().collect(),
-            HeapObj::Range(s, e, st) => {
-                let (s, e, st) = (*s, *e, *st);
-                if st == 0 { return Err(VmErr::Value("range() arg 3 must not be zero")); }
-                // Spreading a huge range would build a giant arg vec, cap against the heap budget.
-                let count = (e as i128 - s as i128).unsigned_abs() / (st as i128).unsigned_abs();
-                if count > self.heap.limit() as u128 { return Err(VmErr::Heap); }
-                let mut out = Vec::new();
-                let mut i = s;
-                // range_int promotes past the 48-bit inline range, checked_add ends at the i64 edge.
-                if st > 0 { while i < e { out.push(range_int(&mut self.heap, i)?); match i.checked_add(st) { Some(n) => i = n, None => break } } }
-                else { while i > e { out.push(range_int(&mut self.heap, i)?); match i.checked_add(st) { Some(n) => i = n, None => break } } }
-                out
+    /* The stack, iterator and handler tails above a suspended frame, handler depths made relative to it. */
+    pub(crate) fn split_frames(&mut self, sb: usize, ib: usize, eb: usize) -> (Vec<Val>, Vec<IterFrame>, Vec<ExceptionFrame>) {
+        let stack = self.stack.split_off(sb.min(self.stack.len()));
+        let iters = self.iter_stack.split_off(ib.min(self.iter_stack.len()));
+        let mut excs = self.exception_stack.split_off(eb.min(self.exception_stack.len()));
+        for f in &mut excs {
+            f.stack_depth = f.stack_depth.saturating_sub(sb);
+            f.iter_depth = f.iter_depth.saturating_sub(ib);
+        }
+        (stack, iters, excs)
+    }
+
+    /* Puts a suspended frame back on the live stacks and returns their bases. */
+    pub(crate) fn restore_frames(&mut self, stack: Vec<Val>, iters: Vec<IterFrame>, mut excs: Vec<ExceptionFrame>) -> (usize, usize, usize) {
+        let bases = (self.stack.len(), self.iter_stack.len(), self.exception_stack.len());
+        self.stack.extend(stack);
+        self.iter_stack.extend(iters);
+        for f in &mut excs {
+            f.stack_depth += bases.0;
+            f.iter_depth += bases.1;
+        }
+        self.exception_stack.extend(excs);
+        bases
+    }
+
+    /* Runs `f` with `vals` as GC roots, since user code inside it can run a collection. */
+    pub(crate) fn with_roots<R>(&mut self, vals: impl IntoIterator<Item = Val>, f: impl FnOnce(&mut Self) -> R) -> R {
+        let base = self.temp_roots.len();
+        self.temp_roots.extend(vals);
+        let r = f(self);
+        self.temp_roots.truncate(base);
+        r
+    }
+
+    /* `f(*row)` for each of the first `n` rows of `cols`, args and results rooted while `f` runs. */
+    pub(crate) fn call_rows(&mut self, f: Val, cols: &[Vec<Val>], n: usize, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<Vec<Val>, VmErr> {
+        self.with_roots(core::iter::once(f).chain(cols.iter().flatten().copied()), |vm| {
+            let mut out = Vec::with_capacity(n);
+            for i in 0..n {
+                vm.push(f);
+                for c in cols { vm.push(c[i]); }
+                vm.exec_call(cols.len() as u16, chunk, slots)?;
+                let r = vm.pop()?;
+                vm.temp_roots.push(r);
+                out.push(r);
             }
-            HeapObj::Coroutine(..) | HeapObj::Str(_) | HeapObj::Bytes(_) | HeapObj::Dict(_) | HeapObj::FrozenSet(_) => return self.iter_to_vec_general(v),
-            _ => return Err(VmErr::Type("argument after * must be an iterable")),
+            Ok(out)
         })
+    }
+
+    /* Items of any iterable, a user `__iter__` included, for `*` spreads and unpacking. */
+    pub(crate) fn iterable_items(&mut self, v: Val, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<Vec<Val>, VmErr> {
+        match self.iter_to_vec_op(v, chunk, slots)? {
+            Some(items) => Ok(items),
+            None => self.extract_iter(v),
+        }
     }
 
     /* Materialise a mapping into (key_str, value) pairs for `**kwargs` spread. */
@@ -158,8 +190,7 @@ impl<'a> VM<'a> {
 
     #[inline]
     pub(crate) fn checked_jump(&mut self, target: usize, limit: usize) -> Result<usize, VmErr> {
-        if self.budget == 0 { return Err(cold_budget()); }
-        self.budget -= 1;
+        self.charge_step()?;
         if target > limit { return Err(cold_runtime("jump target out of bounds")); }
         Ok(target)
     }
@@ -174,10 +205,11 @@ impl<'a> VM<'a> {
         if !obj.is_heap() {
             return Err(VmErr::TypeMsg(s!("'", str self.type_name(obj), "' object is not iterable")));
         }
-        // Instance `__iter__` produces a user-defined iterator that drives `ForIter` via `__next__`.
+        // Instance `__iter__` gives a user iterator stepped by `__next__`, or a generator or builtin iterator looped as itself.
         if matches!(self.heap.get(obj), HeapObj::Instance(..))
             && let Some(iter) = self.try_call_dunder(obj, "__iter__", &[], chunk, slots)? {
-            return Ok(IterFrame::UserDefined(iter));
+            if matches!(self.heap.try_get(iter), Some(HeapObj::Instance(..))) { return Ok(IterFrame::UserDefined(iter)); }
+            return self.make_iter_frame(iter, chunk, slots);
         }
         Ok(match self.heap.get(obj) {
             HeapObj::Range(s, e, st) => IterFrame::Range { cur: *s, end: *e, step: *st },
@@ -203,38 +235,30 @@ impl<'a> VM<'a> {
                 IterFrame::Seq { items: items.into(), idx: 0 }
             },
             HeapObj::Coroutine(..) => return Ok(IterFrame::Coroutine(obj)),
+            // A builtin iterator advances in place, so the loop spends it.
+            HeapObj::Iter(..) => return Ok(IterFrame::UserDefined(obj)),
             _ => return Err(VmErr::TypeMsg(s!("'", str self.type_name(obj), "' object is not iterable"))),
         })
     }
 
-    pub(crate) fn exec_unpack_seq(&mut self, expected: usize) -> Result<(), VmErr> {
+    /* `a, b = it`, or `a, *b, c = it` with `after` targets past the star. */
+    pub(crate) fn unpack_iterable(&mut self, n: usize, after: Option<usize>, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let obj = self.pop()?;
-        if !obj.is_heap() { return Err(cold_type("cannot unpack non-sequence")); }
-        let items: Vec<Val> = match self.heap.get(obj) {
-            HeapObj::List(v) => v.borrow().clone(),
-            HeapObj::Tuple(v) => v.clone(),
-            HeapObj::Set(v) => v.borrow().iter().cloned().collect(),
-            HeapObj::FrozenSet(v) => v.iter().cloned().collect(),
-            // Range materialises to its ints, with the same budget cap as `*` spread.
-            HeapObj::Range(..) => self.iter_to_vec_for_spread(obj)?,
-            HeapObj::Str(s) => {
-                let s = s.clone();
-                let out = self.str_to_char_vals(&s)?;
-                if out.len() > expected {
-                    return Err(cold_value("too many values to unpack"));
-                } else if out.len() < expected {
-                    return Err(cold_value("not enough values to unpack"));
-                }
-                out
-            },
-            _ => return Err(cold_type("cannot unpack non-sequence")),
+        let items = match self.heap.try_get(obj) {
+            Some(HeapObj::Tuple(t)) => t.clone(),
+            Some(HeapObj::List(l)) => l.borrow().clone(),
+            _ => self.iterable_items(obj, chunk, slots)?,
         };
-        if items.len() > expected {
-            return Err(cold_value("too many values to unpack"));
-        } else if items.len() < expected {
-            return Err(cold_value("not enough values to unpack"));
+        let tail = after.unwrap_or(0);
+        if items.len() < n + tail { return Err(cold_value("not enough values to unpack")); }
+        if after.is_none() && items.len() > n { return Err(cold_value("too many values to unpack")); }
+        let mid = items.len() - tail;
+        for &v in items[mid..].iter().rev() { self.push(v); }
+        if after.is_some() {
+            let star = self.alloc_list(items[n..mid].to_vec())?;
+            self.push(star);
         }
-        for item in items.into_iter().rev() { self.push(item); }
+        for &v in items[..n].iter().rev() { self.push(v); }
         Ok(())
     }
 

@@ -103,6 +103,11 @@ impl HandleTable {
         }
     }
 
+    // Every value a handle still holds.
+    pub fn live(&self) -> impl Iterator<Item = u64> + '_ {
+        self.slots.iter().filter(|s| s.rc > 0).map(|s| s.val)
+    }
+
     // Look up a value by handle, or `None` if invalid / freed.
     pub fn get(&self, h: u32) -> Option<u64> {
         if h == 0 { return None; }
@@ -165,14 +170,9 @@ pub enum EncodeRequest<'a> {
     Invalid,
 }
 
-// Inline range for Val::int (48-bit signed), values outside go to HeapObj::LongInt.
-const INLINE_INT_MIN: i128 = -0x0000_8000_0000_0000i64 as i128;
-const INLINE_INT_MAX: i128 =  0x0000_7FFF_FFFF_FFFFi64 as i128;
-
 // Val bits for an inline int, `None` when the value needs a LongInt.
 pub fn inline_int_bits(i: i128) -> Option<u64> {
-    use nan_box::*;
-    (INLINE_INT_MIN..=INLINE_INT_MAX).contains(&i).then_some(TAG_INT | ((i as i64) as u64 & INT_PAYLOAD_MASK))
+    i64::try_from(i).ok().and_then(crate::value::Val::int_checked).map(|v| v.0)
 }
 
 // Maps (tag, bytes) to EncodeRequest using the sealed `nan_box` layout.
@@ -234,46 +234,15 @@ pub enum PrimitiveBytes {
 
 // Classifies Val bits, Heap routes the host to HeapPool.
 pub fn classify_decode(val_bits: u64) -> DecodeBits {
-    use nan_box::*;
-
-    // Any non-QNAN-tagged pattern is a float.
-    if (val_bits & QNAN) != QNAN {
-        return DecodeBits::Primitive {
-            tag: Tag::Float as u32,
-            bytes: PrimitiveBytes::Eight(f64::from_bits(val_bits).to_le_bytes()),
-        };
-    }
-    // Int, QNAN|SIGN with payload. Sign-extend the 48-bit payload to i128 (wire width).
-    if (val_bits & (QNAN | SIGN)) == TAG_INT {
-        let raw = (val_bits & INT_PAYLOAD_MASK) as i64;
-        let sign_extended_i64 = (raw << 16) >> 16;
-        let as_i128 = sign_extended_i64 as i128;
-        return DecodeBits::Primitive {
-            tag: Tag::Int as u32,
-            bytes: PrimitiveBytes::Sixteen(as_i128.to_le_bytes()),
-        };
-    }
-    // Singletons and heap handles.
-    let lower = val_bits & 0xF;
-    if (val_bits & QNAN) == QNAN && (val_bits & SIGN) == 0 {
-        if val_bits == TAG_NONE {
-            return DecodeBits::Primitive {
-                tag: Tag::None as u32, bytes: PrimitiveBytes::None,
-            };
-        }
-        if val_bits == TAG_TRUE {
-            return DecodeBits::Primitive {
-                tag: Tag::Bool as u32, bytes: PrimitiveBytes::Bool(1),
-            };
-        }
-        if val_bits == TAG_FALSE {
-            return DecodeBits::Primitive {
-                tag: Tag::Bool as u32, bytes: PrimitiveBytes::Bool(0),
-            };
-        }
-        if lower >= 4 {
-            return DecodeBits::Heap;
-        }
-    }
-    DecodeBits::Invalid
+    let v = crate::value::Val(val_bits);
+    // Ints widen to the 16-byte wire form.
+    // A NaN leaves without the id its payload carries inside the engine.
+    let float = |f: f64| if f.is_nan() { f64::from_bits((val_bits & crate::abi::nan_box::SIGN) | crate::value::Val::NAN_BASE) } else { f };
+    let (tag, bytes) = if v.is_float() { (Tag::Float, PrimitiveBytes::Eight(float(v.as_float()).to_le_bytes())) }
+        else if v.is_int() { (Tag::Int, PrimitiveBytes::Sixteen((v.as_int() as i128).to_le_bytes())) }
+        else if v.is_none() { (Tag::None, PrimitiveBytes::None) }
+        else if v.is_bool() { (Tag::Bool, PrimitiveBytes::Bool(v.as_bool() as u8)) }
+        else if v.is_heap() { return DecodeBits::Heap; }
+        else { return DecodeBits::Invalid; };
+    DecodeBits::Primitive { tag: tag as u32, bytes }
 }

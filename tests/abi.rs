@@ -48,6 +48,8 @@ mod test {
         match (classify_encode(tag, &payload), expect) {
             (EncodeRequest::Invalid, e) if e == "invalid" => {}
             (EncodeRequest::Direct(b), e) if e.get("direct").is_some() => assert_eq!(b, bits(e["direct"].as_str().unwrap()), "direct bits mismatch on: {case}"),
+            // Every NaN gets an identity of its own, so only its being a float NaN is fixed.
+            (EncodeRequest::Direct(b), e) if e.get("nan").is_some() => assert!(f64::from_bits(b).is_nan() && (b & 0x7FFC_0000_0000_0000) != 0x7FFC_0000_0000_0000, "nan mismatch on: {case}"),
             (EncodeRequest::AllocStr(s), e) if e.get("str").is_some() => assert_eq!(s, e["str"].as_str().unwrap(), "str mismatch on: {case}"),
             (EncodeRequest::AllocBytes(b), e) if e.get("bytes").is_some() => assert_eq!(b, unhex(e["bytes"].as_str().unwrap()), "bytes mismatch on: {case}"),
             (EncodeRequest::AllocLongInt(i), e) if e.get("longint").is_some() => assert_eq!(i, e["longint"].as_str().unwrap().parse::<i128>().unwrap(), "longint mismatch on: {case}"),
@@ -124,6 +126,22 @@ mod test {
                 other => panic!("unknown case kind: {other}"),
             }
         }
+    }
+
+    /* The collector roots exactly the values a handle still holds, a released slot drops out until reused. */
+    #[test]
+    fn live_lists_held_values() {
+        let mut table = HandleTable::new();
+        let (a, b, _c) = (table.put(10), table.put(20), table.put(30));
+        table.release(b);
+        table.release(b);
+        assert_eq!(table.live().collect::<Vec<_>>(), vec![10, 30]);
+        table.release(a);
+        assert_eq!(table.live().collect::<Vec<_>>(), vec![30]);
+        table.put(40);
+        assert_eq!(table.live().collect::<Vec<_>>(), vec![40, 30]);
+        table.clear();
+        assert_eq!(table.live().count(), 0);
     }
 
     /* Depth cases are generative, so they stay in Rust. */

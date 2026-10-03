@@ -351,27 +351,27 @@ print(sorted(["banana", "apple", "kiwi"], key=len))
 
 ### reversed
 
-`reversed(x)` returns a new list in reverse order. It is eager, not a lazy iterator. A string becomes a list of one-character strings.
+`reversed(x)` returns an iterator over a sequence or a dict from its last item, the items read when the call is made. A set is not reversible and raises `TypeError`.
 
 ```edge-python
-print(reversed([1, 2, 3]))
-print(reversed("abc"))
+print(list(reversed([1, 2, 3])))
+print("".join(reversed("abc")))
 ```
 
 ```output
 [3, 2, 1]
-['c', 'b', 'a']
+cba
 ```
 
 ### enumerate
 
-`enumerate(iterable)` returns a list of `(index, value)` tuples. A second argument, positional or `start=`, sets the first index.
+`enumerate(iterable)` returns an iterator of `(index, value)` tuples. A second argument, positional or `start=`, sets the first index.
 
 ```edge-python
 for i, v in enumerate(["a", "b", "c"]):
     print(i, v)
 
-print(enumerate(["a", "b"], start=7))
+print(list(enumerate(["a", "b"], start=7)))
 ```
 
 ```output
@@ -383,7 +383,7 @@ print(enumerate(["a", "b"], start=7))
 
 ### zip
 
-`zip(a, b, ...)` returns a list of tuples pairing the inputs, truncated to the shortest. There is no `strict=` mode.
+`zip(a, b, ...)` returns an iterator of tuples pairing the inputs, truncated to the shortest. There is no `strict=` mode.
 
 ```edge-python
 for a, b in zip([1, 2, 3], ["x", "y"]):
@@ -400,7 +400,7 @@ print(list(zip([1, 2], [3, 4], [5, 6])))
 
 ### iter, next
 
-`iter(x)` returns a fresh iterator over any iterable. It materialises a snapshot, so the original is never mutated. `next(it)` returns the next item and raises `StopIteration` when exhausted. `next(it, default)` returns `default` instead of raising. The two-argument `iter(callable, sentinel)` calls `callable()` until it returns `sentinel`.
+`iter(x)` returns an iterator over any iterable. Over a list it reads the list as it goes, over a `range` it computes each step, and over anything else it takes the items up front. `next(it)` returns the next item in constant time and raises `StopIteration` when exhausted. `next(it, default)` returns `default` instead of raising. The two-argument `iter(callable, sentinel)` calls `callable()` until it returns `sentinel`.
 
 ```edge-python
 it = iter([10, 20, 30])
@@ -419,7 +419,7 @@ done
 
 ### map, filter
 
-`map(fn, *iterables)` returns a list of `fn(items...)`. Several iterables are walked in parallel and stop at the shortest. `filter(pred, iterable)` returns a list of items where `pred(item)` is truthy. A `None` predicate keeps truthy items. Both are eager.
+`map(fn, *iterables)` returns an iterator over `fn(items...)`. Several iterables are walked in parallel and stop at the shortest. `filter(pred, iterable)` returns an iterator over the items where `pred(item)` is truthy. A `None` predicate keeps truthy items. Both call the function on every item when created, not as the items are taken.
 
 ```edge-python
 print(list(map(lambda x: x * 2, [1, 2, 3])))

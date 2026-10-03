@@ -75,6 +75,7 @@ impl<'a> VM<'a> {
     }
 
     /* Class of an Instance, or `None` for built-in operands. Powers the subclass-first ordering rule. */
+    #[inline]
     fn instance_class(&self, v: Val) -> Option<Val> {
         if !v.is_heap() { return None; }
         match self.heap.get(v) { HeapObj::Instance(c, _) => Some(*c), _ => None }
@@ -100,12 +101,15 @@ impl<'a> VM<'a> {
     /* Binary arithmetic dunder dispatch with Python's subclass-first ordering, if `type(b)` is a strict subclass of `type(a)` the reflected op runs first so overrides win. */
     pub(crate) fn try_binary_dunder(&mut self, op: OpCode, a: Val, b: Val, inplace: bool, chunk: &SSAChunk, slots: &mut [Val]) -> Result<Option<Val>, VmErr> {
         if self.instance_class(a).is_none() && self.instance_class(b).is_none() { return Ok(None); }
-        if inplace && let Some(name) = inplace_dunder_name(op)
-            && let Some(r) = self.try_call_dunder(a, name, &[b], chunk, slots)? {
-            return Ok(Some(r));
-        }
-        let Some((lname, rname)) = binary_dunder_names(op) else { return Ok(None); };
-        self.dispatch_reflected(a, b, lname, rname, chunk, slots)
+        // The dunder runs user code that can collect, so both operands stay rooted.
+        self.with_roots([a, b], |vm| {
+            if inplace && let Some(name) = inplace_dunder_name(op)
+                && let Some(r) = vm.try_call_dunder(a, name, &[b], chunk, slots)? {
+                return Ok(Some(r));
+            }
+            let Some((lname, rname)) = binary_dunder_names(op) else { return Ok(None); };
+            vm.dispatch_reflected(a, b, lname, rname, chunk, slots)
+        })
     }
 
     /* The dunder an arithmetic site settles on for the IC, `__iop__` when the class of `a` defines it at an in-place site. */
@@ -115,11 +119,18 @@ impl<'a> VM<'a> {
     }
 
     /* Comparison dunder dispatch. `__eq__` reflects to itself. `__ne__` falls back to `not __eq__`. `<` reflects to `>` and vice-versa. */
+    #[inline]
     pub(crate) fn try_compare_dunder(&mut self, op: OpCode, a: Val, b: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<Option<Val>, VmErr> {
-        if self.instance_class(a).is_none() && self.instance_class(b).is_none() { return Ok(None); }
+        if !(a.is_heap() || b.is_heap()) || (self.instance_class(a).is_none() && self.instance_class(b).is_none()) { return Ok(None); }
+        self.compare_dunder(op, a, b, chunk, slots)
+    }
+
+    /* The comparison dunder of an instance operand, kept out of line so builtin compares stay inlined. */
+    #[inline(never)]
+    fn compare_dunder(&mut self, op: OpCode, a: Val, b: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<Option<Val>, VmErr> {
         let Some((lname, rname)) = compare_dunder_names(op) else { return Ok(None); };
 
-        let Some(r) = self.dispatch_reflected(a, b, lname, rname, chunk, slots)? else {
+        let Some(r) = self.with_roots([a, b], |vm| vm.dispatch_reflected(a, b, lname, rname, chunk, slots))? else {
             // `!=` falls back to negated `__eq__` when `__ne__` is absent.
             if matches!(op, OpCode::NotEq)
                 && let Some(eq) = self.try_compare_dunder(OpCode::Eq, a, b, chunk, slots)? {
@@ -147,19 +158,9 @@ impl<'a> VM<'a> {
         Ok(true)
     }
 
-    /* Step an iterator candidate once, flagged builtin-iterator lists drain the front, user instances dispatch `__next__`. `None` means no iterator protocol on the receiver. */
+    /* Steps an iterator once, None once spent or when the value has no `__next__`. */
     pub(crate) fn iter_next_proto(&mut self, iter: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<Option<Val>, VmErr> {
-        if iter.is_heap()
-            && let HeapObj::List(rc) = self.heap.get(iter) {
-            let rc = rc.clone();
-            if self.is_iter_list(&rc) {
-                let mut v = rc.borrow_mut();
-                if v.is_empty() { return Err(VmErr::Raised(crate::s!("StopIteration"))); }
-                let item = v.remove(0);
-                drop(v);
-                return Ok(Some(item));
-            }
-        }
+        if matches!(self.heap.try_get(iter), Some(HeapObj::Iter(..))) { return self.iter_step(iter); }
         self.try_call_dunder(iter, "__next__", &[], chunk, slots)
     }
 
@@ -169,64 +170,130 @@ impl<'a> VM<'a> {
             return Ok(self.truthy(r));
         }
 
-        let item_is_instance = item.is_heap() && matches!(self.heap.get(item), HeapObj::Instance(..));
-
-        // Built-in sequence container + instance item, walk and compare with `__eq__` so user equality wins over pointer eq.
-        if item_is_instance && container.is_heap() {
-            let items: Option<Vec<Val>> = match self.heap.get(container) {
-                HeapObj::List(v) => Some(v.borrow().clone()),
-                HeapObj::Tuple(v) => Some(v.clone()),
-                HeapObj::Set(s) => Some(s.borrow().iter().copied().collect()),
-                HeapObj::FrozenSet(s) => Some(s.iter().copied().collect()),
-                _ => None,
-            };
-            if let Some(items) = items {
-                for x in items {
-                    if self.eq_op(item, x, chunk, slots)? { return Ok(true); }
-                }
-                return Ok(false);
+        // A dict or set probes by hash, a user key through its own `__hash__` and `__eq__`.
+        let plain = |rich: bool, vm: &Self| !rich && !is_rich_key(item, &vm.heap);
+        let fast = match self.heap.try_get(container) {
+            Some(HeapObj::Dict(rc)) => { let m = rc.borrow(); plain(m.is_rich(), self).then(|| (m.contains_key(&item, &self.heap), false)) }
+            Some(HeapObj::Set(rc)) => { let s = rc.borrow(); plain(s.is_rich(), self).then(|| (s.contains(item, &self.heap), true)) }
+            Some(HeapObj::FrozenSet(s)) => plain(s.is_rich(), self).then(|| (s.contains(item, &self.heap), true)),
+            Some(HeapObj::List(_) | HeapObj::Tuple(_)) => return self.seq_contains(container, item, chunk, slots),
+            _ => None,
+        };
+        match fast {
+            // A miss still rejects an unhashable probe, a set probing as the frozenset it equals.
+            Some((hit, set)) => {
+                if !hit { if set { self.require_set_probe(item)?; } else { self.require_hashable(item)?; } }
+                return Ok(hit);
             }
+            None if matches!(self.heap.try_get(container), Some(HeapObj::Dict(_))) => return Ok(self.dict_get(container, item, chunk, slots)?.is_some()),
+            None if self.is_set_like(container) => return self.set_has(container, item, chunk, slots),
+            None => {}
         }
 
         // User instance container with `__iter__` walks via the iterator protocol, comparing items with `__eq__`.
         if container.is_heap() && matches!(self.heap.get(container), HeapObj::Instance(..))
             && let Some(iter) = self.try_call_dunder(container, "__iter__", &[], chunk, slots)? {
-            loop {
-                self.charge_step()?;
-                match self.iter_next_proto(iter, chunk, slots) {
+            // A generator or builtin iterator is a sequence of its own.
+            if !matches!(self.heap.try_get(iter), Some(HeapObj::Instance(..))) {
+                return self.with_roots([item, iter], |vm| vm.contains_op(iter, item, chunk, slots));
+            }
+            return self.with_roots([container, item, iter], |vm| loop {
+                vm.charge_step()?;
+                match vm.iter_next_proto(iter, chunk, slots) {
                     Ok(Some(v)) => {
-                        if self.eq_op(item, v, chunk, slots)? { return Ok(true); }
+                        vm.temp_roots.push(v);
+                        if vm.eq_op(item, v, chunk, slots)? { return Ok(true); }
                     }
                     Ok(None) => return Ok(false),
                     Err(VmErr::Raised(ref m)) if m == "StopIteration" || m.starts_with("StopIteration:") => return Ok(false),
                     Err(e) => return Err(e),
                 }
-            }
+            });
         }
 
+        // An iterator steps until a match, leaving the rest unconsumed.
+        if matches!(self.heap.try_get(container), Some(HeapObj::Iter(..))) {
+            return self.with_roots([container, item, Val::none()], |vm| loop {
+                vm.charge_step()?;
+                let Some(v) = vm.iter_step(container)? else { return Ok(false) };
+                if let Some(slot) = vm.temp_roots.last_mut() { *slot = v; }
+                if vm.eq_op(item, v, chunk, slots)? { return Ok(true); }
+            });
+        }
+        if matches!(self.heap.try_get(container), Some(HeapObj::Coroutine(..))) {
+            return self.with_roots([container, item, Val::none()], |vm| loop {
+                vm.charge_step()?;
+                let v = vm.resume_coroutine(container)?;
+                if !vm.yielded { return Ok(false); }
+                vm.yielded = false;
+                if let Some(slot) = vm.temp_roots.last_mut() { *slot = v; }
+                if vm.eq_op(item, v, chunk, slots)? { return Ok(true); }
+            });
+        }
         self.contains(container, item)
     }
 
-    /* `==` with dunder dispatch and pointer-eq fallback, used wherever `contains_op` walks a sequence. */
+    /* Member `==` for `contains_op`, identity first, then the dunder, then content equality. */
     pub(crate) fn eq_op(&mut self, a: Val, b: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<bool, VmErr> {
+        if a.0 == b.0 { return Ok(true); }
         if let Some(r) = self.try_compare_dunder(OpCode::Eq, a, b, chunk, slots)? { return Ok(self.truthy(r)); }
-        Ok(eq_vals_with_heap(a, b, &self.heap))
+        self.values_eq(a, b, chunk, slots)
+    }
+
+    /* `x in seq` read live, identity and content first, a user `__eq__` only where content cannot settle. */
+    fn seq_contains(&mut self, seq: Val, item: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<bool, VmErr> {
+        let scan = |items: &[Val], heap: &HeapPool| -> Result<bool, usize> {
+            for (j, &x) in items.iter().enumerate() {
+                if x.0 == item.0 { return Ok(true); }
+                match eq_checked(x, item, heap) { Some(true) => return Ok(true), Some(false) => {}, None => return Err(j) }
+            }
+            Ok(false)
+        };
+        let from = match self.heap.try_get(seq) {
+            Some(HeapObj::List(rc)) => scan(&rc.borrow(), &self.heap),
+            Some(HeapObj::Tuple(t)) => scan(t, &self.heap),
+            _ => Ok(false),
+        };
+        let mut i = match from { Ok(hit) => return Ok(hit), Err(j) => j };
+        self.with_roots([seq, item], |vm| loop {
+            let x = match vm.heap.try_get(seq) {
+                Some(HeapObj::List(rc)) => rc.borrow().get(i).copied(),
+                Some(HeapObj::Tuple(t)) => t.get(i).copied(),
+                _ => None,
+            };
+            let Some(x) = x else { return Ok(false) };
+            if vm.member_eq(x, item, chunk, slots)? { return Ok(true); }
+            i += 1;
+        })
     }
 
     /* Drive a user instance's `__iter__` result to a Vec, stepping a user `__next__` or draining a builtin-iterator list. Treats a missing `__iter__` as "no protocol" by returning `None`. Used by `list(custom)`, `tuple(custom)`, etc. */
     pub(crate) fn iter_to_vec_op(&mut self, obj: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<Option<Vec<Val>>, VmErr> {
         if !obj.is_heap() || !matches!(self.heap.get(obj), HeapObj::Instance(..)) { return Ok(None); }
         let Some(iter) = self.try_call_dunder(obj, "__iter__", &[], chunk, slots)? else { return Ok(None); };
-        let mut out = Vec::new();
-        loop {
-            self.charge_step()?;
-            match self.iter_next_proto(iter, chunk, slots) {
-                Ok(Some(v)) => out.push(v),
-                Ok(None) => return Ok(Some(out)),
-                Err(VmErr::Raised(ref m)) if m == "StopIteration" || m.starts_with("StopIteration:") => return Ok(Some(out)),
-                Err(e) => return Err(e),
+        // A builtin iterator or generator drains as itself, a user iterator steps `__next__`.
+        if !matches!(self.heap.try_get(iter), Some(HeapObj::Instance(..))) { return self.extract_iter(iter).map(Some); }
+        // Each `__next__` can run a collection, so the iterator and what it yielded stay rooted.
+        self.with_roots([obj, iter], |vm| {
+            let mut out = Vec::new();
+            loop {
+                vm.charge_step()?;
+                match vm.iter_next_proto(iter, chunk, slots) {
+                    // Inline ints escape the object quota, so the item count is capped by it too.
+                    Ok(Some(_)) if out.len() >= vm.heap.limit() => return Err(crate::vm::cold_heap()),
+                    Ok(Some(v)) => { vm.temp_roots.push(v); out.push(v); }
+                    Ok(None) => return Ok(Some(out)),
+                    Err(VmErr::Raised(ref m)) if m == "StopIteration" || m.starts_with("StopIteration:") => return Ok(Some(out)),
+                    Err(e) => return Err(e),
+                }
             }
-        }
+        })
+    }
+
+    /* Items of a user `__iter__` as a list a native can read, None for other values. */
+    pub(crate) fn lift_iterable(&mut self, v: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<Option<Val>, VmErr> {
+        let Some(items) = self.iter_to_vec_op(v, chunk, slots)? else { return Ok(None); };
+        Ok(Some(self.heap.alloc(HeapObj::List(Rc::new(RefCell::new(items))))?))
     }
 
     /* `str(v)` semantics, instance `__str__` wins, then `__repr__`, else the built-in display. */
@@ -240,11 +307,8 @@ impl<'a> VM<'a> {
             }
         }
         // Containers render their elements with repr, dispatching user __repr__ on instances.
-        let s = if self.is_container_val(v) {
-            self.repr_deep(v, chunk, slots, &mut Vec::new())?
-        } else {
-            self.display(v)
-        };
+        if self.is_container_val(v) { return self.repr_op(v, chunk, slots); }
+        let s = self.display(v);
         // Render is O(size). Charge it so reprinting growing data can't outrun the budget.
         self.charge_steps(s.len())?;
         Ok(s)
@@ -252,15 +316,7 @@ impl<'a> VM<'a> {
 
     /* `repr(v)` semantics, instance `__repr__` wins, otherwise the built-in repr (which adds quotes for strings, etc.). */
     pub(crate) fn repr_op(&mut self, v: Val, chunk: &SSAChunk, slots: &mut [Val]) -> Result<String, VmErr> {
-        if v.is_heap() && matches!(self.heap.get(v), HeapObj::Instance(..))
-            && let Some(r) = self.try_call_dunder(v, "__repr__", &[], chunk, slots)? {
-            return self.require_str(r, "__repr__");
-        }
-        let s = if self.is_container_val(v) {
-            self.repr_deep(v, chunk, slots, &mut Vec::new())?
-        } else {
-            self.repr(v)
-        };
+        let s = self.repr_deep(v, chunk, slots, &mut Vec::new())?;
         self.charge_steps(s.len())?;
         Ok(s)
     }
@@ -274,7 +330,6 @@ impl<'a> VM<'a> {
 
     /* Container-aware repr dispatches `__repr__` on nested instances. Elements always use repr, with `seen` tracking heap ids for cycle detection. */
     pub(crate) fn repr_deep(&mut self, v: Val, chunk: &SSAChunk, slots: &mut [Val], seen: &mut Vec<u32>) -> Result<String, VmErr> {
-        const DEEP_MAX: usize = 100;
         if !v.is_heap() { return Ok(self.repr(v)); }
         if !self.is_container_val(v) {
             if matches!(self.heap.get(v), HeapObj::Instance(..))
@@ -292,7 +347,7 @@ impl<'a> VM<'a> {
                 _ => "[...]".into(),
             });
         }
-        if seen.len() > DEEP_MAX { return Ok("...".into()); }
+        if seen.len() > crate::vm::value_ops::RENDER_DEPTH_MAX { return Ok("...".into()); }
         seen.push(id);
         let body = self.repr_container_body(v, chunk, slots, seen);
         seen.pop();
@@ -343,7 +398,11 @@ impl<'a> VM<'a> {
                 let entries: Vec<(Val, Val)> = d.borrow().iter().collect();
                 let mut out = String::from("{");
                 for (i, (k, val)) in entries.iter().enumerate() {
-                    if i > 0 { out.push_str(", "); }
+                    if i > 0 {
+                        // The output cap bounds breadth the way the depth cap bounds nesting.
+                        if out.len() > crate::vm::value_ops::MAX_REPR_LEN { out.push_str(", ..."); break; }
+                        out.push_str(", ");
+                    }
                     let kr = self.repr_deep(*k, chunk, slots, seen)?;
                     out.push_str(&kr);
                     out.push_str(": ");
@@ -359,7 +418,10 @@ impl<'a> VM<'a> {
 
     fn join_reprs(&mut self, out: &mut String, items: &[Val], chunk: &SSAChunk, slots: &mut [Val], seen: &mut Vec<u32>) -> Result<(), VmErr> {
         for (i, e) in items.iter().enumerate() {
-            if i > 0 { out.push_str(", "); }
+            if i > 0 {
+                if out.len() > crate::vm::value_ops::MAX_REPR_LEN { out.push_str(", ..."); break; }
+                out.push_str(", ");
+            }
             let r = self.repr_deep(*e, chunk, slots, seen)?;
             out.push_str(&r);
         }
@@ -371,7 +433,7 @@ impl<'a> VM<'a> {
         Err(VmErr::TypeMsg(crate::s!("'", str name, "' did not return a string")))
     }
 
-    /* `format(v, spec)` dispatch, instance `__format__(spec)` wins, otherwise the built-in spec engine runs. Empty spec on an instance still goes through `__format__` so user formatting can opt in. */
+    /* `format(v, spec)`, an instance `__format__(spec)` wins, an empty spec is `str(v)` and the rest runs the spec engine. */
     pub(crate) fn format_op(&mut self, v: Val, spec: &str, chunk: &SSAChunk, slots: &mut [Val]) -> Result<String, VmErr> {
         if v.is_heap() && matches!(self.heap.get(v), HeapObj::Instance(..)) {
             let spec_val = self.heap.alloc(HeapObj::Str(spec.to_string()))?;
@@ -379,6 +441,10 @@ impl<'a> VM<'a> {
                 return self.require_str(r, "__format__");
             }
         }
+        if spec.is_empty() { return self.display_op(v, chunk, slots); }
+        // Only numbers and strings read a spec, `f"{x!s:>9}"` pads anything else.
+        let own = v.is_int() || v.is_float() || v.is_bool() || matches!(self.heap.try_get(v), Some(HeapObj::Str(_) | HeapObj::LongInt(_)));
+        if !own { return Err(VmErr::TypeMsg(crate::s!("unsupported format string passed to ", str &self.type_repr_name(v), ".__format__"))); }
         crate::vm::format_spec::format_value(v, spec, &self.heap).map_err(crate::vm::format_spec::fmt_err)
     }
 

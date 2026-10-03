@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::util::uni;
 
 use core::iter;
 
@@ -39,7 +40,7 @@ enum Trim { Both, Start, End }
 fn strip_impl(vm: &mut VM, recv: Val, pos: &[Val], mode: Trim) -> Result<(), VmErr> {
     let s = recv_str(vm, recv)?;
     let out = if pos.is_empty() {
-        match mode { Trim::Both => s.trim(), Trim::Start => s.trim_start(), Trim::End => s.trim_end() }.to_string()
+        match mode { Trim::Both => s.trim_matches(uni::is_space), Trim::Start => s.trim_start_matches(uni::is_space), Trim::End => s.trim_end_matches(uni::is_space) }.to_string()
     } else {
         let p = val_to_str(vm, pos[0])?;
         let f = |c: char| p.contains(c);
@@ -51,24 +52,24 @@ pub fn strip(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { strip_i
 pub fn lstrip(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { strip_impl(vm, recv, pos, Trim::Start) }
 pub fn rstrip(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { strip_impl(vm, recv, pos, Trim::End) }
 
-pub fn isdigit(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
-    // Unicode-aware (e.g. superscripts), not ASCII-only.
-    vm.push(Val::bool(!s.is_empty() && s.chars().all(|c| c.is_numeric())));
-    Ok(())
+// str predicates, class tests need a non-empty string and case tests a cased char.
+macro_rules! str_pred {
+    ($name:ident, $f:expr) => {
+        pub fn $name(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
+            let hit = $f(recv_str_ref(vm, recv)?);
+            vm.push(Val::bool(hit));
+            Ok(())
+        }
+    };
 }
-
-pub fn isalpha(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
-    vm.push(Val::bool(!s.is_empty() && s.chars().all(|c| c.is_alphabetic())));
-    Ok(())
-}
-
-pub fn isalnum(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
-    vm.push(Val::bool(!s.is_empty() && s.chars().all(|c| c.is_alphanumeric())));
-    Ok(())
-}
+fn all_chars(s: &str, f: fn(char) -> bool) -> bool { !s.is_empty() && s.chars().all(f) }
+fn only_case(s: &str, other: fn(char) -> bool) -> bool { s.chars().any(|c| c.is_uppercase() || c.is_lowercase()) && !s.chars().any(other) }
+str_pred!(isdigit, |s: &str| all_chars(s, uni::is_digit));
+str_pred!(isalpha, |s: &str| all_chars(s, uni::is_alpha));
+str_pred!(isalnum, |s: &str| all_chars(s, uni::is_alnum));
+str_pred!(isspace, |s: &str| all_chars(s, uni::is_space));
+str_pred!(isupper, |s: &str| only_case(s, char::is_lowercase));
+str_pred!(islower, |s: &str| only_case(s, char::is_uppercase));
 
 // Collect the affix argument as one or more strings (str, or a tuple of str).
 fn affixes(vm: &VM, v: Val) -> Result<Vec<String>, VmErr> {
@@ -82,24 +83,17 @@ fn affixes(vm: &VM, v: Val) -> Result<Vec<String>, VmErr> {
     }
 }
 
-pub fn startswith(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let prefixes = affixes(vm, pos[0])?;
+// `str.startswith`/`endswith(affix[, start[, stop]])`, the optional window restricts where the affix must sit.
+fn affix_impl(vm: &mut VM, recv: Val, pos: &[Val], end: bool) -> Result<(), VmErr> {
+    let affixes = affixes(vm, pos[0])?;
     let ascii = vm.heap.str_is_ascii(recv);
     let s = recv_str_ref(vm, recv)?;
-    // Optional start/stop window restricts where the prefix must begin.
-    let hit = window(s, ascii, pos, 1).is_some_and(|(lo, hi)| prefixes.iter().any(|p| s[lo..hi].starts_with(p.as_str())));
+    let hit = window(s, ascii, pos, 1).is_some_and(|(lo, hi)| affixes.iter().any(|p| if end { s[lo..hi].ends_with(p.as_str()) } else { s[lo..hi].starts_with(p.as_str()) }));
     vm.push(Val::bool(hit));
     Ok(())
 }
-
-pub fn endswith(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let suffixes = affixes(vm, pos[0])?;
-    let ascii = vm.heap.str_is_ascii(recv);
-    let s = recv_str_ref(vm, recv)?;
-    let hit = window(s, ascii, pos, 1).is_some_and(|(lo, hi)| suffixes.iter().any(|p| s[lo..hi].ends_with(p.as_str())));
-    vm.push(Val::bool(hit));
-    Ok(())
-}
+pub fn startswith(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { affix_impl(vm, recv, pos, false) }
+pub fn endswith(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { affix_impl(vm, recv, pos, true) }
 
 // Byte bounds of the optional char-index `start`/`stop` window (pos[from], pos[from + 1]), None when start lies past the end or past stop.
 fn window(s: &str, ascii: bool, pos: &[Val], from: usize) -> Option<(usize, usize)> {
@@ -146,37 +140,21 @@ pub fn count(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     Ok(())
 }
 
-// Whitespace split capped at m, collapsing runs.
-fn split_ws_max(s: &str, m: usize) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    let n = chars.len();
-    let mut out = Vec::new();
-    let mut i = 0;
+// Whitespace split with at most `m` cuts and the rest kept whole, counted from the right when `rev`.
+fn split_ws_max(s: &str, m: usize, rev: bool) -> Vec<String> {
+    let mut chars: Vec<char> = s.chars().collect();
+    if rev { chars.reverse(); }
+    let piece = |cs: &[char]| -> String { if rev { cs.iter().rev().collect() } else { cs.iter().collect() } };
+    let (n, mut i, mut out) = (chars.len(), 0, Vec::new());
     while i < n {
-        while i < n && chars[i].is_whitespace() { i += 1; }
+        while i < n && uni::is_space(chars[i]) { i += 1; }
         if i >= n { break; }
-        if out.len() == m { out.push(chars[i..].iter().collect()); break; }
+        if out.len() == m { out.push(piece(&chars[i..])); break; }
         let start = i;
-        while i < n && !chars[i].is_whitespace() { i += 1; }
-        out.push(chars[start..i].iter().collect());
+        while i < n && !uni::is_space(chars[i]) { i += 1; }
+        out.push(piece(&chars[start..i]));
     }
-    out
-}
-
-// Right-to-left counterpart for rsplit(None, m).
-fn rsplit_ws_max(s: &str, m: usize) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = chars.len();
-    let mut out = Vec::new();
-    loop {
-        while i > 0 && chars[i - 1].is_whitespace() { i -= 1; }
-        if i == 0 { break; }
-        if out.len() == m { out.push(chars[..i].iter().collect()); break; }
-        let end = i;
-        while i > 0 && !chars[i - 1].is_whitespace() { i -= 1; }
-        out.push(chars[i..end].iter().collect());
-    }
-    out.reverse();
+    if rev { out.reverse(); }
     out
 }
 
@@ -192,8 +170,8 @@ fn split_impl(vm: &mut VM, recv: Val, pos: &[Val], from_right: bool) -> Result<(
     let strs: Vec<String> = if pos.is_empty() || pos[0].is_none() {
         // No separator, split on runs of whitespace, dropping empties.
         match maxsplit {
-            Some(m) => if from_right { rsplit_ws_max(&s, m) } else { split_ws_max(&s, m) },
-            None => s.split_whitespace().map(String::from).collect(),
+            Some(m) => split_ws_max(&s, m, from_right),
+            None => s.split(uni::is_space).filter(|w| !w.is_empty()).map(String::from).collect(),
         }
     } else {
         let sep = val_to_str(vm, pos[0])?;
@@ -212,7 +190,7 @@ pub fn split(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { split_i
 
 pub fn join(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let sep = recv_str(vm, recv)?;
-    let items = extract_sequence(vm, pos[0], "join() argument must be iterable")?;
+    let items = vm.extract_iter(pos[0]).map_err(|e| if matches!(e, VmErr::TypeMsg(_)) { cold_type("join() argument must be iterable") } else { e })?;
     let mut parts: Vec<String> = Vec::with_capacity(items.len());
     for v in items { parts.push(val_to_str(vm, v)?); }
     vm.alloc_and_push_str(parts.join(sep.as_str()))
@@ -222,6 +200,12 @@ pub fn replace(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let s = recv_str(vm, recv)?;
     let old = val_to_str(vm, pos[0])?;
     let new = val_to_str(vm, pos[1])?;
+    // A result past the heap limit fails before it allocates.
+    if new.len() > old.len() {
+        let hits = if old.is_empty() { s.chars().count() + 1 } else { s.matches(old.as_str()).count() };
+        let hits = match pos.get(2) { Some(n) if n.is_int() && n.as_int() >= 0 => hits.min(n.as_int() as usize), _ => hits };
+        if s.len().saturating_add(hits.saturating_mul(new.len() - old.len())) > vm.heap.limit() { return Err(cold_heap()); }
+    }
     // Optional third arg is max replacements (<0 means all).
     let out = match pos.get(2) {
         Some(n) if n.is_int() && n.as_int() >= 0 => s.replacen(old.as_str(), new.as_str(), n.as_int() as usize),
@@ -234,9 +218,15 @@ pub fn replace(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 // `str.rsplit([sep[, maxsplit]])`, like split but counts from the right.
 pub fn rsplit(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { split_impl(vm, recv, pos, true) }
 
-// `str.format(*args)` takes positional/auto/explicit-index fields with `{[idx][!r|!s][:spec]}`. Keyword fields aren't supported (the method dispatcher forbids kwargs).
-pub fn format(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
+// `str.format(*args)` takes positional/auto/explicit-index fields with `{[idx][!r|!s|!a][:spec]}`, keyword fields are not supported.
+pub(crate) fn format(vm: &mut VM, recv: Val, pos: &[Val], chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
     let tmpl = recv_str(vm, recv)?;
+    // Fields run user dunders, so the arguments stay rooted until the text is built.
+    let out = vm.with_roots(pos.iter().copied(), |vm| format_fields(vm, &tmpl, pos, chunk, slots))?;
+    vm.alloc_and_push_str(out)
+}
+
+fn format_fields(vm: &mut VM, tmpl: &str, pos: &[Val], chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<String, VmErr> {
     let chars: Vec<char> = tmpl.chars().collect();
     let mut out = String::with_capacity(tmpl.len());
     let mut auto = 0usize;
@@ -266,19 +256,16 @@ pub fn format(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
             } else {
                 return Err(cold_type("str.format() does not support keyword fields"));
             };
-            // Conversion (!r/!s) renders to a string first, then the spec applies to that.
-            let target = match conv {
-                None => val,
-                Some("r") => { let r = vm.repr(val); vm.heap.alloc(HeapObj::Str(r))? }
-                Some("s") => { let d = vm.display(val); vm.heap.alloc(HeapObj::Str(d))? }
+            // A conversion renders to a string first, then the spec applies to that.
+            let text = match conv {
+                None => None,
+                Some("r") => Some(vm.repr_op(val, chunk, slots)?),
+                Some("s") => Some(vm.display_op(val, chunk, slots)?),
+                Some("a") => Some(crate::vm::format_spec::ascii_escape(&vm.repr_op(val, chunk, slots)?)),
                 Some(_) => return Err(cold_value("unknown conversion specifier")),
             };
-            // Empty spec means str(x), use full display so containers render, not just scalars.
-            let rendered = if spec.is_empty() {
-                vm.display(target)
-            } else {
-                crate::vm::format_spec::format_value(target, &spec, &vm.heap).map_err(crate::vm::format_spec::fmt_err)?
-            };
+            let target = match text { Some(t) => vm.heap.alloc(HeapObj::Str(t))?, None => val };
+            let rendered = vm.format_op(target, &spec, chunk, slots)?;
             out.push_str(&rendered);
         } else if c == '}' {
             if chars.get(ci + 1) == Some(&'}') { out.push('}'); ci += 2; continue; }
@@ -288,7 +275,7 @@ pub fn format(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
             ci += 1;
         }
     }
-    vm.alloc_and_push_str(out)
+    Ok(out)
 }
 
 str_transform!(casefold, |s: &str| s.to_lowercase());
@@ -308,17 +295,18 @@ fn width_and_fill(vm: &mut VM, pos: &[Val], width_err: &'static str) -> Result<(
     Ok((width, fill))
 }
 
-// `str.ljust`/`rjust(width[, fill])` pad to width in code points.
-fn justify(vm: &mut VM, recv: Val, pos: &[Val], right: bool) -> Result<(), VmErr> {
+// `str.ljust`/`rjust`/`center(width[, fill])` pad to width in code points, an odd centre pad leans left on an odd width.
+fn justify(vm: &mut VM, recv: Val, pos: &[Val], align: u8) -> Result<(), VmErr> {
     let s = recv_str(vm, recv)?;
     let (width, fill) = width_and_fill(vm, pos, "width must be an integer")?;
     let pad = width.saturating_sub(s.chars().count());
-    let fills: String = iter::repeat_n(fill, pad).collect();
-    let out = if right { fills + &s } else { s + &fills };
+    let left = match align { b'<' => 0, b'>' => pad, _ => pad / 2 + (pad & width & 1) };
+    let out: String = iter::repeat_n(fill, left).chain(s.chars()).chain(iter::repeat_n(fill, pad - left)).collect();
     vm.alloc_and_push_str(out)
 }
-pub fn ljust(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { justify(vm, recv, pos, false) }
-pub fn rjust(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { justify(vm, recv, pos, true) }
+pub fn ljust(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { justify(vm, recv, pos, b'<') }
+pub fn rjust(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { justify(vm, recv, pos, b'>') }
+pub fn center(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { justify(vm, recv, pos, b'^') }
 
 pub fn expandtabs(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let s = recv_str(vm, recv)?;
@@ -350,24 +338,6 @@ pub fn expandtabs(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     vm.alloc_and_push_str(out)
 }
 
-// str predicates, all chars satisfy a class, and (for cased ones) at least one cased char exists.
-pub fn isspace(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
-    vm.push(Val::bool(!s.is_empty() && s.chars().all(|c| c.is_whitespace())));
-    Ok(())
-}
-pub fn isupper(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
-    let cased = s.chars().any(|c| c.is_uppercase() || c.is_lowercase());
-    vm.push(Val::bool(cased && !s.chars().any(|c| c.is_lowercase())));
-    Ok(())
-}
-pub fn islower(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
-    let cased = s.chars().any(|c| c.is_uppercase() || c.is_lowercase());
-    vm.push(Val::bool(cased && !s.chars().any(|c| c.is_uppercase())));
-    Ok(())
-}
 pub fn istitle(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
     let s = recv_str(vm, recv)?;
     // Titlecased means every cased run starts uppercase and continues lowercase, needs >=1 cased char.
@@ -375,7 +345,7 @@ pub fn istitle(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
     let mut any_cased = false;
     let mut ok = true;
     for c in s.chars() {
-        if c.is_uppercase() {
+        if c.is_uppercase() || uni::is_titlecase(c) {
             if prev_cased { ok = false; break; }
             prev_cased = true; any_cased = true;
         } else if c.is_lowercase() {
@@ -447,17 +417,6 @@ pub fn partition(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { par
 pub fn rpartition(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> { partition_impl(vm, recv, pos, true) }
 
 // str padding.
-pub fn center(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
-    let s = recv_str(vm, recv)?;
-    let (width, fill) = width_and_fill(vm, pos, "center() width must be an integer")?;
-    // Padding measured in code points, not UTF-8 bytes (Unicode parity).
-    let pad = width.saturating_sub(s.chars().count());
-    let left = pad / 2;
-    let right = pad - left;
-    let out = fill.to_string().repeat(left) + &s + &fill.to_string().repeat(right);
-    vm.alloc_and_push_str(out)
-}
-
 pub fn zfill(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     if !pos[0].is_int() { return Err(cold_type("zfill() requires an integer argument")); }
     let s = recv_str(vm, recv)?;

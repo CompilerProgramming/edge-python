@@ -11,7 +11,7 @@ impl<'a> VM<'a> {
     }
 
     /* Container constructors for list / tuple / dict / set / slice / string. */
-    pub(crate) fn handle_build(&mut self, op: OpCode, operand: u16) -> Result<(), VmErr> {
+    pub(crate) fn handle_build(&mut self, op: OpCode, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         match op {
             OpCode::BuildList => {
                 let v = self.pop_n(operand as usize)?;
@@ -25,8 +25,7 @@ impl<'a> VM<'a> {
             }
             OpCode::BuildDict => {
                 let flat = self.pop_n(operand as usize * 2)?;
-                for pair in flat.chunks(2) { self.require_hashable(pair[0])?; }
-                let dm = DictMap::from_pairs(flat.chunks(2).map(|c| (c[0], c[1])).collect(), &self.heap);
+                let dm = self.dictmap_of(flat.chunks(2).map(|c| (c[0], c[1])).collect(), chunk, slots)?;
                 let val = self.heap.alloc(HeapObj::Dict(Rc::new(RefCell::new(dm))))?;
                 self.push(val);
             }
@@ -36,7 +35,7 @@ impl<'a> VM<'a> {
                 let val = self.heap.alloc(HeapObj::Str(s))?;
                 self.push(val);
             }
-            OpCode::BuildSet => self.build_set(operand)?,
+            OpCode::BuildSet => self.build_set(operand, chunk, slots)?,
             OpCode::BuildSlice => self.build_slice(operand)?,
             _ => return Err(cold_runtime("non-build opcode in handle_build")),
         }
@@ -46,8 +45,8 @@ impl<'a> VM<'a> {
     /* Unpacking and `{value!s:spec}` formatting. Indexed get/store/del are dispatched directly from the hot loop, never here. */
     pub(crate) fn handle_container(&mut self, op: OpCode, operand: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         match op {
-            OpCode::UnpackSequence => self.exec_unpack_seq(operand as usize)?,
-            OpCode::UnpackEx => self.unpack_ex(operand)?,
+            OpCode::UnpackSequence => self.unpack_iterable(operand as usize, None, chunk, slots)?,
+            OpCode::UnpackEx => self.unpack_iterable((operand >> 8) as usize, Some((operand & 0xFF) as usize), chunk, slots)?,
             OpCode::FormatValue => {
                 /* Operand layout is bit 0 has_spec, bits 1..=2 conversion (0 none, 1 !r, 2 !s, 3 !a). See parser/literals.rs. */
                 let has_spec = (operand & 1) != 0;
@@ -55,36 +54,24 @@ impl<'a> VM<'a> {
                 let spec_val = if has_spec { Some(self.pop()?) } else { None };
                 let v = self.pop()?;
 
-                // Conversion flags consult the dunder-aware helpers so `f"{x!s}"` honours `__str__`. Charge each result's length, a big Str is one heap object the object quota misses.
-                let converted = match conv {
-                    1 => { let s = self.repr_op(v, chunk, slots)?; self.charge_steps(s.len())?; self.heap.alloc(HeapObj::Str(s))? }
-                    2 => { let s = self.display_op(v, chunk, slots)?; self.charge_steps(s.len())?; self.heap.alloc(HeapObj::Str(s))? }
-                    3 => {
-                        let raw = crate::vm::format_spec::display_inline(v, &self.heap);
-                        self.charge_steps(raw.len())?;
-                        self.heap.alloc(HeapObj::Str(raw.escape_default().collect::<String>()))?
-                    }
-                    _ => v,
-                };
+                // Conversions run user dunders with the spec rooted and charge the length of the text.
+                let converted = self.with_roots(spec_val, |vm| {
+                    let s = match conv {
+                        1 => vm.repr_op(v, chunk, slots)?,
+                        2 => vm.display_op(v, chunk, slots)?,
+                        3 => crate::vm::format_spec::ascii_escape(&vm.repr_op(v, chunk, slots)?),
+                        _ => return Ok(v),
+                    };
+                    vm.charge_steps(s.len())?;
+                    vm.heap.alloc(HeapObj::Str(s))
+                })?;
 
-                let result = match spec_val {
-                    Some(sv) => {
-                        // `try_get` since a non-heap spec value is a TypeError, not a bad-index heap access.
-                        let spec = match self.heap.try_get(sv) {
-                            Some(HeapObj::Str(s)) => s.clone(),
-                            _ => return Err(cold_type("format spec must be a string")),
-                        };
-                        // Instance `__format__(spec)` runs through `format_op` while built-ins fall through to the spec engine.
-                        self.format_op(converted, &spec, chunk, slots)?
-                    }
-                    None => {
-                        if conv != 0 && let HeapObj::Str(s) = self.heap.get(converted) {
-                            s.clone()
-                        } else {
-                            self.display_op(converted, chunk, slots)?
-                        }
-                    }
+                let spec = match spec_val.map(|sv| self.heap.try_get(sv)) {
+                    None => String::new(),
+                    Some(Some(HeapObj::Str(s))) => s.clone(),
+                    Some(_) => return Err(cold_type("format spec must be a string")),
                 };
+                let result = self.format_op(converted, &spec, chunk, slots)?;
                 let val = self.heap.alloc(HeapObj::Str(result))?;
                 self.push(val);
             }
@@ -94,59 +81,33 @@ impl<'a> VM<'a> {
     }
 
     /* Append/add to the comprehension accumulator at the top of the stack. */
-    pub(crate) fn handle_comprehension(&mut self, op: OpCode) -> Result<(), VmErr> {
-        let (kind, value, key) = match op {
-            OpCode::ListAppend => ("list", self.pop()?, None),
-            OpCode::SetAdd => ("set", self.pop()?, None),
-            OpCode::MapAdd => { let v = self.pop()?; let k = self.pop()?; ("dict", v, Some(k)) }
-            _ => return Err(cold_runtime("non-comprehension opcode in handle_comprehension")),
-        };
+    pub(crate) fn handle_comprehension(&mut self, op: OpCode, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        let value = self.pop()?;
+        let key = if op == OpCode::MapAdd { Some(self.pop()?) } else { None };
         let acc = *self.stack.last().ok_or(VmErr::Runtime("stack underflow"))?;
-        let corrupt = || VmErr::Runtime(match kind {
-            "list" => "list accumulator corrupted",
-            "set" => "set accumulator corrupted",
-            _ => "dict accumulator corrupted",
-        });
-        if !acc.is_heap() { return Err(corrupt()); }
-        if let Some(k) = key { self.require_hashable(k)?; } else if kind == "set" { self.require_hashable(value)?; }
-        match (kind, self.heap.get(acc)) {
-            ("list", HeapObj::List(rc)) => { rc.borrow_mut().push(value); }
-            ("set", HeapObj::Set(rc))  => { rc.borrow_mut().insert(value, &self.heap); }
-            ("dict", HeapObj::Dict(rc)) => { rc.borrow_mut().insert(key.unwrap(), value, &self.heap); }
-            _ => return Err(corrupt()),
+        match (op, key, self.heap.try_get(acc)) {
+            (OpCode::ListAppend, _, Some(HeapObj::List(rc))) => rc.borrow_mut().push(value),
+            (OpCode::SetAdd, _, Some(HeapObj::Set(_))) => { self.set_add(acc, value, chunk, slots)?; }
+            (OpCode::MapAdd, Some(k), Some(HeapObj::Dict(_))) => self.dict_set(acc, k, value, chunk, slots)?,
+            _ => return Err(cold_runtime("comprehension accumulator corrupted")),
         }
         Ok(())
     }
 
     /* Merge the source on top of the stack into the container below it for `{**m}`, `{*s}`, `[*it]`. */
-    pub(crate) fn handle_spread_merge(&mut self, op: OpCode) -> Result<(), VmErr> {
+    pub(crate) fn handle_spread_merge(&mut self, op: OpCode, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let src = self.pop()?;
         let acc = *self.stack.last().ok_or(VmErr::Runtime("stack underflow"))?;
         if !acc.is_heap() { return Err(cold_runtime("spread accumulator corrupted")); }
         match op {
-            OpCode::DictUpdate => {
-                // `**` requires a mapping, and later keys overwrite earlier ones.
-                let pairs: Vec<(Val, Val)> = match self.heap.try_get(src) {
-                    Some(HeapObj::Dict(rc)) => rc.borrow().iter().collect(),
-                    _ => return Err(cold_type("argument after ** must be a mapping")),
-                };
-                if let HeapObj::Dict(rc) = self.heap.get(acc) {
-                    let mut m = rc.borrow_mut();
-                    for (k, v) in pairs { m.insert(k, v, &self.heap); }
-                }
-            }
+            // `**` requires a mapping, and later keys overwrite earlier ones.
+            OpCode::DictUpdate => self.dict_spread_into(acc, src, chunk, slots)?,
             OpCode::SetUpdate => {
-                let items = self.iter_to_vec_for_spread(src)?;
-                for it in items {
-                    self.require_hashable(it)?;
-                    match self.heap.get(acc) {
-                        HeapObj::Set(rc) => { rc.borrow_mut().insert(it, &self.heap); }
-                        _ => return Err(cold_runtime("spread accumulator corrupted")),
-                    }
-                }
+                if !matches!(self.heap.get(acc), HeapObj::Set(_)) { return Err(cold_runtime("spread accumulator corrupted")); }
+                self.spread_into(acc, src, chunk, slots)?;
             }
             OpCode::ListExtend => {
-                let items = self.iter_to_vec_for_spread(src)?;
+                let items = self.iterable_items(src, chunk, slots)?;
                 match self.heap.get(acc) {
                     HeapObj::List(rc) => rc.borrow_mut().extend(items),
                     _ => return Err(cold_runtime("spread accumulator corrupted")),
@@ -154,14 +115,6 @@ impl<'a> VM<'a> {
             }
             _ => return Err(cold_runtime("non-spread opcode in handle_spread_merge")),
         }
-        Ok(())
-    }
-
-    /* Yield keeps the value on the stack and flags the executor to suspend. */
-    pub(crate) fn handle_yield(&mut self) -> Result<(), VmErr> {
-        let v = self.pop()?;
-        self.push(v);
-        self.yielded = true;
         Ok(())
     }
 
@@ -214,7 +167,20 @@ impl<'a> VM<'a> {
                 }
                 // RaiseFrom emits both `expr` then `from expr`, the topmost value is the cause, but the exception to raise is the LHS.
                 if op == OpCode::RaiseFrom { let _cause = self.pop()?; }
-                let exc = self.pop()?;
+                let mut exc = self.pop()?;
+                // A class deriving from an exception raises an instance of itself made with no arguments.
+                if matches!(self.heap.try_get(exc), Some(HeapObj::Class(..))) && self.exc_base(exc).is_some() {
+                    self.push(exc);
+                    self.exec_call(0, chunk, slots)?;
+                    exc = self.pop()?;
+                }
+                // A user exception reports its class name and `str(e)`, its own `__str__` included.
+                if let Some(&HeapObj::Instance(cls, _)) = self.heap.try_get(exc) && self.exc_base(cls).is_some() {
+                    let name = self.exc_type_name(exc);
+                    let text = self.with_roots([exc], |vm| vm.display_op(exc, chunk, slots))?;
+                    self.pending.exc_val = Some(exc);
+                    return Err(VmErr::Raised(if text.is_empty() { name } else { crate::s!(str &name, ": ", str &text) }));
+                }
                 // Stash the Val for `except as e` binding, with non-Exc values using `display()`.
                 self.pending.exc_val = None;
                 // Extract owned (class name, instance with args) so display() can run after the heap borrow ends.

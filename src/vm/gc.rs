@@ -29,6 +29,8 @@ impl<'a> VM<'a> {
             }
         }
         for &v in current_slots { self.heap.mark(v); }
+        #[cfg(target_arch = "wasm32")]
+        crate::bridge::mark_handles(self as *const Self as *const u8, &mut self.heap);
         for &v in &self.live_slots { self.heap.mark(v); }
         // Closure cells live on the active call frames until the closures that capture them are built.
         for frame in &self.call_stack { for &(_, c) in &frame.cells { self.heap.mark(c); } }

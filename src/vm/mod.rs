@@ -17,6 +17,7 @@ mod dispatch;
 mod gc;
 mod helpers;
 mod init;
+mod keys;
 
 use crate::s;
 use crate::parser::{SSAChunk, builtin_type};
@@ -35,7 +36,7 @@ pub(crate) enum ParamKind { Normal, Star, DoubleStar, KwOnly }
 
 /* Side-channel state passed between opcodes in one dispatch frame, grouped for auditability. */
 pub(crate) struct Pending {
-    /* Star/double-star spread bumps the next Call's argument count. */
+    /* Star/double-star spreads bump the argument count of the call whose first spread opened the frame. */
     pub pos_delta: i32,
     pub kw_delta: i32,
     // Saved enclosing spread deltas (BeginArgs).
@@ -165,7 +166,6 @@ pub struct VM<'a> {
     /* GC roots for operands popped off the stack but still read after a dunder call that can collect. */
     pub(crate) temp_roots: Vec<Val>,
     /* Weak flags for lists produced by iterator builtins (iter/map/filter/zip/enumerate/reversed), next() drains only these and plain lists raise TypeError. Weak so a swept slot can never alias a fresh list. */
-    pub(crate) iter_marks: Vec<alloc::rc::Weak<core::cell::RefCell<Vec<Val>>>>,
     pub(crate) pending: Pending,
     /* Monotonic correlation id handed to each deferred host call, matched by `set_host_result_by_id`. */
     pub(crate) next_host_call_id: u64,
@@ -235,7 +235,6 @@ impl<'a> VM<'a> {
             max_calls: limits.calls,
             with_stack: Vec::new(),
             temp_roots: Vec::new(),
-            iter_marks: Vec::new(),
             pending: Pending::new(),
             next_host_call_id: 0,
             pending_sync_frames: Vec::new(),
@@ -343,14 +342,14 @@ impl<'a> VM<'a> {
         self.param_slots.truncate(start);
         self.param_slots.extend(new);
 
-        // Pre-compute nonlocal resolution (canonical_body_slot, canonical_body_slot).
+        // Pre-compute nonlocal resolution (canonical body slot, index of the name in `nonlocals`).
         let new: Vec<Vec<(usize, usize)>> = self.functions[start..end].iter().map(|(_, body, _, _)| {
-            body.nonlocals.iter().filter_map(|base| {
+            body.nonlocals.iter().enumerate().filter_map(|(ni, base)| {
                 // Require an explicit `_<digits>` suffix, bare Nonlocal-operand slots aren't canonical.
                 let canon = body.names.iter().enumerate()
                     .find(|(_, n)| crate::parser::SsaName::parse(n).map(|s| s.bare) == Some(base.as_str()))
                     .map(|(i, _)| body.alias_groups.get(i).and_then(|g| g.first().copied()).unwrap_or(i as u16) as usize)?;
-                Some((canon, canon))
+                Some((canon, ni))
             }).collect()
         }).collect();
         self.nonlocal_tables.truncate(start);
@@ -360,9 +359,9 @@ impl<'a> VM<'a> {
         let new: Vec<bool> = (start..end).map(|fi| {
             let (params, body, _, _) = self.functions[fi];
             let param_names: crate::util::hash::FxHashSet<&str> = params.iter().map(|p| crate::parser::types::param_base_name(p)).collect();
-            body.names.iter().any(|n| {
-                let base = crate::parser::ssa_strip(n);
-                !param_names.contains(base) && self.global_slot(n).is_none()
+            // Attribute names never come from a caller.
+            body.names.iter().zip(body.attr_only_names()).any(|(n, attr)| {
+                !attr && !param_names.contains(crate::parser::ssa_strip(n)) && self.global_slot(n).is_none()
             }) || self.builtins_rebound
         }).collect();
         self.needs_caller_slots.truncate(start);

@@ -144,7 +144,7 @@ done
 
 ## match / case
 
-Supported patterns: literals (`int`, `float`, `str`, `True`, `False`, `None`, and negative numbers), capture names, the `_` wildcard, OR patterns with `|`, guards with `if`, `as` captures, and sequence patterns with an optional `*rest`, written `[a, b]`, `(a, b)` or bare `a, b`. Parentheses without a comma only group, so `(x)` is the capture `x`.
+Supported patterns: literals (`int`, `float`, `str` and `bytes` with adjacent ones joined, negative numbers, and `True`, `False` and `None`, which match by identity so `case True` rejects `1`), capture names, the `_` wildcard, OR patterns with `|`, guards with `if`, `as` captures, and sequence patterns with an optional `*rest`, written `[a, b]`, `(a, b)` or bare `a, b`. Parentheses without a comma only group, so `(x)` is the capture `x`.
 
 Items in a sequence pattern are any of these patterns, nested sequences, OR groups and `as` captures included. A mapping pattern `{"k": p, **rest}` takes literal keys and matches only dicts. A class pattern `Point(x, y=0)` checks `isinstance` and reads positional attributes through `__match_args__`, while `int(n)` matches the subject itself. A dotted name such as `Color.RED` compares by value. A sequence pattern matches only list and tuple subjects. Any other value, including `str` and `bytes`, fails the pattern and falls through to the next case.
 

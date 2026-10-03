@@ -8,10 +8,10 @@ use core::cell::RefCell;
 use core::cmp::Ordering;
 
 /* Cap on nested-container rendering depth, stops self-referential prints from overflowing the stack. */
-const RENDER_DEPTH_MAX: usize = 100;
+pub(crate) const RENDER_DEPTH_MAX: usize = 100;
 
 /* Cap on total rendered output, bounds breadth the way RENDER_DEPTH_MAX bounds depth. */
-const MAX_REPR_LEN: usize = 1_000_000;
+pub(crate) const MAX_REPR_LEN: usize = 1_000_000;
 
 /* Same cap for `<` descent, self-referential sequences raise RecursionError. */
 const CMP_DEPTH_MAX: usize = 100;
@@ -106,7 +106,7 @@ impl<'a> VM<'a> {
             | HeapObj::StaticMethod(..) | HeapObj::ClassMethod(..) | HeapObj::Instance(..) | HeapObj::Coroutine(..)
             | HeapObj::Module(..) | HeapObj::Extern(_) | HeapObj::ExcInstance(..)
             | HeapObj::Ellipsis | HeapObj::NotImplemented | HeapObj::GenericAlias(..) | HeapObj::TypeAlias(..)
-            | HeapObj::Union(_) | HeapObj::TypeVar(_) => true,
+            | HeapObj::Union(_) | HeapObj::TypeVar(_) | HeapObj::Iter(..) => true,
         }
     }
 
@@ -134,8 +134,7 @@ impl<'a> VM<'a> {
 
     /* Alloc a set-algebra result, frozen picks frozenset (left-operand type rule). */
     pub(crate) fn alloc_set_result(&mut self, items: Vec<Val>, frozen: bool) -> Result<Val, VmErr> {
-        let mut s = ValSet::with_capacity(items.len());
-        for v in items { s.insert(v, &self.heap); }
+        let s = ValSet::from_vals(&items, &self.heap);
         if frozen { self.heap.alloc(HeapObj::FrozenSet(Rc::new(s))) }
         else { self.heap.alloc(HeapObj::Set(Rc::new(RefCell::new(s)))) }
     }
@@ -170,8 +169,7 @@ impl<'a> VM<'a> {
             return self.set_binop_and_push(a, b, op);
         }
         let items = self.set_binop_items(a, b, op)?;
-        let mut s = ValSet::with_capacity(items.len());
-        for v in items { s.insert(v, &self.heap); }
+        let s = ValSet::from_vals(&items, &self.heap);
         if let HeapObj::Set(rc) = self.heap.get(a) { *rc.borrow_mut() = s; }
         self.push(a); Ok(())
     }
@@ -183,9 +181,9 @@ impl<'a> VM<'a> {
             _ => return Err(cold_runtime("set_compare on non-set operands")),
         };
         // Content-based so distinct-handle equal elements (tuples, long strings) compare correctly.
-        let eq = eq_set(&sa, &sb, |a, b| eq_vals_with_heap(a, b, &self.heap));
+        let eq = eq_set(&sa, &sb, |a, b| eq_member(a, b, &self.heap));
         let subset = |x: &ValSet, y: &ValSet|
-            x.iter().all(|&v| y.iter().any(|&w| eq_vals_with_heap(v, w, &self.heap)));
+            x.iter().all(|&v| y.iter().any(|&w| eq_member(v, w, &self.heap)));
         let result = match op {
             OpCode::Eq => eq,
             OpCode::NotEq => !eq,
@@ -238,7 +236,46 @@ impl<'a> VM<'a> {
             HeapObj::TypeAlias(..) => "TypeAliasType",
             HeapObj::Union(_) => "UnionType",
             HeapObj::TypeVar(_) => "TypeVar",
+            HeapObj::Iter(_, name) => name,
         }}
+    }
+
+    /* `str` of exception `name` from its args, a KeyError key shows as its repr. */
+    fn exc_text(&self, name: &str, args: &[Val], seen: &mut Vec<u32>) -> String {
+        match args {
+            [] => String::new(),
+            [a] if name == "KeyError" => self.repr_d(*a, seen),
+            [a] => self.display_d(*a, seen),
+            [no, msg, rest @ ..] if rest.len() <= 1 && super::globals::matches_exc_class(name, "OSError") => {
+                let mut o = s!("[Errno ", str &self.display_d(*no, seen), "] ", str &self.display_d(*msg, seen));
+                if let [f] = rest { o.push_str(": "); o.push_str(&self.repr_d(*f, seen)); }
+                o
+            }
+            _ => { let mut o = s!(cap: 32; "("); self.append_reprs(&mut o, args.iter(), seen); o.push(')'); o }
+        }
+    }
+
+    /* The `args` an exception instance holds, empty for anything else. */
+    pub(crate) fn exc_args(&self, inst: Val) -> Vec<Val> {
+        let Some(HeapObj::Instance(_, attrs)) = self.heap.try_get(inst) else { return Vec::new() };
+        let args = attrs.borrow().iter().find(|(k, _)| matches!(self.heap.try_get(*k), Some(HeapObj::Str(s)) if s == "args")).map(|(_, v)| v);
+        match args.and_then(|a| self.heap.try_get(a)) { Some(HeapObj::Tuple(t)) => t.clone(), _ => Vec::new() }
+    }
+
+    /* TypeError for a binary operator no operand type supports. */
+    #[cold]
+    pub(crate) fn unsupported(&self, op: &str, a: Val, b: Val) -> VmErr {
+        VmErr::TypeMsg(s!("unsupported operand type(s) for ", str op, ": '", str self.type_name(a), "' and '", str self.type_name(b), "'"))
+    }
+
+    /* `{a, b}` or `frozenset({a, b})` read in place, `...` for a cycle. */
+    fn set_repr<'b>(&self, v: Val, frozen: bool, len: usize, items: impl Iterator<Item = &'b Val>, seen: &mut Vec<u32>) -> String {
+        if len == 0 { return (if frozen { "frozenset()" } else { "set()" }).into(); }
+        let mut out = String::from(if frozen { "frozenset({" } else { "{" });
+        let id = v.as_heap();
+        if seen.contains(&id) { out.push_str("..."); } else { seen.push(id); self.append_reprs(&mut out, items, seen); seen.pop(); }
+        out.push_str(if frozen { "})" } else { "}" });
+        out
     }
 
     fn append_reprs<'b>(&self, out: &mut String, it: impl Iterator<Item = &'b Val>, seen: &mut Vec<u32>) {
@@ -280,11 +317,14 @@ impl<'a> VM<'a> {
             HeapObj::List(l) => { let id = v.as_heap(); if seen.contains(&id) { return "[...]".into(); } seen.push(id); let mut o = s!(cap: 32; "["); self.append_reprs(&mut o, l.borrow().iter(), seen); o.push(']'); seen.pop(); o },
             HeapObj::Tuple(t) => { let id = v.as_heap(); if seen.contains(&id) { return "(...)".into(); } seen.push(id); let o = if t.len() == 1 { s!("(", str &self.repr_d(t[0], seen), ",)") } else { let mut o = s!(cap: 32; "("); self.append_reprs(&mut o, t.iter(), seen); o.push(')'); o }; seen.pop(); o },
             HeapObj::Dict(d) => { let id = v.as_heap(); if seen.contains(&id) { return "{...}".into(); } seen.push(id); let mut o = s!(cap: 32; "{"); for (i,(k,val)) in d.borrow().iter().enumerate() { if i>0 { if o.len() > MAX_REPR_LEN { o.push_str(", ..."); break; } o.push_str(", "); } o.push_str(&self.repr_d(k, seen)); o.push_str(": "); o.push_str(&self.repr_d(val, seen)); } o.push('}'); seen.pop(); o },
+            HeapObj::BoundMethod(recv, id) if recv.is_undef() => s!("<method '", str id.name(), "' of '", str id.ty(), "' objects>"),
             HeapObj::BoundMethod(_, id) => s!("<built-in method ", str id.name(), ">"),
             HeapObj::NativeFn(id) => s!("<built-in function ", str id.name(), ">"),
             // User classes live in `__main__`, Python qualifies the repr with the module.
             HeapObj::Class(name, _, _) => crate::s!("<class '__main__.", str name, "'>"),
             HeapObj::Instance(cls, _) => {
+                // An exception reads as its message.
+                if let Some(base) = self.exc_base(*cls) { return self.exc_text(base, &self.exc_args(v), seen); }
                 if cls.is_heap() && let HeapObj::Class(name, _, _) | HeapObj::Type(name) = self.heap.get(*cls) { return crate::s!("<", str name, " instance>"); }
                 "<instance>".into()
             }
@@ -295,6 +335,7 @@ impl<'a> VM<'a> {
             HeapObj::StaticMethod(..) => "<staticmethod object>".into(),
             HeapObj::ClassMethod(..) => "<classmethod object>".into(),
             HeapObj::Coroutine(..) => "<coroutine>".into(),
+            HeapObj::Iter(_, name) => s!("<", str name, " object>"),
             HeapObj::Module(name, _) => s!("<module '", str name, "'>"),
             HeapObj::Extern(f) => s!("<extern function ", str &f.name, ">"),
             HeapObj::GenericAlias(origin, args) => {
@@ -323,46 +364,9 @@ impl<'a> VM<'a> {
                 }
                 o
             }
-            HeapObj::ExcInstance(name, args) => {
-                // `str(E("x"))` -> "x", KeyError is special, stringifying as the key's repr.
-                if args.len() == 1 {
-                    if name == "KeyError" { self.repr_d(args[0], seen) } else { self.display_d(args[0], seen) }
-                } else if args.is_empty() {
-                    // Bare exceptions stringify to an empty string, like Python.
-                    String::new()
-                } else if matches!(args.len(), 2 | 3) && super::globals::matches_exc_class(name, "OSError") {
-                    // `OSError(errno, strerror[, filename])` reads `[Errno 2] missing: 'f'`.
-                    let mut o = s!("[Errno ", str &self.display_d(args[0], seen), "] ", str &self.display_d(args[1], seen));
-                    if let Some(&f) = args.get(2) { o.push_str(": "); o.push_str(&self.repr_d(f, seen)); }
-                    o
-                } else {
-                    let mut o = s!(cap: 32; "(");
-                    self.append_reprs(&mut o, args.iter(), seen);
-                    o.push(')');
-                    o
-                }
-            }
-            HeapObj::Set(s) => {
-                let items: Vec<Val> = s.borrow().iter().cloned().collect();
-                if items.is_empty() { return "set()".into(); }
-                let id = v.as_heap(); if seen.contains(&id) { return "{...}".into(); } seen.push(id);
-                let mut out = String::new();
-                out.push('{');
-                self.append_reprs(&mut out, items.iter(), seen);
-                out.push('}');
-                seen.pop();
-                out
-            }
-            HeapObj::FrozenSet(s) => {
-                let items: Vec<Val> = s.iter().cloned().collect();
-                if items.is_empty() { return "frozenset()".into(); }
-                let id = v.as_heap(); if seen.contains(&id) { return "frozenset({...})".into(); } seen.push(id);
-                let mut out = String::from("frozenset({");
-                self.append_reprs(&mut out, items.iter(), seen);
-                out.push_str("})");
-                seen.pop();
-                out
-            }
+            HeapObj::ExcInstance(name, args) => self.exc_text(name, args, seen),
+            HeapObj::Set(s) => { let s = s.borrow(); self.set_repr(v, false, s.len(), s.iter(), seen) }
+            HeapObj::FrozenSet(s) => self.set_repr(v, true, s.len(), s.iter(), seen),
             HeapObj::Ellipsis => "Ellipsis".into(),
             HeapObj::NotImplemented => "NotImplemented".into(),
         }
@@ -391,6 +395,13 @@ impl<'a> VM<'a> {
                 HeapObj::ExcInstance(name, args) => {
                     let mut o = s!(cap: 32; str name, "(");
                     self.append_reprs(&mut o, args.iter(), seen);
+                    o.push(')');
+                    return o;
+                }
+                // An exception instance reads as its constructor call, `E('x')`.
+                &HeapObj::Instance(cls, _) if self.exc_base(cls).is_some() => {
+                    let mut o = s!(cap: 32; str self.type_name(v), "(");
+                    self.append_reprs(&mut o, self.exc_args(v).iter(), seen);
                     o.push(')');
                     return o;
                 }
@@ -442,7 +453,7 @@ impl<'a> VM<'a> {
     fn seq_lt_d(&self, xs: &[Val], ys: &[Val], depth: usize) -> Result<bool, VmErr> {
         if depth > CMP_DEPTH_MAX { return Err(cold_depth()); }
         for (&x, &y) in xs.iter().zip(ys.iter()) {
-            if eq_vals_with_heap(x, y, &self.heap) { continue; }
+            if eq_member(x, y, &self.heap) { continue; }
             return self.lt_vals_d(x, y, depth + 1);
         }
         Ok(xs.len() < ys.len())
@@ -452,15 +463,23 @@ impl<'a> VM<'a> {
     pub fn contains(&self, container: Val, item: Val) -> Result<bool, VmErr> {
         if container.is_heap() {
             match self.heap.get(container) {
-                HeapObj::List(v) => return Ok(v.borrow().iter().any(|x| eq_vals_with_heap(*x, item, &self.heap))),
-                HeapObj::Tuple(v) => return Ok(v.iter().any(|x| eq_vals_with_heap(*x, item, &self.heap))),
+                HeapObj::List(v) => return Ok(v.borrow().iter().any(|x| eq_member(*x, item, &self.heap))),
+                HeapObj::Tuple(v) => return Ok(v.iter().any(|x| eq_member(*x, item, &self.heap))),
                 // Only a miss checks the item, an unhashable one is never inside so a hit needs no check.
                 HeapObj::Dict(p) => { let hit = p.borrow().contains_key(&item, &self.heap); if !hit { self.require_hashable(item)?; } return Ok(hit); }
                 HeapObj::Set(s) => { let hit = s.borrow().contains(item, &self.heap); if !hit { self.require_set_probe(item)?; } return Ok(hit); }
                 HeapObj::FrozenSet(s) => { let hit = s.contains(item, &self.heap); if !hit { self.require_set_probe(item)?; } return Ok(hit); }
                 HeapObj::Str(s) => {
-                    if item.is_heap() && let HeapObj::Str(sub) = self.heap.get(item) { return Ok(s.contains(sub.as_str())); }
-                    return Ok(false);
+                    if let Some(HeapObj::Str(sub)) = self.heap.try_get(item) { return Ok(s.contains(sub.as_str())); }
+                    return Err(VmErr::TypeMsg(s!("'in <string>' requires string as left operand, not ", str self.type_name(item))));
+                }
+                HeapObj::Bytes(b) => {
+                    if let Some(HeapObj::Bytes(sub)) = self.heap.try_get(item) {
+                        return Ok(sub.is_empty() || b.windows(sub.len()).any(|w| w == sub.as_slice()));
+                    }
+                    let n = match item { i if i.is_int() => i.as_int(), i if i.is_bool() => i.as_bool() as i64, _ => return Err(cold_type("a bytes-like object is required")) };
+                    if !(0..=255).contains(&n) { return Err(cold_value("byte must be in range(0, 256)")); }
+                    return Ok(b.contains(&(n as u8)));
                 }
                 HeapObj::Range(s, e, st) => {
                     let (s, e, st) = (*s as i128, *e as i128, *st as i128);
@@ -481,8 +500,6 @@ impl<'a> VM<'a> {
                         None => false,
                     });
                 }
-                // Iterable kinds keep prior non-raising behavior.
-                HeapObj::Bytes(..) | HeapObj::Coroutine(..) => return Ok(false),
                 _ => {}
             }
         }
@@ -533,7 +550,7 @@ impl<'a> VM<'a> {
                 _ => {}
             }
         }
-        Err(VmErr::TypeMsg(s!("unsupported operand type(s) for +: '", str self.type_name(a), "' and '", str self.type_name(b), "'")))
+        Err(self.unsupported("+", a, b))
     }
 
     pub fn sub_vals(&mut self, a: Val, b: Val) -> Result<Val, VmErr> {
@@ -552,7 +569,7 @@ impl<'a> VM<'a> {
             let frozen = matches!(self.heap.get(a), HeapObj::FrozenSet(_));
             return self.alloc_set_result(items, frozen);
         }
-        Err(VmErr::TypeMsg(s!("unsupported operand type(s) for -: '", str self.type_name(a), "' and '", str self.type_name(b), "'")))
+        Err(self.unsupported("-", a, b))
     }
 
     pub fn mul_vals(&mut self, a: Val, b: Val) -> Result<Val, VmErr> {
@@ -573,7 +590,7 @@ impl<'a> VM<'a> {
         } else if b.is_heap() && !matches!(self.heap.get(b), HeapObj::LongInt(_)) && let Some(n) = rep_count(a) {
             (b, n)
         } else {
-            return Err(VmErr::TypeMsg(s!("unsupported operand type(s) for *: '", str self.type_name(a), "' and '", str self.type_name(b), "'")));
+            return Err(self.unsupported("*", a, b));
         };
         let n = count.max(0) as usize;
         // Charge the fill up front so repeated `[x]*n` is bounded by the op budget, not just heap.
@@ -610,7 +627,7 @@ impl<'a> VM<'a> {
             }
             _ => {}
         }
-        Err(VmErr::TypeMsg(s!("unsupported operand type(s) for *: '", str self.type_name(a), "' and '", str self.type_name(b), "'")))
+        Err(self.unsupported("*", a, b))
     }
 
     /* Repeat a sequence `n` times with the same budget/overflow/heap-limit guards as `seq * n`. */
@@ -644,11 +661,7 @@ impl<'a> VM<'a> {
     /* Wrap an i128 into the narrowest Val, None->Overflow, 48-bit->inline, else LongInt. */
     #[inline]
     pub(crate) fn int_to_val(&mut self, r: Option<i128>) -> Result<Val, VmErr> {
-        let i = r.ok_or(cold_overflow())?;
-        if (Val::INT_MIN as i128..=Val::INT_MAX as i128).contains(&i) {
-            return Ok(Val::int(i as i64));
-        }
-        self.heap.alloc(HeapObj::LongInt(i))
+        self.heap.int(r.ok_or(cold_overflow())?)
     }
 }
 

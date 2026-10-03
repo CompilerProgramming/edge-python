@@ -67,17 +67,9 @@ impl<'a> VM<'a> {
 
     /* Inject `val` into the first `WaitingEvent` waiter's saved stack (innermost sync sub-frame wins) and mark it Ready, queues `val` otherwise. Shared by `push_event` and `run_push_event`. */
     pub fn inject_event(&mut self, val: Val) {
-        let waiter = self.scheduler.iter().enumerate()
-            .find(|(_, h)| matches!(h.state, CoroState::WaitingEvent))
-            .map(|(i, h)| (i, h.coro));
-        if let Some((idx, coro)) = waiter {
-            if let HeapObj::Coroutine(_, _, saved_stack, _, _, sub_frames, _) = self.heap.get_mut(coro) {
-                let target_stack = if let Some(frame) = sub_frames.last_mut() { &mut frame.stack_delta } else { saved_stack };
-                if let Some(top) = target_stack.last_mut() { *top = val; } else { target_stack.push(val); }
-            }
-            self.scheduler[idx].state = CoroState::Ready;
-        } else {
-            self.event_queue.push(val);
+        match self.scheduler.iter().position(|h| matches!(h.state, CoroState::WaitingEvent)) {
+            Some(idx) => self.deliver_host_result(idx, val),
+            None => self.event_queue.push(val),
         }
     }
 
@@ -97,7 +89,7 @@ impl<'a> VM<'a> {
         }
     }
 
-    /* Shared tail, write `val` over the parked coro's saved-stack top and mark it Ready. */
+    /* Writes `val` over the stack top of a parked coroutine and marks it Ready. */
     fn deliver_host_result(&mut self, idx: usize, val: Val) {
         let coro = self.scheduler[idx].coro;
         if let HeapObj::Coroutine(_, _, saved_stack, _, _, sub_frames, _) = self.heap.get_mut(coro) {
