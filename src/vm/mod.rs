@@ -213,10 +213,19 @@ pub struct VM<'a> {
     pub(crate) time_hook: Option<fn() -> u64>,
     /* Fallback monotonic counter when `time_hook` is None, reset each `run()`. */
     pub(crate) virtual_clock_ns: u64,
+    /* Each instruction a chunk executed, one bit per ip, read through `ran`. */
+    #[cfg(feature = "coverage")]
+    pub(crate) executed: HashMap<*const SSAChunk, Vec<u64>>,
 }
 
 impl<'a> VM<'a> {
     pub fn new(chunk: &'a SSAChunk) -> Self { Self::with_limits(chunk, Limits::sandbox()) }
+
+    /* Whether `chunk.instructions[ip]` ran in this VM, still answered after a run that raised. */
+    #[cfg(feature = "coverage")]
+    pub fn ran(&self, chunk: &SSAChunk, ip: usize) -> bool {
+        self.executed.get(&(chunk as *const _)).and_then(|bits| bits.get(ip / 64)).is_some_and(|word| word & (1 << (ip % 64)) != 0)
+    }
 
     pub fn with_limits(chunk: &'a SSAChunk, limits: Limits) -> Self {
         let mut vm = Self {
@@ -269,6 +278,8 @@ impl<'a> VM<'a> {
             waiting_for_children_count: 0,
             time_hook: None,
             virtual_clock_ns: 0,
+            #[cfg(feature = "coverage")]
+            executed: HashMap::default(),
             functions: Vec::new(),
             fn_index: Vec::new(),
             function_parents: Vec::new(),

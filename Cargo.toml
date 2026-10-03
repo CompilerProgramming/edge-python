@@ -21,6 +21,8 @@ path = "tests/main.rs"
 [features]
 default = ["std"]
 std = []
+# Records each instruction a run executes for `VM::ran`, method calls left unfused so every ip is the compiler's own.
+coverage = []
 
 [dependencies]
 wasm-abi = { workspace = true }

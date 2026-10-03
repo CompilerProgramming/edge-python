@@ -378,6 +378,8 @@ impl<'a> VM<'a> {
         let rip = *ip;
         let op = ins.operand;
         *ip += 1;
+        #[cfg(feature = "coverage")]
+        { self.executed.entry(chunk as *const _).or_insert_with(|| alloc::vec![0; chunk.instructions.len().div_ceil(64)])[rip / 64] |= 1 << (rip % 64); }
 
         match ins.opcode {
             // Short-circuit jumps, instance `__bool__` / `__len__` may run via `truthy_op`.

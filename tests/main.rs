@@ -5,3 +5,4 @@ mod parser;
 mod vm;
 mod modules;
 mod snapshot;
+mod coverage;

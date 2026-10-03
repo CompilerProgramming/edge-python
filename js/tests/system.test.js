@@ -108,7 +108,7 @@ Deno.test("system: fs reads only plain paths under the folders a package holds",
     raises(() => read(7), "ValueError", "fs.read takes a path as a str");
     if (asked.some((path) => !path.startsWith("shop/"))) throw new Error(`the host was asked for ${asked}`);
     // A host that answers later fails the same way, and the root grant reaches every path.
-    const later = { read: async () => { throw new Error("large"); }, list: async () => Array.from({ length: 10_001 }, (_, i) => `f${i}`) };
+    const later = { read: () => Promise.reject(new Error("large")), list: () => Promise.resolve(Array.from({ length: 10_001 }, (_, i) => `f${i}`)) };
     const all = fs("main", ["."], later).calls;
     await all.read("main.py").then(() => { throw new Error("a large file read"); }, (e) => { if (e.message !== "'main.py' is larger than 10485760 bytes") throw e; });
     await all.list().then(() => { throw new Error("an endless list"); }, (e) => { if (e.message !== "'.' holds more than 10000 files") throw e; });

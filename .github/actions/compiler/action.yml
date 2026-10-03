@@ -120,6 +120,11 @@ runs:
       shell: bash
       run: cargo test --locked -p edge-python -p lang
 
+    # On its own, since the coverage build leaves method calls unfused and the corpus above must run fused.
+    - name: Coverage hook
+      shell: bash
+      run: cargo test --locked -p edge-python --features coverage coverage
+
     # compiler.wasm ships, the speed build goes under _build/ for the CLI jobs.
     - name: Stage on tmp
       uses: ./.github/actions/upload

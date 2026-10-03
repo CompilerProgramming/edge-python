@@ -69,7 +69,8 @@ impl OpcodeCache {
     /* Compile the fused instruction stream on first access, reuse afterwards. */
     pub fn ensure_fused(&mut self, chunk: &SSAChunk) -> &[Instruction] {
         if self.fused.is_none() {
-            self.fused = Some(fuse_method_calls(chunk));
+            // A coverage build runs what the compiler wrote, so each ip it marks is that instruction.
+            self.fused = Some(if cfg!(feature = "coverage") { chunk.instructions.clone() } else { fuse_method_calls(chunk) });
         }
         self.fused.as_ref().unwrap()
     }
