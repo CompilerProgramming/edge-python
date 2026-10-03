@@ -23,25 +23,17 @@ const { user } = Astro.locals
 
 // A query narrows the shelf, and it arrives in the url so the form works before any script does.
 const asked = (Astro.url.searchParams.get('q') ?? '').trim().slice(0, 64)
-const templated = Astro.url.searchParams.get('sort') === 'templates'
 
-// Popular and templates fill the same shelf, std is the maintainer's own.
-const shelf = (sort?: string) => {
-  const params = new URLSearchParams({ ...(asked ? { q: asked } : {}), ...(sort ? { sort } : {}) })
-  return params.size ? `/?${params}` : '/'
-}
-
+// Community holds templates and packages on one shelf, std is the maintainer's own.
 const sorts = [
-  { label: 'Popular', href: shelf(), current: !templated },
-  { label: 'Templates', href: shelf('templates'), current: templated },
+  { label: 'Community', href: asked ? `/?${new URLSearchParams({ q: asked })}` : '/', current: true },
   { label: 'std', href: `/@${OWNER}`, current: false }
 ]
 
-const packages = templated ? [] : (await listed(env.DB, { asked: asked || undefined })).results
+const packages = (await listed(env.DB, { asked: asked || undefined })).results
 const total = await counted(env.DB)
 
-const noun = templated ? 'template' : 'package'
-const shown = templated ? templates.filter((each) => `${each.name} ${each.description}`.toLowerCase().includes(asked.toLowerCase())) : []
+const shown = templates.filter((each) => `${each.name} ${each.description}`.toLowerCase().includes(asked.toLowerCase()))
 
 const authors = new Map(await Promise.all([...new Set(shown.map((each) => each.author))].map(async (handle) => {
   const found = await userByHandle(env.DB, handle)
@@ -104,16 +96,13 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
       </div>
 
       <div data-cards>
-        {shown.length > 0 ? (
-          <ul data-view="templates" class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
-            {shown.map((each) => <TemplateCard {...each} avatar={authors.get(each.author)!} />)}
-          </ul>
-        ) : packages.length > 0 ? (
+        {shown.length + packages.length > 0 ? (
           <ul class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+            {shown.map((each) => <TemplateCard {...each} avatar={authors.get(each.author)!} />)}
             {packages.map((item) => <PackageCard {...item} />)}
           </ul>
         ) : (
-          <p class="ml-4 text-sm text-fg-hint">{asked ? `No ${noun} matches that.` : `No ${noun}s yet.`}</p>
+          <p class="ml-4 text-sm text-fg-hint">{asked ? 'Nothing matches that.' : 'No packages yet.'}</p>
         )}
       </div>
     </section>

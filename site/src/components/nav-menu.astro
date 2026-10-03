@@ -2,7 +2,7 @@
 import Icon from './ui/icon.astro'
 import Sheet from './ui/sheet.astro'
 
-type Entry = { label: string; href: string; match?: string }
+type Entry = { label: string; href: string; match?: string; blank?: boolean }
 
 interface Props {
   current: string
@@ -17,6 +17,14 @@ const links: { label: string; pages: Entry[] }[] = [
       { label: 'Language', href: '/docs/language/syntax', match: '/docs/language' },
       { label: 'Reference', href: '/docs/reference/builtins', match: '/docs/reference' },
       { label: 'Implementation', href: '/docs/implementation/design', match: '/docs/implementation' }
+    ]
+  },
+  {
+    label: 'Community',
+    pages: [
+      { label: 'Twitter', href: 'https://x.com/chavezsutton', blank: true },
+      { label: 'GitHub', href: 'https://github.com/dylan-sutton-chavez/edge-python', blank: true },
+      { label: 'Discord', href: 'https://discord.com', blank: true }
     ]
   }
 ]
@@ -67,7 +75,7 @@ const chevron = 'rotate-90 text-fg-hint transition-transform group-open/section:
             <ul class="bg-surface border border-line rounded-2xl py-3 text-xs">
               {link.pages.map((page) => (
                 <li>
-                  <a href={page.href} aria-current={at(page) ? 'page' : undefined} class:list={[row, at(page) ? 'bg-line-strong text-fg' : 'text-fg-subtle hover:text-fg']}>{page.label}</a>
+                  <a href={page.href} target={page.blank ? '_blank' : undefined} rel={page.blank ? 'noopener noreferrer' : undefined} aria-current={at(page) ? 'page' : undefined} class:list={[row, at(page) ? 'bg-line-strong text-fg' : 'text-fg-subtle hover:text-fg']}>{page.label}</a>
                 </li>
               ))}
             </ul>
@@ -100,7 +108,7 @@ const chevron = 'rotate-90 text-fg-hint transition-transform group-open/section:
           <ul class="pb-2">
             {link.pages.map((page) => (
               <li>
-                <a href={page.href} aria-current={at(page) ? 'page' : undefined} class:list={[sheetRow, at(page) && 'bg-line-strong']}>{page.label}</a>
+                <a href={page.href} target={page.blank ? '_blank' : undefined} rel={page.blank ? 'noopener noreferrer' : undefined} aria-current={at(page) ? 'page' : undefined} class:list={[sheetRow, at(page) && 'bg-line-strong']}>{page.label}</a>
               </li>
             ))}
           </ul>
