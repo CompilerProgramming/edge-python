@@ -146,14 +146,14 @@ Deno.test("deno: a grant belongs to the package it names", async () => {
     if (child.out !== "" || child.text !== "True") throw new Error(`unexpected ${JSON.stringify(child)}`);
 });
 
-// A package named main answers to its dir, so it never borrows the grant of main.
+// A package named main answers to its import key, so it never borrows the grant of main.
 Deno.test("deno: a package named main never takes the grant of main", async () => {
     const got = await output("named-main", "from clock import now\nprint(now() > 0)", await project({
         "clock/edge.json": JSON.stringify({ name: "main" }),
         "clock/main.py": "import time\n\ndef now():\n    return time.now()\n",
         "edge.json": JSON.stringify({ imports: { clock: "./clock/main.py" }, permissions: { main: ["time:wall"] } }),
     }));
-    if (!got.out.includes("'clock/' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(got)}`);
+    if (!got.out.includes("'clock' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(got)}`);
 });
 
 // No JavaScript loads besides the host's own, so an import of one fails where it is written.
@@ -173,20 +173,22 @@ Deno.test("deno: a helper the root imports by a ./ path belongs to main", async 
     if (got.out !== "" || got.text !== "True") throw new Error(`unexpected ${JSON.stringify(got)}`);
 });
 
-// However deep a package sits, it answers to its own grant, never to the package that imported it.
-Deno.test("deno: a grandchild answers to its own grant", async () => {
-    const files = {
-        "clock/edge.json": JSON.stringify({ name: "clock", imports: { trace: "./trace/main.py" } }),
+// A package below the root holds what its importer passes it, and never more than that importer holds.
+Deno.test("deno: a grandchild holds what its importer passes it", async () => {
+    const files = (passes) => ({
+        "clock/edge.json": JSON.stringify({ name: "clock", imports: { trace: "./trace/main.py" }, permissions: passes }),
         "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
         "clock/trace/edge.json": JSON.stringify({ name: "trace" }),
         "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n",
-    };
+    });
     const manifest = (permissions) => JSON.stringify({ imports: { clock: "./clock/main.py" }, permissions });
     const src = "from clock import now\nprint(now())";
-    const borrowed = await output("borrowed", src, await project({ ...files, "edge.json": manifest({ main: ["time:wall"], clock: ["time:wall"] }) }));
-    if (!borrowed.out.includes("'trace' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(borrowed)}`);
-    const own = await output("own", src, await project({ ...files, "edge.json": manifest({ trace: ["time:wall"] }) }));
-    if (own.out !== "" || own.text !== "True") throw new Error(`unexpected ${JSON.stringify(own)}`);
+    const unpassed = await output("unpassed", src, await project({ ...files({}), "edge.json": manifest({ main: ["time:wall"], clock: ["time:wall"], trace: ["time:wall"] }) }));
+    if (!unpassed.out.includes("'trace' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(unpassed)}`);
+    const unheld = await output("unheld", src, await project({ ...files({ trace: ["time:wall"] }), "edge.json": manifest({ main: ["time:wall"] }) }));
+    if (!unheld.out.includes("'trace' imports time, which edge.json does not grant it")) throw new Error(`unexpected ${JSON.stringify(unheld)}`);
+    const passed = await output("passed", src, await project({ ...files({ trace: ["time:wall"] }), "edge.json": manifest({ clock: ["time:wall"] }) }));
+    if (passed.out !== "" || passed.text !== "True") throw new Error(`unexpected ${JSON.stringify(passed)}`);
 });
 
 Deno.test("deno: net reaches only the hosts its package holds", async () => {
