@@ -2,21 +2,18 @@
 import { env } from 'cloudflare:workers'
 import Base from '../layouts/base.astro'
 import Icon from '../components/ui/icon.astro'
-import LinkList from '../components/ui/link-list.astro'
 import Field from '../components/ui/field.astro'
-import PackageCard from '../components/package-card.astro'
-import TemplateCard from '../components/template-card.astro'
+import Avatar from '../components/ui/avatar.astro'
 import Agent from '../components/agent.astro'
 import { counted, listed } from '../lib/server/packages'
 import { publicUser, userByHandle } from '../lib/server/users'
-import { avatarFor } from '../lib/account/avatar'
+import { avatarFor, type Palette } from '../lib/account/avatar'
 import { OWNER } from '../lib/account/handle'
+import { count } from '../lib/format'
 import { templates } from '../data/templates'
 
-const guides = [
-  { icon: 'file', label: 'Quickstart', detail: 'curl -fsSL https://cdn.edgepython.com/cli/install.sh | sh', href: '/docs/getting-started/quickstart' },
-  { icon: 'boxes', label: 'Modules', detail: 'edge add json', href: '/docs/reference/modules' }
-] as const
+// Repos a visitor may know, each a tag that opens Rails cracker on it.
+const repos = [['rails', 'rails/rails'], ['django', 'django/django'], ['express', 'expressjs/express'], ['flask', 'pallets/flask'], ['next.js', 'vercel/next.js']]
 
 // Publishing needs a token, so signed out the same button opens the sign-in dialog.
 const { user } = Astro.locals
@@ -39,6 +36,12 @@ const authors = new Map(await Promise.all([...new Set(shown.map((each) => each.a
   const found = await userByHandle(env.DB, handle)
   return [handle, found ? (publicUser(found).avatar ?? avatarFor(found.id)) : avatarFor(handle)] as const
 })))
+
+// Templates and packages share one row, a template has no license and no installs.
+const rows = [
+  ...shown.map((each) => ({ name: each.name, href: `/templates/${each.slug}`, description: each.description as string | null, handle: each.author, avatar: authors.get(each.author)!, license: null as string | null, downloads: null as number | null })),
+  ...packages.map((item) => ({ name: item.name, href: `/package/${item.name}`, description: item.description, handle: item.handle, avatar: item.avatar_icon && item.avatar_palette ? { icon: item.avatar_icon, palette: item.avatar_palette as Palette } : avatarFor(item.name), license: item.license, downloads: item.downloads as number | null }))
+]
 
 const outline = 'flex items-center gap-2 transition border border-line text-fg-hint px-4 py-1 rounded-full hover:text-fg'
 ---
@@ -71,10 +74,25 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
       </div>
     </div>
 
-    <section class="flex flex-col gap-2">
-      <h2 class="ml-4">Get started</h2>
+    <section class="flex flex-col items-center gap-4 rounded-2xl border border-line-strong bg-page px-4 py-10">
+      <div class="flex flex-col items-center gap-1">
+        <h2 class="flex items-center gap-2 whitespace-nowrap text-sm"><Icon name="binoculars" size="sm" class="text-fg-hint" />Rails cracker</h2>
+        <p class="text-2xs text-fg-hint">Trace a repo to its vulnerabilities</p>
+      </div>
 
-      <LinkList links={guides} mono />
+      {/* A repo sent from here lands on the Rails cracker page. */}
+      <form action="/templates/rails-cracker" class="w-full max-w-[520px]">
+        <label class="flex h-10 items-center gap-2.5 rounded-full border border-line-emphasis bg-surface px-4 text-sm transition-shadow hover:border-link/60 hover:ring-2 hover:ring-link/20 focus-within:border-link/60 focus-within:ring-2 focus-within:ring-link/20">
+          <span class="sr-only">GitHub repo</span>
+          <Icon name="search" size="sm" class="shrink-0 text-fg-placeholder" />
+          <input name="repo" placeholder="Paste a GitHub repo" autocomplete="off" spellcheck="false" class="peer min-w-0 flex-1 bg-transparent outline-none placeholder:text-fg-placeholder" />
+          <button type="submit" aria-label="Trace" class="-mr-2 flex size-7 shrink-0 items-center justify-center rounded-full bg-fg text-page transition hover:bg-solid-hover peer-placeholder-shown:hidden"><Icon name="up" size="sm" /></button>
+        </label>
+      </form>
+
+      <div class="flex flex-wrap justify-center gap-2">
+        {repos.map(([label, repo]) => <a href={`/templates/rails-cracker?repo=${repo}`} class="rounded-full border border-line-strong px-3 py-1 text-xs text-fg-faint transition hover:text-fg">{label}</a>)}
+      </div>
     </section>
 
     <section class="flex flex-col gap-3">
@@ -96,10 +114,29 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
       </div>
 
       <div data-cards>
-        {shown.length + packages.length > 0 ? (
-          <ul class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
-            {shown.map((each) => <TemplateCard {...each} avatar={authors.get(each.author)!} />)}
-            {packages.map((item) => <PackageCard {...item} />)}
+        {rows.length > 0 ? (
+          <ul class="divide-y divide-line-strong overflow-hidden rounded-2xl border border-line-strong bg-page">
+            {/* Names the columns, and leaves them unnamed below 640px where the license hides. */}
+            <li aria-hidden="true" class="hidden items-center gap-4 bg-surface px-4 py-2 text-2xs text-fg-hint sm:flex">
+              <span class="flex-1">Name</span>
+              <span class="w-36">Author</span>
+              <span class="w-24 text-right">License</span>
+              <span class="w-12 text-right">Installs</span>
+            </li>
+            {rows.map((row) => (
+              <li class="relative flex items-center gap-4 px-4 py-3 transition hover:bg-surface has-[a:focus-visible]:bg-surface">
+                <div class="min-w-0 flex-1">
+                  <a href={row.href} class="text-sm font-medium after:absolute after:inset-0 focus-visible:outline-none">{row.name}</a>
+                  {row.description && <p class="truncate text-xs text-fg-hint">{row.description}</p>}
+                </div>
+                <a href={`/@${row.handle}`} class="relative flex shrink-0 items-center gap-2 text-xs text-fg-hint transition hover:text-fg sm:w-36">
+                  <Avatar {...row.avatar} size="sm" />
+                  <span class="hidden truncate sm:inline">@{row.handle}</span>
+                </a>
+                <span class="hidden w-24 text-right text-2xs text-fg-hint sm:block">{row.license ?? 'Template'}</span>
+                <span class="w-12 text-right text-2xs tabular-nums text-fg-disabled">{row.downloads === null ? '' : count(row.downloads)}</span>
+              </li>
+            ))}
           </ul>
         ) : (
           <p class="ml-4 text-sm text-fg-hint">{asked ? 'Nothing matches that.' : 'No packages yet.'}</p>
