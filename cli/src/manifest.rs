@@ -53,6 +53,11 @@ impl Manifest {
         Ok(())
     }
 
+    /* What the manifest grants each package, its permissions section as written. */
+    pub(crate) fn permissions(&self) -> Option<&serde_json::Value> {
+        self.rest.get("permissions")
+    }
+
     /// Write the manifest back as pretty JSON with a trailing newline.
     pub(crate) fn save(&self, path: &Path) -> Result<()> {
         let text = serde_json::to_string_pretty(self)?;

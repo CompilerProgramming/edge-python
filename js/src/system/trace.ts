@@ -37,6 +37,7 @@ export function masker(secrets: Record<string, string> | null): (text: string) =
 function reached(module: string, name: string, args: EdgeValue[], value: unknown) {
     if (name === 'batch') return { scope: Array.isArray(args[0]) ? `${args[0].length} calls` : '' };
     if (module === 'secret') return { scope: typeof args[0] === 'string' ? args[0] : '' };
+    if (module === 'fs') return { scope: typeof args[0] === 'string' ? args[0] : '.' };
     if (module === 'time') return { scope: name === 'zone' ? 'zone' : String(args[0] ?? 'wall') };
     if (name === 'request') return { scope: `${String(args[0])} ${place(args[1])}`, id: idOf(value) };
     if (name === 'connect') return { scope: place(args[0]), id: idOf(value) };

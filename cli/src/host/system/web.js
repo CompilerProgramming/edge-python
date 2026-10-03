@@ -104,8 +104,12 @@
 
     // The system modules opened for a run, each keyed by the run, its package and the module.
     const opened = new Map();
-    // A secret crosses only when a granted name asks for it, read from the environment at that moment.
-    const host = { secret: (name) => call("secret", { name }) };
+    // A secret crosses only when a granted name asks for it, read from the environment at that moment, and a file only from the project of its own run.
+    const hostOf = (run) => ({
+        secret: (name) => call("secret", { name }),
+        read: (path, limit) => call("fs_read", { run, path, limit }),
+        list: (dir, limit) => call("fs_list", { run, dir, limit }),
+    });
     globalThis.__edge_check = (json) => JSON.stringify({ error: globalThis.__edge.check(JSON.parse(json)) });
     globalThis.__edge_scopes = (json) => {
         const { permissions, pkg, module } = JSON.parse(json);
@@ -116,8 +120,8 @@
         return JSON.stringify(globalThis.__edge.unmet(permissions, pkg, section));
     };
     globalThis.__edge_open = (json) => {
-        const { key, module, pkg, held } = JSON.parse(json);
-        const system = globalThis.__edge.open[module](pkg, held, host);
+        const { key, run, module, pkg, held } = JSON.parse(json);
+        const system = globalThis.__edge.open[module](pkg, held, hostOf(run));
         opened.set(key, system);
         return JSON.stringify(Object.keys(system.calls));
     };

@@ -192,11 +192,42 @@ async function execute({ src, payload, start, entry = '', onLine, incremental = 
     return result;
 }
 
+// Where the root edge.json of the run sits, and the list of its files a build or a dev server writes beside it.
+let filesBase: string | null = null;
+let fileIndex: Promise<Set<string>> | null = null;
+
+/* A project file as the page serves it, each segment escaped so no name reads as a query or a fragment. */
+const served = async (path: string): Promise<Response> => {
+    if (!filesBase) throw new Error('none');
+    const res = await read(new URL(path.split('/').map(encodeURIComponent).join('/'), filesBase).href);
+    if (!res.ok) throw new Error('missing');
+    return res;
+};
+
+// A page cannot list a folder over http, so a build or a dev server writes the list once and every call reads it.
+const listed = (): Promise<Set<string>> => (fileIndex ??= served('edge.files').then(async (res) => new Set(await res.json() as string[])));
+
 // A secret leaves the embedder only when a granted name asks for it, and never as anything but text.
 const host: Host = {
     secret: (name) => {
         const value = secretsMap && Object.hasOwn(secretsMap, name) ? secretsMap[name] : undefined;
         return typeof value === 'string' ? value : null;
+    },
+    // Only a path the list names, since a server may follow a link the list left out.
+    read: async (path, limit) => {
+        if (!(await listed()).has(path)) throw new Error('missing');
+        const bytes = new Uint8Array(await (await served(path)).arrayBuffer());
+        if (bytes.length > limit) throw new Error('large');
+        try {
+            return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch {
+            throw new Error('binary');
+        }
+    },
+    list: async (dir, limit) => {
+        const found = [...(await listed())].filter((path) => dir === '' || path.startsWith(`${dir}/`));
+        if (dir !== '' && found.length === 0) throw new Error('missing');
+        return found.slice(0, limit);
     },
 };
 
@@ -204,6 +235,8 @@ const host: Host = {
 function serveSystem(exports: CompilerExports, packages: Packages): string[] {
     const problem = check(packages.permissions);
     if (problem) return [`edge.json at '${packages.root}edge.json': ${problem}`];
+    filesBase = programBase ? new URL(packages.root, programBase).href : null;
+    fileIndex = null;
     for (const [dir, pkg] of packages.dirs) {
         if (servedDirs.has(dir)) continue;
         servedDirs.add(dir);

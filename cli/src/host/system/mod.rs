@@ -4,10 +4,12 @@ mod pipe;
 use super::Completion;
 use compiler::abi::WireValue;
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::ffi::CStr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /* What a system call answered at once, a value, or that its answer arrives later as a completion. */
 pub enum Called {
@@ -59,13 +61,58 @@ pub fn unmet(permissions: &Value, pkg: &str, section: &Value) -> Vec<String> {
     serde_json::from_value(bridge(c"__edge_unmet", json!({ "permissions": permissions, "pkg": pkg, "section": section }), None)).unwrap_or_default()
 }
 
+/* Where one run keeps the project fs reads, the disk under its root edge.json or the bundle it arrived in, under its root. */
+pub enum Files {
+    Disk(PathBuf),
+    Bundle(Arc<HashMap<String, Vec<u8>>>, String),
+}
+
+// Each run's project, kept until the run closes.
+static FILES: Mutex<Option<HashMap<u64, Files>>> = Mutex::new(None);
+
+/* Hands fs the project of one run, the disk root already canonical. */
+pub fn files(run: u64, files: Files) {
+    FILES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(run, files);
+}
+
+/* The text of one project file of `run`, or the word fs names for why not. */
+fn read_file(run: u64, path: &str, limit: u64) -> Result<String, &'static str> {
+    let held = FILES.lock().unwrap_or_else(|e| e.into_inner());
+    match held.as_ref().and_then(|runs| runs.get(&run)).ok_or("none")? {
+        Files::Disk(root) => crate::files::read(root, path, limit),
+        Files::Bundle(files, root) => {
+            let bytes = files.get(&format!("{root}{path}")).ok_or("missing")?;
+            if bytes.len() as u64 > limit {
+                return Err("large");
+            }
+            String::from_utf8(bytes.clone()).map_err(|_| "binary")
+        }
+    }
+}
+
+/* Every project file of `run` under `dir`, hidden names left out as on disk, at most `limit`. */
+fn list_files(run: u64, dir: &str, limit: usize) -> Result<Vec<String>, &'static str> {
+    let held = FILES.lock().unwrap_or_else(|e| e.into_inner());
+    match held.as_ref().and_then(|runs| runs.get(&run)).ok_or("none")? {
+        Files::Disk(root) => crate::files::list(root, dir, limit),
+        Files::Bundle(files, root) => {
+            let under = if dir.is_empty() { String::new() } else { format!("{dir}/") };
+            let found: Vec<String> = files.keys().filter_map(|key| key.strip_prefix(root.as_str())).filter(|path| path.starts_with(&under) && !path.split('/').any(|part| part.starts_with('.'))).take(limit).map(str::to_string).collect();
+            if found.is_empty() && !dir.is_empty() {
+                return Err("missing");
+            }
+            Ok(found)
+        }
+    }
+}
+
 fn key(run: u64, pkg: &str, module: &str) -> String {
     format!("{run}:{pkg}\u{0}{module}")
 }
 
 /* Opens `module` for `pkg` in one run with the scopes it holds, the names of its calls back. */
 pub fn open(run: u64, pkg: &str, module: &str, held: &[String]) -> Vec<String> {
-    serde_json::from_value(bridge(c"__edge_open", json!({ "key": key(run, pkg, module), "module": module, "pkg": pkg, "held": held }), None)).unwrap_or_default()
+    serde_json::from_value(bridge(c"__edge_open", json!({ "key": key(run, pkg, module), "run": run, "module": module, "pkg": pkg, "held": held }), None)).unwrap_or_default()
 }
 
 /* One system call, answered now or, once its promise settles, as a completion on `events`. */
@@ -85,6 +132,9 @@ pub fn invoke(run: u64, pkg: &str, module: &str, name: &str, args: &[WireValue],
 
 /* Aborts every request and socket a finished run left open, a process that never started the thread has none. */
 pub fn close(run: u64) {
+    if let Some(runs) = FILES.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        runs.remove(&run);
+    }
     if THREAD.get().is_some() {
         bridge(c"__edge_close", json!({ "run": run }), None);
     }
@@ -189,13 +239,13 @@ mod tests {
 
     #[test]
     fn the_modules_and_their_grants_come_from_the_system_calls() {
-        assert_eq!(crate::web::SYSTEM_MODULES, ["net", "secret", "time"]);
+        assert_eq!(crate::web::SYSTEM_MODULES, ["fs", "net", "secret", "time"]);
         let permissions = json!({ "all": ["time:wall"], "main": ["net:api.example.com"], "http": ["net"] });
         assert_eq!(scopes(&permissions, "main", "time"), Some(vec!["wall".to_string()]));
         assert_eq!(scopes(&permissions, "http", "net"), Some(vec![]));
         assert_eq!(scopes(&permissions, "analytics", "net"), None);
         assert_eq!(check(&permissions), None);
-        assert_eq!(check(&json!({ "main": ["fs:/"] })).as_deref(), Some("permissions for 'main' name 'fs', which is not a system module (net, secret, time)"));
+        assert_eq!(check(&json!({ "main": ["db:/"] })).as_deref(), Some("permissions for 'main' name 'db', which is not a system module (fs, net, secret, time)"));
         let asks = json!({ "main": ["net", "time:wall"], "all": ["time:zone"], "other": ["net:evil.example"] });
         assert_eq!(unmet(&permissions, "http", &asks), ["time:zone"]);
     }

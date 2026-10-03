@@ -1,5 +1,6 @@
 /* The system calls on their own, each opened for one package with the scopes the root grants it. */
 import { check, scopes, unmet } from "../src/system/grants.ts";
+import fs from "../src/system/fs.ts";
 import net from "../src/system/net.ts";
 import secret from "../src/system/secret.ts";
 import time from "../src/system/time.ts";
@@ -21,7 +22,7 @@ Deno.test("system: a package holds its own entries and those for all", () => {
     if (JSON.stringify(scopes(permissions, "main", "time")) !== '["wall","zone"]') throw new Error("main time");
     if (JSON.stringify(scopes(permissions, "main", "net")) !== '["api.example.com"]') throw new Error("main net");
     if (JSON.stringify(scopes(permissions, "http", "net")) !== "[]") throw new Error("an entry without a scope holds the module alone");
-    if (scopes(permissions, "http", "fs") !== null || scopes(permissions, "analytics", "net") !== null) throw new Error("an ungranted module");
+    if (scopes(permissions, "http", "db") !== null || scopes(permissions, "analytics", "net") !== null) throw new Error("an ungranted module");
     if (scopes(permissions, "", "time") !== null) throw new Error("code outside any package holds nothing");
 });
 
@@ -40,7 +41,8 @@ Deno.test("system: a malformed permissions section says what it needs", () => {
     if (check(undefined) !== null || check(valid) !== null) throw new Error(`a valid section, ${check(valid)}`);
     const cases = [
         [{ main: "net:api.example.com" }, "permissions for 'main' must be a list of entries such as \"net:api.example.com\""],
-        [{ main: ["fs:/tmp"] }, "permissions for 'main' name 'fs', which is not a system module (net, secret, time)"],
+        [{ main: ["db:/tmp"] }, "permissions for 'main' name 'db', which is not a system module (fs, net, secret, time)"],
+        ...["/tmp", "shop", "./", "./shop/", "./shop/../etc", "./.git", "./shop\\x", ".."].map((dir) => [{ main: [`fs:${dir}`] }, `permissions for 'main' give fs the scope '${dir}', which it does not have`]),
         ...["api_key", "1KEY", "API-KEY", ""].map((name) => [{ main: [`secret:${name}`] }, `permissions for 'main' give secret the scope '${name}', which it does not have`]),
         [{ main: ["time:lunar"] }, "permissions for 'main' give time the scope 'lunar', which it does not have"],
         [{ main: ["net:https://api.example.com/"] }, "permissions for 'main' give net the scope 'https://api.example.com/', which it does not have"],
@@ -77,6 +79,39 @@ Deno.test("system: secret reads only the names a package holds, from what the ho
     raises(() => read("GONE"), "OSError", "the host holds no value for GONE");
     raises(() => read(7), "ValueError", "secret.read takes a name as a str");
     if (JSON.stringify(asked) !== '["API_KEY","GONE"]') throw new Error(`the host was asked for ${asked}`);
+});
+
+Deno.test("system: fs reads only plain paths under the folders a package holds", async () => {
+    const files = { "shop/Gemfile": "gem 'rails'\n", "shop/app/product.rb": "class Product; end\n", "shop/logo.png": null, "main.py": "x = 1\n" };
+    const asked = [];
+    const host = {
+        read: (path, limit) => {
+            asked.push(path);
+            if (!(path in files)) throw new Error("missing");
+            if (files[path] === null) throw new Error("binary");
+            if (files[path].length > limit) throw new Error("large");
+            return files[path];
+        },
+        list: (dir) => Object.keys(files).filter((path) => dir === "" || path.startsWith(`${dir}/`)).reverse(),
+    };
+    const { read, list } = fs("main", ["./shop"], host).calls;
+    if (read("shop/Gemfile") !== "gem 'rails'\n" || read("./shop/app/product.rb") !== "class Product; end\n") throw new Error("a granted file");
+    if (JSON.stringify(list("shop")) !== '["shop/Gemfile","shop/app/product.rb","shop/logo.png"]') throw new Error("a list comes back in order");
+    denied(() => read("main.py"), "'main' has no fs:./main.py, edge.json grants it fs:./shop");
+    denied(() => list("."), "'main' has no fs:., edge.json grants it fs:./shop");
+    denied(() => read("shopping/x"), "'main' has no fs:./shopping/x, edge.json grants it fs:./shop");
+    for (const path of ["shop/../main.py", "/etc/passwd", "shop//x", "shop/.env", "shop\\x", "shop/a\x00"]) {
+        denied(() => read(path), `'main' cannot reach '${path}', fs reads plain paths under the project, with no '..', no leading '/' and no name starting with a dot`);
+    }
+    raises(() => read("shop/nope.rb"), "OSError", "the project has no file or folder 'shop/nope.rb'");
+    raises(() => read("shop/logo.png"), "OSError", "'shop/logo.png' is not UTF-8 text");
+    raises(() => read(7), "ValueError", "fs.read takes a path as a str");
+    if (asked.some((path) => !path.startsWith("shop/"))) throw new Error(`the host was asked for ${asked}`);
+    // A host that answers later fails the same way, and the root grant reaches every path.
+    const later = { read: async () => { throw new Error("large"); }, list: async () => Array.from({ length: 10_001 }, (_, i) => `f${i}`) };
+    const all = fs("main", ["."], later).calls;
+    await all.read("main.py").then(() => { throw new Error("a large file read"); }, (e) => { if (e.message !== "'main.py' is larger than 10485760 bytes") throw e; });
+    await all.list().then(() => { throw new Error("an endless list"); }, (e) => { if (e.message !== "'.' holds more than 10000 files") throw e; });
 });
 
 Deno.test("system: a batch answers many calls of a module in one crossing", async () => {

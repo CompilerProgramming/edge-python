@@ -193,6 +193,11 @@ impl Instance {
         })
     }
 
+    /* The run this instance reports its system calls under. */
+    pub(super) fn run(&self) -> u64 {
+        self.store.data().run
+    }
+
     pub(super) fn register_error(&mut self, spec: &str, msg: &str) -> Result<(), String> {
         self.register_pair(spec, msg.as_bytes(), |store, ex, (s, sl), (p, pl)| ex.register_module_error.call(store, (s, sl, p, pl)))
     }

@@ -500,10 +500,10 @@
       "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}}\n",
       "main.py": "from clock import now\n",
       "clock/main.py": "def now():\n    return 0\n",
-      "clock/edge.json": "{\"name\": \"clock\", \"permissions\": {\"main\": [\"fs:/\"]}}\n"
+      "clock/edge.json": "{\"name\": \"clock\", \"permissions\": {\"main\": [\"db:/\"]}}\n"
     },
     "run": ["lock"],
-    "fails": ["edge.json at 'clock/edge.json': permissions for 'main' name 'fs', which is not a system module (net, secret, time)"]
+    "fails": ["edge.json at 'clock/edge.json': permissions for 'main' name 'db', which is not a system module (fs, net, secret, time)"]
   },
   {
     "given": {

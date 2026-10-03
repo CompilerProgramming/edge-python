@@ -22,8 +22,20 @@ export function plainHost(host: string): boolean {
 // A whole scope for net, one lowercase host and the path prefix it may bound the reach to.
 const NET_SCOPE = new RegExp(`^(${HOST.source})((?:/[A-Za-z0-9\\-._~!$&'()*+,=:@]+)*/?)$`);
 
-// What a scope of each system module may be, a host for net, a name for secret and a clock for time.
+// A segment of a project path, never empty, never hidden behind a dot and free of what a host reads as a separator.
+const plainSegment = (part: string) => part !== '' && !part.startsWith('.') && [...part].every((c) => c >= ' ' && c !== '\\' && c !== '\x7f');
+
+/* A path under the root edge.json as both hosts read it, '' for the root itself, null when it could leave it. */
+export function plainPath(path: string): string | null {
+    if (path === '.') return '';
+    const parts = (path.startsWith('./') ? path.slice(2) : path).split('/');
+    return parts.every(plainSegment) ? parts.join('/') : null;
+}
+
+// What a scope of each system module may be, a folder for fs, a host for net, a name for secret and a clock for time.
 const SCOPES: Record<string, (scope: string) => boolean> = {
+    // Written from the root edge.json, so a grant always starts at it.
+    fs: (dir) => dir === '.' || (dir.startsWith('./') && plainPath(dir) !== null),
     // A prefix names plain segments, since a dot segment or an escape never matches a resolved path.
     net: (scope) => {
         const [, host, prefix] = NET_SCOPE.exec(scope) ?? [];

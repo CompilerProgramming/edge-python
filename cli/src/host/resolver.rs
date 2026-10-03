@@ -156,6 +156,19 @@ fn serve_system(inst: &mut Instance, project: &Project, packages: &Value) -> Vec
         }
     }
     let mut failures = Vec::new();
+    // fs reads the project where this run keeps it, under its root edge.json.
+    if entries.iter().any(|e| e.as_str().is_some_and(|e| e.starts_with("fs:"))) {
+        match &project.bundle {
+            Some(files) => system::files(inst.run(), system::Files::Bundle(std::sync::Arc::new((**files).clone()), root.to_string())),
+            None => {
+                let beside = project.manifest.as_deref().and_then(|m| Path::new(m).parent()).filter(|dir| !dir.as_os_str().is_empty());
+                let dir = beside.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(if root.is_empty() { "." } else { root }));
+                if let Ok(dir) = dir.canonicalize() {
+                    system::files(inst.run(), system::Files::Disk(dir));
+                }
+            }
+        }
+    }
     // A run that reads no clock sleeps on the virtual one, so what it prints never depends on when it runs.
     let clock = entries.iter().any(|e| e.as_str().is_some_and(|e| e.starts_with("time:")));
     if let Err(e) = inst.set_wall_clock(clock) {

@@ -28,6 +28,8 @@ pub fn run(dir: PathBuf, host: &str, port: u16, open: bool) -> Result<()> {
         let url = req.url().split('?').next().unwrap().to_string();
         if url == "/__livereload" {
             let _ = req.respond(Response::from_string(version.load(Ordering::Relaxed).to_string()));
+        } else if url == "/edge.files" {
+            serve_index(req, &dir);
         } else {
             serve_file(req, &dir, &url);
         }
@@ -38,6 +40,16 @@ pub fn run(dir: PathBuf, host: &str, port: u16, open: bool) -> Result<()> {
 // True when a request path walks above the project root, shared with the harness server.
 pub(crate) fn escapes_root(rel: &str) -> bool {
     rel.split('/').any(|seg| seg == "..")
+}
+
+/* The files fs may list, walked from the disk on every ask so an edit shows at once, as a build would write them. */
+fn serve_index(req: tiny_http::Request, dir: &Path) {
+    let Ok(manifest) = crate::manifest::Manifest::load(&dir.join("edge.json")) else {
+        let _ = req.respond(Response::from_string("404 not found").with_status_code(404));
+        return;
+    };
+    let index = crate::files::index(dir, manifest.permissions(), crate::files::INDEX_LIMIT);
+    let _ = req.respond(Response::from_string(serde_json::json!(index).to_string()).with_header(header("Content-Type", "application/json")));
 }
 
 fn serve_file(req: tiny_http::Request, dir: &Path, url: &str) {

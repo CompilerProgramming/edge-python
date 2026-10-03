@@ -737,7 +737,7 @@ pass. division by zero raises
 
 ## System modules
 
-The network, the clock and the values a host keeps come from three system modules that ship inside Edge Python, `net`, `time` and `secret`. They need no `imports` entry, only a grant from the root `edge.json`, and an import without one fails at compile time.
+The project files, the network, the clock and the values a host keeps come from four system modules that ship inside Edge Python, `fs`, `net`, `time` and `secret`. They need no `imports` entry, only a grant from the root `edge.json`, and an import without one fails at compile time.
 
 ```python
 import time
@@ -747,7 +747,7 @@ import time
 'main' imports time, which edge.json does not grant it
 ```
 
-`permissions` maps each holder to a list of `module:scope` entries. The holder is `main` for the program's own code, `all` for every package, a package name for that package alone, or `eval` for the most a bundle may grant in an eval group. `net:<host>` allows exactly that host, a lowercase name or an IPv4 as `a.b.c.d` with no scheme or port and no IPv6, `net:<host>/<prefix>` bounds it to that path prefix and what sits under it however a server decodes the path, `time:wall`, `time:monotonic` and `time:zone` allow one clock call each, and `secret:<NAME>` allows reading that one value, the name in uppercase letters, digits and underscores. An entry without a scope, like `"net"`, lets the package import the module and reach nothing.
+`permissions` maps each holder to a list of `module:scope` entries. The holder is `main` for the program's own code, `all` for every package, a package name for that package alone, or `eval` for the most a bundle may grant in an eval group. `net:<host>` allows exactly that host, a lowercase name or an IPv4 as `a.b.c.d` with no scheme or port and no IPv6, `net:<host>/<prefix>` bounds it to that path prefix and what sits under it however a server decodes the path, `time:wall`, `time:monotonic` and `time:zone` allow one clock call each, `secret:<NAME>` allows reading that one value, the name in uppercase letters, digits and underscores, and `fs:./<folder>` allows reading the project files under that folder, `fs:.` the whole project. An entry without a scope, like `"net"`, lets the package import the module and reach nothing.
 
 ```json
 {
@@ -797,6 +797,17 @@ import secret
 token = secret.read("GITHUB_TOKEN")
 ```
 
+### fs
+
+`read(path)` returns the text of a project file as a `str`, and `list(dir='.')` every file under a folder in order, both written from the root `edge.json` such as `shop/app/product.rb`. A path with `..`, a leading `/` or a name starting with a dot raises `PermissionError`, like one outside the granted folders, and a file that is missing, not UTF-8 or over 10 MB raises `OSError`. The CLI reads the disk or the bundle and never follows a link, and a page reads the files beside its program, listed in the `edge.files` that `edge build --web` writes and `edge serve` answers. Nothing writes.
+
+```python
+import fs
+
+for path in fs.list("shop"):
+    print(fs.read(path))
+```
+
 ## Actors
 
 `edge actor` runs many isolated programs as cooperative actors over a few threads, share-nothing with message passing. There are two execution models and the manifest chooses per group.
@@ -842,7 +853,7 @@ got hello
 
 ### The untrusted model
 
-`eval: true` groups compile each message as its own program in a fresh wasm instance with its own memory, capped by the group's `heap` limit and a 256 MiB reservation, and cut off after ten seconds of wall-clock time by a deadline the host enforces from outside. No state survives between messages. A bundle that carries its own `edge.json` resolves through it, any other message through the pool's manifest. Either way `.wasm` plugins are refused, remote modules load only from `https://cdn.edgepython.com/` and `send()` has no scheduler, so untrusted code cannot send or load modules from disk. A bundle grants its own permissions in its own `edge.json` as any root does, but only within what the pool grants `eval`, so an entry past it refuses the run before it compiles, and a snippet holds nothing. A `code` or `run` group is trusted instead, it keeps state, can send and can use `net`, `time` and `secret` under the pool's grants, so reach for `eval` when the code is not yours.
+`eval: true` groups compile each message as its own program in a fresh wasm instance with its own memory, capped by the group's `heap` limit and a 256 MiB reservation, and cut off after ten seconds of wall-clock time by a deadline the host enforces from outside. No state survives between messages. A bundle that carries its own `edge.json` resolves through it, any other message through the pool's manifest. Either way `.wasm` plugins are refused, remote modules load only from `https://cdn.edgepython.com/` and `send()` has no scheduler, so untrusted code cannot send or load modules from disk. A bundle grants its own permissions in its own `edge.json` as any root does, but only within what the pool grants `eval`, so an entry past it refuses the run before it compiles, and a snippet holds nothing. A `code` or `run` group is trusted instead, it keeps state, can send and can use `fs`, `net`, `time` and `secret` under the pool's grants, so reach for `eval` when the code is not yours.
 
 ```yml untrusted
 groups:

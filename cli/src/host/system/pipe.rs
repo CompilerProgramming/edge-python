@@ -119,6 +119,9 @@ impl Pipe {
             "monotonic" => Ok(json!(epoch().elapsed().as_secs_f64() * 1000.0)),
             // Only a name the package holds asks, so the prefix keeps every other variable out of reach.
             "secret" => Ok(std::env::var(format!("EDGE_SECRET_{}", text(args, "name")?)).map_or(Value::Null, Value::String)),
+            // fs checked the path and the grant, these only fetch from where the run keeps its project.
+            "fs_read" => super::read_file(args["run"].as_u64().unwrap_or(0), &text(args, "path")?, args["limit"].as_u64().unwrap_or(0)).map(Value::String).map_err(str::to_string),
+            "fs_list" => super::list_files(args["run"].as_u64().unwrap_or(0), &text(args, "dir")?, args["limit"].as_u64().unwrap_or(0) as usize).map(|found| json!(found)).map_err(str::to_string),
             "http_start" => {
                 let headers = args["headers"].as_array().into_iter().flatten().filter_map(|p| Some((p[0].as_str()?.to_string(), p[1].as_str()?.to_string()))).collect();
                 let (method, url, body) = (text(args, "method")?, text(args, "url")?, bytes(&args["body"]));

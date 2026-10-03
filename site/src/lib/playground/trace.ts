@@ -108,7 +108,7 @@ export function createTrace(list: HTMLElement, entry = 'main.py') {
     node.row.className = ROW
     // Under its request after what already answered it, so a late answer still sits beneath it.
     const after = parent === root ? null : (before?.row ?? parent.row)
-    if (after) after.after(node.row)
+    if (after) list.insertBefore(node.row, after.nextSibling)
     else list.insertBefore(node.row, more.isConnected ? more : null)
     fresh.push(node)
   }
@@ -186,7 +186,7 @@ export function createTrace(list: HTMLElement, entry = 'main.py') {
     dirty.clear()
     list.style.setProperty('--end', String(Math.max(end, total) || 1))
     more.textContent = `+${hidden.toLocaleString('en')} more`
-    if (hidden && !more.isConnected) list.append(more)
+    if (hidden && !more.isConnected) list.appendChild(more)
   }
 
   const later = () => { frame ||= requestAnimationFrame(paint) }

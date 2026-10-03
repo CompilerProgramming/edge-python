@@ -249,6 +249,20 @@ pub fn run(manifest_path: &Path, out_dir: PathBuf) -> Result<()> {
     sp.done("vendored packages");
     let script_count = copy_scripts(&scripts, &project, &out_dir)?;
 
+    // fs reads the granted folders beside the program, and a page lists them from the index http cannot give it.
+    if !crate::files::granted(manifest.permissions()).is_empty() {
+        let out = out_dir.canonicalize().unwrap_or_else(|_| out_dir.clone());
+        let readable: Vec<String> = crate::files::index(&project, manifest.permissions(), crate::files::INDEX_LIMIT).into_iter().filter(|path| !project.join(path).canonicalize().is_ok_and(|real| real.starts_with(&out))).collect();
+        for path in &readable {
+            let to = out_dir.join(path);
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+            }
+            fs::copy(project.join(path), &to).with_context(|| format!("copying {path}"))?;
+        }
+        fs::write(out_dir.join("edge.files"), serde_json::to_string(&readable)?).context("writing edge.files")?;
+    }
+
     // Vendored paths replace their urls, every other entry and key stays as written.
     let packages = vendored.len();
     manifest.imports.extend(vendored);

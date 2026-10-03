@@ -230,6 +230,12 @@ fn serve(pages: Arc<Mutex<HashMap<String, String>>>, imports: Vec<u8>, root: Pat
             let path = req.url().split('?').next().unwrap_or("/").trim_start_matches('/').to_string();
             let served = match path.as_str() {
                 "edge.json" => Some((imports.clone(), content_type(Path::new("edge.json")))),
+                // What fs may list, walked on each ask as a dev server does, since http cannot list a folder.
+                "edge.files" => {
+                    let manifest: serde_json::Value = serde_json::from_slice(&imports).unwrap_or_default();
+                    let index = crate::files::index(&root, manifest.get("permissions"), crate::files::INDEX_LIMIT);
+                    Some((serde_json::json!(index).to_string().into_bytes(), "application/json"))
+                }
                 "compiler.wasm" => Some((COMPILER_WASM.to_vec(), content_type(Path::new("compiler.wasm")))),
                 _ => match host_file(&path) {
                     Some(found) => Some(found),

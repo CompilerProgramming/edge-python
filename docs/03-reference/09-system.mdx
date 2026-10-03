@@ -1,13 +1,14 @@
 ---
 title: "System"
-description: "The net, time and secret modules, and the permissions edge.json grants each package."
+description: "The fs, net, time and secret modules, and the permissions edge.json grants each package."
 ---
 
 # System
 
-Edge Python reaches outside its sandbox through three system modules, `net` for the network, `time` for the clock and `secret` for the values a host keeps for the program. They ship inside Edge Python and need no `imports` entry, but a package can only import them when the root `edge.json` grants it.
+Edge Python reaches outside its sandbox through four system modules, `fs` for the project files, `net` for the network, `time` for the clock and `secret` for the values a host keeps for the program. They ship inside Edge Python and need no `imports` entry, but a package can only import them when the root `edge.json` grants it.
 
 ```python
+import fs
 import net
 import time
 import secret
@@ -43,6 +44,8 @@ Only the root `edge.json` grants. Its `permissions` section maps each holder to 
 | `time:monotonic` | `now('monotonic')` |
 | `time:zone` | `zone()` |
 | `secret:<NAME>` | `read('<NAME>')`, that one value and no other. The name is uppercase letters, digits and underscores, and never starts with a digit |
+| `fs:./<folder>` | `read` and `list` under that folder of the project, written from the root `edge.json`, so `fs:./shop` reaches `shop/Gemfile` and never `shopping/` |
+| `fs:.` | `read` and `list` anywhere in the project |
 
 A package is the nearest `edge.json` above its files. The root's own modules belong to `main`, and a dependency answers to the `name` its own manifest carries. An entry without a scope, such as `"net"`, lets the package import the module and reach nothing. What a package holds is its own entries joined with those for `all`, and code outside any package holds nothing.
 
@@ -143,6 +146,30 @@ token = secret.read("GITHUB_TOKEN")
 
 ```bash
 EDGE_SECRET_GITHUB_TOKEN=ghp_example edge run main.py
+```
+
+## fs
+
+| Call | Needs | Returns |
+|---|---|---|
+| `read(path)` | `fs:` a folder holding `path` | The text of that file, read as UTF-8, as a `str` |
+| `list(dir='.')` | `fs:` a folder holding `dir` | Every file under `dir`, as paths from the root `edge.json`, in order |
+
+A path is written from the root `edge.json`, such as `shop/app/product.rb`. One with `..`, a leading `/` or a name starting with a dot raises `PermissionError`, like one outside every folder the package holds. A file that is missing, is not UTF-8 or is over 10 MB raises `OSError`, and so does a list of more than 10,000 files. Nothing writes.
+
+The CLI reads the disk, or the bundle a run came in, and never follows a link, even one pointing inside the project. A page reads the files beside its program through the same reader its imports use, and lists them from `edge.files`, the list `edge build --web` writes and `edge serve` and `--web` answer, since http cannot list a folder. A page reads only the paths that list names, so both hosts read the same files. A page that embeds the engine serves `edge.files` beside its `edge.json`, a JSON list of every path `fs` may read.
+
+```json
+{ "permissions": { "main": ["fs:./shop"] } }
+```
+
+```python
+import fs
+
+for path in fs.list("shop"):
+    print(path)
+
+code = fs.read("shop/app/models/product.rb")
 ```
 
 ## batch

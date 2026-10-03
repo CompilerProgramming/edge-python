@@ -196,5 +196,17 @@
     "run": ["test"],
     "fails": [],
     "stdout": ["(unsuccessful) e_test.py: no tests registered"]
+  },
+  {
+    "given": {
+      "edge.json": "{ \"permissions\": { \"main\": [\"fs:./shop\"] } }\n",
+      "shop/Gemfile": "gem 'rails'\n",
+      "shop/app/product.rb": "class Product; end\n",
+      "shop/.env": "KEY=1\n",
+      "secret.txt": "outside\n",
+      "main.py": "import fs\nprint(fs.list('shop'))\nprint(fs.read('shop/app/product.rb'), end='')\nfor bad in ['secret.txt', 'shop/../secret.txt', '/etc/passwd', 'shop/.env', 'shop/nope.rb']:\n    try:\n        fs.read(bad)\n    except (PermissionError, OSError) as e:\n        print(type(e).__name__, bad)\n"
+    },
+    "run": ["run", "main.py"],
+    "stdout": ["['shop/Gemfile', 'shop/app/product.rb']", "class Product; end", "PermissionError secret.txt", "PermissionError shop/../secret.txt", "PermissionError /etc/passwd", "PermissionError shop/.env", "OSError shop/nope.rb"]
   }
 ]
