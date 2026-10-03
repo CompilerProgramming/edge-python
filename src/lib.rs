@@ -4,11 +4,11 @@ extern crate alloc;
 
 pub mod abi;
 
-/* Host bridge behind the six plugin imports, wasm only. */
-#[cfg(target_arch = "wasm32")]
+/* Host bridge behind the six plugin imports, part of the wasm `runtime`. */
+#[cfg(all(target_arch = "wasm32", feature = "runtime"))]
 pub mod bridge;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "runtime"))]
 pub mod wasm;
 
 /* Internal compiler helpers (not Edge Python stdlib), separate from pipeline code. */

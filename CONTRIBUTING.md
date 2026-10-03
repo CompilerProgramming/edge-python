@@ -24,7 +24,8 @@ Run these from the repo root before sending. The maintainer runs CI once the PR 
 cargo wasm
 cargo test --release
 cargo clippy --all-targets -- -D warnings
-cargo clippy --lib --no-default-features --target wasm32-unknown-unknown -p edge-python -p slugify-mod -- -D warnings
+cargo clippy --lib --no-default-features --features edge-python/runtime --target wasm32-unknown-unknown -p edge-python -p slugify-mod -- -D warnings
+cargo clippy --lib --no-default-features --target wasm32-unknown-unknown -p edge-python -- -D warnings
 cargo shear
 ```
 
@@ -38,8 +39,10 @@ The root Cargo workspace holds the engine, `abi`, `pdk`, `skill`, `lang` and `be
 
 ```bash
 cargo wasm # compiler.wasm, CI ships a smaller build
-cargo build --release # .rlib and cdylib for Rust embedders
+cargo build --release # the .rlib Rust embedders link
 ```
+
+`cargo wasm` turns on the `runtime` feature, the wrapper that makes `compiler.wasm` with its exports, host imports, allocator and panic handler. Without it the crate is the engine alone, for a wasm that links it as a library, such as a plugin that only parses.
 
 `cli/` embeds `compiler.wasm` and the JS host from `js/dist` at build time. Build them first, or point `EDGE_COMPILER_WASM` and `EDGE_JS_DIST` at copies. Releases embed the speed build from `cargo wasm-cli`.
 

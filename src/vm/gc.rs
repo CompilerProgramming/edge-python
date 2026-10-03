@@ -29,7 +29,7 @@ impl<'a> VM<'a> {
             }
         }
         for &v in current_slots { self.heap.mark(v); }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "runtime"))]
         crate::bridge::mark_handles(self as *const Self as *const u8, &mut self.heap);
         for &v in &self.live_slots { self.heap.mark(v); }
         // Closure cells live on the active call frames until the closures that capture them are built.

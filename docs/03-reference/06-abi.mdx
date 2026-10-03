@@ -504,12 +504,18 @@ Little-endian, self-contained, versioned.
 
 ## Consuming the release from a Rust crate
 
-The `edge-python` crate builds as a `cdylib`. A Rust host can instantiate `compiler.wasm` and call the exports above directly, the same `.wasm` the JS host loads, with the host owning I/O. The crate builds no wasm of its own and fetches nothing at build time, so `cargo build` stays offline and reproducible. Take the artifact from the tagged GitHub Release, or from `https://cdn.edgepython.com/compiler.wasm` for the current `main`. The `edge` CLI is that host, it embeds the `.wasm` precompiled by wasmtime and implements the imports in `cli/src/host`.
+`cargo wasm` builds the `edge-python` crate as a `cdylib`, `compiler.wasm`. A Rust host can instantiate `compiler.wasm` and call the exports above directly, the same `.wasm` the JS host loads, with the host owning I/O. The crate builds no wasm of its own and fetches nothing at build time, so `cargo build` stays offline and reproducible. Take the artifact from the tagged GitHub Release, or from `https://cdn.edgepython.com/compiler.wasm` for the current `main`. The `edge` CLI is that host, it embeds the `.wasm` precompiled by wasmtime and implements the imports in `cli/src/host`.
 
 ```toml
 # Downstream Cargo.toml
 [dependencies]
 edge-python = { git = "https://github.com/dylan-sutton-chavez/edge-python", tag = "v0.1.0" }
+```
+
+The `runtime` feature is the wrapper that makes `compiler.wasm`, its exports, host imports, allocator and panic handler, and `cargo wasm` turns it on. A wasm that links the crate as a library, such as a plugin that only parses, leaves it off and brings its own allocator and panic handler.
+
+```toml
+edge-python = { git = "https://github.com/dylan-sutton-chavez/edge-python", tag = "v0.1.0", default-features = false }
 ```
 
 Vendor the matching `compiler.wasm` next to your own sources and pin it by checksum, the same way the CLI pins the modules it downloads. A release asset is immutable and the CDN path is not, so a checksum is the only thing that ties a build to a known engine.

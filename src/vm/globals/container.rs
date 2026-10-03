@@ -47,14 +47,14 @@ impl<'a> VM<'a> {
     }
 
     // Build a set Val from items, rejecting unhashable elements first.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "runtime"))]
     pub(crate) fn set_from_items(&mut self, items: Vec<Val>) -> Result<Val, VmErr> {
         for &v in items.iter().filter(|v| v.is_heap()) { self.require_hashable(v)?; }
         self.alloc_set_result(items, false)
     }
 
     // Build a frozenset Val from items, rejecting unhashable elements first.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "runtime"))]
     pub(crate) fn frozenset_from_items(&mut self, items: Vec<Val>) -> Result<Val, VmErr> {
         for &v in items.iter().filter(|v| v.is_heap()) { self.require_hashable(v)?; }
         self.alloc_set_result(items, true)

@@ -18,7 +18,7 @@ The `lang` crate is a small, clean embedding API over the Edge Python engine. Us
 lang = { git = "https://github.com/dylan-sutton-chavez/edge-python", tag = "v0.1.0" }
 ```
 
-`lang` is `no_std` and needs only `alloc`. The default `std` feature links the host standard library, and `default-features = false` drops it for wasm and bare-metal targets.
+`lang` is `no_std` and needs only `alloc`. The default `std` feature links the host standard library, and `default-features = false` drops it for wasm and bare-metal targets. On wasm the program that embeds `lang` brings its own allocator and panic handler, since `lang` takes the engine without its `runtime`.
 
 ## Compile and run
 

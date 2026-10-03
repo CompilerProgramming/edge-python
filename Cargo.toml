@@ -9,9 +9,9 @@ readme = "README.md"
 autotests = false
 autobins = false
 
+# `cargo wasm` builds compiler.wasm as a cdylib, so a crate depending on this one links a plain rlib.
 [lib]
 name = "compiler"
-crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [[test]]
@@ -23,6 +23,8 @@ default = ["std"]
 std = []
 # Records each instruction a run executes for `VM::ran`, method calls left unfused so every ip is the compiler's own.
 coverage = []
+# The wrapper that makes compiler.wasm, its exports, host imports, allocator and panic handler.
+runtime = []
 
 [dependencies]
 wasm-abi = { workspace = true }
