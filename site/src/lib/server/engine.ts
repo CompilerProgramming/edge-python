@@ -12,6 +12,7 @@ type Exports = {
   wasm_alloc(size: number): number
   wasm_free(ptr: number, size: number): void
   manifest_check(manifest: number, manifestLen: number, lock: number, lockLen: number, system: number, systemLen: number): number
+  manifest_fields(manifest: number, manifestLen: number): number
   bundle_index(bundle: number, bundleLen: number): number
 }
 
@@ -56,6 +57,13 @@ export function unpack(artifact: Uint8Array): Map<string, Uint8Array> {
   const answer = JSON.parse(call([artifact], (e, [at]) => e.bundle_index(at!, artifact.length))) as { error?: string; files?: [string, number, number][] }
   if (answer.error !== undefined) throw new Error(answer.error)
   return new Map((answer.files ?? []).map(([path, at, len]) => [path, artifact.subarray(at, at + len)]))
+}
+
+/* The fields a registry stores from a manifest, read by the engine that holds it to the rules, so what is stored is what was checked. */
+export function manifestFields(manifest: Uint8Array): Record<'name' | 'version' | 'description' | 'repository' | 'edge', string | null> {
+  const read = JSON.parse(call([manifest], (e, [at]) => e.manifest_fields(at!, manifest.length)))
+  if (read.error !== undefined) throw new Error(`The edge.json inside that package does not hold, ${read.error}`)
+  return read
 }
 
 /* Holds each manifest a bundle carries to the engine's rules, its lock and its grants, here since Node cannot load the compiler. */

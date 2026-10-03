@@ -26,6 +26,33 @@ pub unsafe extern "C" fn manifest_check(m_ptr: *const u8, m_len: u32, l_ptr: *co
     write_out(&checked.err().unwrap_or_default()) as u32
 }
 
+/* The fields a registry stores from the manifest at `ptr`, read as the rules read them, as JSON, or why it is not one. */
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn manifest_fields(ptr: *const u8, len: u32) -> u32 {
+    let mut out = String::from("{");
+    match parse_manifest(unsafe { safe_bytes(ptr, len) }) {
+        Err(e) => {
+            out.push_str("\"error\":");
+            quote(&mut out, &e);
+        }
+        Ok(m) => {
+            for (i, (key, value)) in [("name", m.name), ("version", m.version), ("description", m.description), ("repository", m.repository), ("edge", m.edge)].into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                quote(&mut out, key);
+                out.push(':');
+                match value {
+                    Some(text) => quote(&mut out, &text),
+                    None => out.push_str("null"),
+                }
+            }
+        }
+    }
+    out.push('}');
+    write_out(&out) as u32
+}
+
 /* Where each file of the bundle at `ptr` sits inside it, as JSON, or why it is not a bundle. */
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bundle_index(ptr: *const u8, len: u32) -> u32 {

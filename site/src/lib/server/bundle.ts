@@ -1,4 +1,4 @@
-import { unpack } from './engine'
+import { manifestFields, unpack } from './engine'
 
 // The prefix the CLI packs documentation under, which no import can reach.
 const DOCS = '@docs/'
@@ -31,16 +31,7 @@ export function packed(artifact: Uint8Array): Packed {
   const declared = files.get('edge.json')
   if (!declared) throw new Error('That package carries no edge.json, so it has nothing to publish under.')
 
-  let manifest: Record<string, unknown>
-  try {
-    manifest = JSON.parse(text.decode(declared))
-  } catch {
-    throw new Error('The edge.json inside that package is not JSON.')
-  }
-
-  if (manifest == null || typeof manifest !== 'object' || Array.isArray(manifest)) {
-    throw new Error('The edge.json inside that package is not an object.')
-  }
+  const manifest = manifestFields(declared)
 
   return {
     name: manifest.name,
