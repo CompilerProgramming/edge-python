@@ -67,7 +67,7 @@ runs:
           -p edge-python \
           --no-default-features \
           --features runtime \
-          --crate-type cdylib,rlib \
+          --crate-type cdylib \
           -Z build-std=std,panic_abort \
           -Z build-std-features=optimize_for_size
 
@@ -114,7 +114,7 @@ runs:
     - name: Build (CLI)
       shell: bash
       run: |
-        cargo rustc --locked --profile cli --target wasm32-unknown-unknown -p edge-python --lib --no-default-features --features runtime --crate-type cdylib,rlib
+        cargo rustc --locked --profile cli --target wasm32-unknown-unknown -p edge-python --lib --no-default-features --features runtime --crate-type cdylib
         CLI_WASM=target/wasm32-unknown-unknown/cli/compiler.wasm
         wasm-opt -O3 --enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-multivalue --enable-reference-types -o /tmp/compiler-cli.wasm "$CLI_WASM"
         mv /tmp/compiler-cli.wasm "$CLI_WASM"
