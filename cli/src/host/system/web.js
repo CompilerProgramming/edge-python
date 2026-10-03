@@ -111,13 +111,14 @@
         list: (dir, limit) => call("fs_list", { run, dir, limit }),
     });
     globalThis.__edge_check = (json) => JSON.stringify({ error: globalThis.__edge.check(JSON.parse(json)) });
+    globalThis.__edge_held = (json) => JSON.stringify(globalThis.__edge.held(JSON.parse(json)));
     globalThis.__edge_scopes = (json) => {
-        const { permissions, pkg, module } = JSON.parse(json);
-        return JSON.stringify(globalThis.__edge.scopes(permissions, pkg, module));
+        const { chain, module } = JSON.parse(json);
+        return JSON.stringify(globalThis.__edge.scopes(globalThis.__edge.held(chain), module));
     };
     globalThis.__edge_unmet = (json) => {
-        const { permissions, pkg, section } = JSON.parse(json);
-        return JSON.stringify(globalThis.__edge.unmet(permissions, pkg, section));
+        const { held, section } = JSON.parse(json);
+        return JSON.stringify(globalThis.__edge.unmet(held, section));
     };
     globalThis.__edge_open = (json) => {
         const { key, run, module, pkg, held } = JSON.parse(json);

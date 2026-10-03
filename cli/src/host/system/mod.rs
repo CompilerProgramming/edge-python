@@ -51,14 +51,19 @@ pub fn check(permissions: &Value) -> Option<String> {
     bridge(c"__edge_check", permissions.clone(), None)["error"].as_str().map(str::to_string)
 }
 
-/* The scopes `pkg` holds of `module`, None when the root grants it nothing of it. */
-pub fn scopes(permissions: &Value, pkg: &str, module: &str) -> Option<Vec<String>> {
-    serde_json::from_value(bridge(c"__edge_scopes", json!({ "permissions": permissions, "pkg": pkg, "module": module }), None)).unwrap_or(None)
+/* What the end of `chain` holds, each link a section and the key of the next package. */
+pub fn held(chain: &Value) -> Vec<String> {
+    serde_json::from_value(bridge(c"__edge_held", chain.clone(), None)).unwrap_or_default()
 }
 
-/* What `pkg` asks for in its own permissions section that the root does not grant it. */
-pub fn unmet(permissions: &Value, pkg: &str, section: &Value) -> Vec<String> {
-    serde_json::from_value(bridge(c"__edge_unmet", json!({ "permissions": permissions, "pkg": pkg, "section": section }), None)).unwrap_or_default()
+/* The scopes of `module` the end of `chain` holds, None when nothing grants it. */
+pub fn scopes(chain: &Value, module: &str) -> Option<Vec<String>> {
+    serde_json::from_value(bridge(c"__edge_scopes", json!({ "chain": chain, "module": module }), None)).unwrap_or(None)
+}
+
+/* Every entry of `section` that `held` does not cover. */
+pub fn unmet(held: &[String], section: &Value) -> Vec<String> {
+    serde_json::from_value(bridge(c"__edge_unmet", json!({ "held": held, "section": section }), None)).unwrap_or_default()
 }
 
 /* Where one run keeps the project fs reads, the disk under its root edge.json or the bundle it arrived in, under its root. */
@@ -106,20 +111,21 @@ fn list_files(run: u64, dir: &str, limit: usize) -> Result<Vec<String>, &'static
     }
 }
 
-fn key(run: u64, pkg: &str, module: &str) -> String {
-    format!("{run}:{pkg}\u{0}{module}")
+// Keyed by import spec, since two copies of a package share one name.
+fn key(run: u64, spec: &str) -> String {
+    format!("{run}:{spec}")
 }
 
-/* Opens `module` for `pkg` in one run with the scopes it holds, the names of its calls back. */
-pub fn open(run: u64, pkg: &str, module: &str, held: &[String]) -> Vec<String> {
-    serde_json::from_value(bridge(c"__edge_open", json!({ "key": key(run, pkg, module), "run": run, "module": module, "pkg": pkg, "held": held }), None)).unwrap_or_default()
+/* Opens `module` under `spec` for `pkg` in one run, the names of its calls back. */
+pub fn open(run: u64, spec: &str, pkg: &str, module: &str, held: &[String]) -> Vec<String> {
+    serde_json::from_value(bridge(c"__edge_open", json!({ "key": key(run, spec), "run": run, "module": module, "pkg": pkg, "held": held }), None)).unwrap_or_default()
 }
 
 /* One system call, answered now or, once its promise settles, as a completion on `events`. */
-pub fn invoke(run: u64, pkg: &str, module: &str, name: &str, args: &[WireValue], call: u32, events: Sender<Completion>) -> Result<Called, String> {
+pub fn invoke(run: u64, spec: &str, name: &str, args: &[WireValue], call: u32, events: Sender<Completion>) -> Result<Called, String> {
     static SETTLES: AtomicU64 = AtomicU64::new(1);
     let settle = SETTLES.fetch_add(1, Ordering::Relaxed);
-    let request = json!({ "key": key(run, pkg, module), "name": name, "args": args.iter().map(to_json).collect::<Vec<_>>(), "call": settle });
+    let request = json!({ "key": key(run, spec), "name": name, "args": args.iter().map(to_json).collect::<Vec<_>>(), "call": settle });
     let answer = bridge(c"__edge_invoke", request, Some((settle, call, events)));
     if let Some(error) = answer.get("error") {
         return Err(fault_text(error));
@@ -225,9 +231,9 @@ mod tests {
         }
     }
 
-    fn answered(run: u64, pkg: &str, module: &str, name: &str, args: &[WireValue]) -> Result<WireValue, String> {
+    fn answered(run: u64, spec: &str, name: &str, args: &[WireValue]) -> Result<WireValue, String> {
         let (events, rx) = channel();
-        match invoke(run, pkg, module, name, args, 0, events)? {
+        match invoke(run, spec, name, args, 0, events)? {
             Called::Value(value) => Ok(value),
             Called::Pending => settled(&rx),
         }
@@ -241,13 +247,15 @@ mod tests {
     fn the_modules_and_their_grants_come_from_the_system_calls() {
         assert_eq!(crate::web::SYSTEM_MODULES, ["fs", "net", "secret", "time"]);
         let permissions = json!({ "all": ["time:wall"], "main": ["net:api.example.com"], "http": ["net"] });
-        assert_eq!(scopes(&permissions, "main", "time"), Some(vec!["wall".to_string()]));
-        assert_eq!(scopes(&permissions, "http", "net"), Some(vec![]));
-        assert_eq!(scopes(&permissions, "analytics", "net"), None);
+        assert_eq!(scopes(&json!([[permissions, "main"]]), "time"), Some(vec!["wall".to_string()]));
+        assert_eq!(scopes(&json!([[permissions, "http"]]), "net"), Some(vec![]));
+        assert_eq!(scopes(&json!([]), "time"), None);
         assert_eq!(check(&permissions), None);
         assert_eq!(check(&json!({ "main": ["db:/"] })).as_deref(), Some("permissions for 'main' name 'db', which is not a system module (fs, net, secret, time)"));
+        let passed = json!([[permissions, "http"], [{ "dns": ["net", "time:wall", "time:zone"] }, "dns"]]);
+        assert_eq!(held(&passed), ["net", "time:wall"]);
         let asks = json!({ "main": ["net", "time:wall"], "all": ["time:zone"], "other": ["net:evil.example"] });
-        assert_eq!(unmet(&permissions, "http", &asks), ["time:zone"]);
+        assert_eq!(unmet(&held(&passed), &asks), ["time:zone", "net:evil.example"]);
     }
 
     #[test]
@@ -258,11 +266,11 @@ mod tests {
             std::env::set_var("EDGE_SECRET_PIPE_OTHER", "no");
         }
         let run = run_id();
-        assert_eq!(open(run, "main", "secret", &["PIPE_GRANTED".to_string(), "PIPE_UNSET".to_string()]), ["read", "batch"]);
-        assert!(matches!(answered(run, "main", "secret", "read", &[text("PIPE_GRANTED")]), Ok(WireValue::Bytes(b)) if b == b"yes"));
-        let denied = answered(run, "main", "secret", "read", &[text("PIPE_OTHER")]).unwrap_err();
+        assert_eq!(open(run, "system:secret@", "main", "secret", &["PIPE_GRANTED".to_string(), "PIPE_UNSET".to_string()]), ["read", "batch"]);
+        assert!(matches!(answered(run, "system:secret@", "read", &[text("PIPE_GRANTED")]), Ok(WireValue::Bytes(b)) if b == b"yes"));
+        let denied = answered(run, "system:secret@", "read", &[text("PIPE_OTHER")]).unwrap_err();
         assert_eq!(denied, "PermissionError: 'main' has no secret:PIPE_OTHER, edge.json grants it secret:PIPE_GRANTED, secret:PIPE_UNSET");
-        let unset = answered(run, "main", "secret", "read", &[text("PIPE_UNSET")]).unwrap_err();
+        let unset = answered(run, "system:secret@", "read", &[text("PIPE_UNSET")]).unwrap_err();
         assert_eq!(unset, "OSError: the host holds no value for PIPE_UNSET");
         close(run);
         unsafe {
@@ -274,9 +282,9 @@ mod tests {
     #[test]
     fn time_answers_only_the_clocks_a_package_holds() {
         let run = run_id();
-        assert_eq!(open(run, "main", "time", &["wall".to_string()]), ["now", "zone", "batch"]);
-        assert!(matches!(answered(run, "main", "time", "now", &[]), Ok(WireValue::Int(ns)) if ns > 1_700_000_000_000_000_000));
-        let denied = answered(run, "main", "time", "now", &[text("monotonic")]).unwrap_err();
+        assert_eq!(open(run, "system:time@", "main", "time", &["wall".to_string()]), ["now", "zone", "batch"]);
+        assert!(matches!(answered(run, "system:time@", "now", &[]), Ok(WireValue::Int(ns)) if ns > 1_700_000_000_000_000_000));
+        let denied = answered(run, "system:time@", "now", &[text("monotonic")]).unwrap_err();
         assert_eq!(denied, "PermissionError: 'main' has no time:monotonic, edge.json grants it time:wall");
         close(run);
     }
@@ -291,14 +299,14 @@ mod tests {
             let _ = request.respond(tiny_http::Response::from_string(body).with_header("x-probe: 1".parse::<tiny_http::Header>().unwrap()));
         });
         let run = run_id();
-        open(run, "main", "net", &["127.0.0.1".to_string()]);
-        let denied = answered(run, "main", "net", "request", &[text("GET"), text("http://evil.example/")]).unwrap_err();
+        open(run, "system:net@", "main", "net", &["127.0.0.1".to_string()]);
+        let denied = answered(run, "system:net@", "request", &[text("GET"), text("http://evil.example/")]).unwrap_err();
         assert_eq!(denied, "PermissionError: 'main' has no net:evil.example, edge.json grants it net:127.0.0.1");
-        let id = answered(run, "main", "net", "request", &[text("GET"), text(&format!("http://127.0.0.1:{port}/items"))]).unwrap();
-        let WireValue::List(head) = answered(run, "main", "net", "response", std::slice::from_ref(&id)).unwrap() else { panic!("a head") };
+        let id = answered(run, "system:net@", "request", &[text("GET"), text(&format!("http://127.0.0.1:{port}/items"))]).unwrap();
+        let WireValue::List(head) = answered(run, "system:net@", "response", std::slice::from_ref(&id)).unwrap() else { panic!("a head") };
         assert_eq!(head[0], WireValue::Int(200));
-        assert_eq!(answered(run, "main", "net", "read", std::slice::from_ref(&id)).unwrap(), WireValue::Raw(b"got /items".to_vec()));
-        assert_eq!(answered(run, "main", "net", "read", std::slice::from_ref(&id)).unwrap(), WireValue::None);
+        assert_eq!(answered(run, "system:net@", "read", std::slice::from_ref(&id)).unwrap(), WireValue::Raw(b"got /items".to_vec()));
+        assert_eq!(answered(run, "system:net@", "read", std::slice::from_ref(&id)).unwrap(), WireValue::None);
         close(run);
     }
 
@@ -316,12 +324,12 @@ mod tests {
             while socket.read().is_ok() {}
         });
         let run = run_id();
-        open(run, "main", "net", &["127.0.0.1".to_string()]);
-        let id = answered(run, "main", "net", "connect", &[text(&format!("ws://127.0.0.1:{port}/"))]).unwrap();
-        answered(run, "main", "net", "send", &[id.clone(), text("ping")]).unwrap();
-        assert_eq!(answered(run, "main", "net", "read", std::slice::from_ref(&id)).unwrap(), text("echo ping"));
-        assert_eq!(answered(run, "main", "net", "read", std::slice::from_ref(&id)).unwrap(), WireValue::Raw(vec![1, 2]));
-        assert_eq!(answered(run, "main", "net", "read", std::slice::from_ref(&id)).unwrap(), WireValue::None);
+        open(run, "system:net@", "main", "net", &["127.0.0.1".to_string()]);
+        let id = answered(run, "system:net@", "connect", &[text(&format!("ws://127.0.0.1:{port}/"))]).unwrap();
+        answered(run, "system:net@", "send", &[id.clone(), text("ping")]).unwrap();
+        assert_eq!(answered(run, "system:net@", "read", std::slice::from_ref(&id)).unwrap(), text("echo ping"));
+        assert_eq!(answered(run, "system:net@", "read", std::slice::from_ref(&id)).unwrap(), WireValue::Raw(vec![1, 2]));
+        assert_eq!(answered(run, "system:net@", "read", std::slice::from_ref(&id)).unwrap(), WireValue::None);
         close(run);
     }
 

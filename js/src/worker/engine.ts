@@ -9,7 +9,7 @@ import { SYSTEM } from '../system/index.ts';
 import type { Host } from '../system/index.ts';
 import { masker, printed, traced } from '../system/trace.ts';
 import type { TraceEvent } from '../system/trace.ts';
-import { check, scopes } from '../system/grants.ts';
+import { check, held, scopes } from '../system/grants.ts';
 import type { Permissions } from '../system/grants.ts';
 import type { CompilerExports } from '../wasm.ts';
 import type { Limits, LoadOpts, RunOpts, ExecResult } from '../protocol.ts';
@@ -231,24 +231,25 @@ const host: Host = {
     },
 };
 
-/* Serves the system modules to every package the walk met, each opened with its own scopes, or refused when the root grants it none. */
+/* Serves the system modules to every package the walk met, refused where its importers pass none. */
 function serveSystem(exports: CompilerExports, packages: Packages): string[] {
     const problem = check(packages.permissions);
     if (problem) return [`edge.json at '${packages.root}edge.json': ${problem}`];
     filesBase = programBase ? new URL(packages.root, programBase).href : null;
     fileIndex = null;
-    for (const [dir, pkg] of packages.dirs) {
+    for (const [dir, pkg, chain] of packages.dirs) {
         if (servedDirs.has(dir)) continue;
         servedDirs.add(dir);
+        const holds = held(chain);
         for (const [module, open] of Object.entries(SYSTEM)) {
             const spec = TE.encode(`system:${module}@${dir}`);
-            const held = scopes(packages.permissions, pkg, module);
-            if (held === null) {
+            const scoped = scopes(holds, module);
+            if (scoped === null) {
                 const msg = TE.encode(`'${pkg}' imports ${module}, which edge.json does not grant it`);
                 exports.register_module_error(writeBytes(exports, spec), spec.length, writeBytes(exports, msg), msg.length);
                 continue;
             }
-            const system = open(pkg, held, host);
+            const system = open(pkg, scoped, host);
             opened.push(system);
             const calls = Object.entries(system.calls);
             const baseId = nativeTable.length;

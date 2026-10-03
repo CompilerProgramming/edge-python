@@ -213,10 +213,10 @@ impl Instance {
             return self.register_native(spec, &names, base);
         }
         let state = self.store.data_mut();
-        let names = super::system::open(state.run, pkg, module, held);
+        let names = super::system::open(state.run, spec, pkg, module, held);
         let base = state.natives.len();
         for name in &names {
-            state.natives.push(super::Native::System { module: module.to_string(), name: name.clone(), package: pkg.to_string() });
+            state.natives.push(super::Native::System { module: module.to_string(), name: name.clone(), spec: spec.to_string() });
         }
         state.registered.insert(spec.to_string(), (base, names.clone()));
         self.register_native(spec, &names, base)

@@ -1,10 +1,10 @@
 import { SystemError } from './error.ts';
 
-/* The permissions section of the root edge.json, each holder to its entries, `module` or `module:scope`. */
+/* A permissions section of an edge.json, each holder to its entries, `module` or `module:scope`. */
 export type Permissions = Record<string, string[]>;
 
-// The holders beside package names, so no package may be named any of them.
-export const RESERVED = ['all', 'main', 'eval'];
+/* Each section from the root to a package, beside the key the next comes in under. */
+export type Chain = [Permissions, string][];
 
 // A host as a net scope names it and a url reaches it, a dotted lowercase name.
 export const HOST = /[a-z0-9.-]+/;
@@ -68,28 +68,36 @@ export function check(section: unknown): string | null {
     return null;
 }
 
-/* The scopes `pkg` holds of `module`, its own entries joined with those for all, null when neither names the module. */
-export function scopes(permissions: Permissions, pkg: string, module: string): string[] | null {
-    // Code outside any package holds nothing, not even what all packages hold.
-    if (!pkg) return null;
+// A bare module asks only to import it, which any entry for it covers.
+const covers = (held: string[], entry: string): boolean => {
+    const [module, scope] = split(entry);
+    return scope === null ? held.some((e) => split(e)[0] === module) : held.includes(entry);
+};
+
+/* What the end of `chain` holds, no importer past the root passing on more than it holds. */
+export function held(chain: Chain): string[] {
     let held: string[] | null = null;
-    for (const [name, scope] of [...(permissions['all'] ?? []), ...(permissions[pkg] ?? [])].map(split)) {
-        if (name !== module) continue;
-        held ??= [];
-        if (scope !== null) held.push(scope);
+    for (const [section, key] of chain) {
+        const given = [...(section['all'] ?? []), ...(section[key] ?? [])];
+        held = held === null ? given : given.filter((entry) => covers(held!, entry));
     }
-    return held;
+    return [...new Set(held ?? [])];
 }
 
-/* What `pkg` asks for in its own main and all that the root does not grant. */
-export function unmet(permissions: Permissions, pkg: string, section: Permissions): string[] {
-    const asks = new Set([...(section['main'] ?? []), ...(section['all'] ?? [])]);
-    return [...asks].filter((ask) => {
-        const [module, scope] = split(ask);
-        const held = scopes(permissions, pkg, module);
-        // A bare module asks only to import it, which any entry for it grants.
-        return held === null || (scope !== null && !held.includes(scope));
-    });
+/* The scopes `held` gives `module`, null when no entry names it. */
+export function scopes(held: string[], module: string): string[] | null {
+    let found: string[] | null = null;
+    for (const [name, scope] of held.map(split)) {
+        if (name !== module) continue;
+        found ??= [];
+        if (scope !== null) found.push(scope);
+    }
+    return found;
+}
+
+/* Each entry of `section` that `held` misses, since a package needs what it passes on too. */
+export function unmet(held: string[], section: Permissions): string[] {
+    return [...new Set(Object.values(section).flat())].filter((entry) => !covers(held, entry));
 }
 
 /* Raises PermissionError unless `held` holds `scope`, naming what the package was granted instead. */

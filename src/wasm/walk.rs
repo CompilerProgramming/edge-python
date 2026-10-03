@@ -119,14 +119,14 @@ fn drive() -> u32 {
     }
 }
 
-// The packages the host serves system modules to, and the root's grants as written.
+// Each package to serve system modules to with its grants, and the root section as written.
 fn system(p: &Packages) -> String {
     let mut out = s!("{\"system\":{\"root\":");
     quote(&mut out, &p.root);
     out.push_str(",\"needed\":");
     out.push_str(if p.needed { "true" } else { "false" });
     out.push_str(",\"dirs\":[");
-    for (i, (dir, pkg)) in p.dirs.iter().enumerate() {
+    for (i, (dir, pkg, chain)) in p.dirs.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
@@ -134,19 +134,36 @@ fn system(p: &Packages) -> String {
         quote(&mut out, dir);
         out.push(',');
         quote(&mut out, pkg);
-        out.push(']');
+        out.push_str(",[");
+        for (j, (granting, key)) in chain.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push('[');
+            section(&mut out, granting);
+            out.push(',');
+            quote(&mut out, key);
+            out.push(']');
+        }
+        out.push_str("]]");
     }
-    out.push_str("],\"permissions\":{");
-    for (i, (holder, entries)) in p.permissions.iter().enumerate() {
+    out.push_str("],\"permissions\":");
+    section(&mut out, &p.permissions);
+    out.push_str("}}");
+    out
+}
+
+fn section(out: &mut String, holders: &[(String, Vec<String>)]) {
+    out.push('{');
+    for (i, (holder, entries)) in holders.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
-        quote(&mut out, holder);
+        quote(out, holder);
         out.push(':');
-        list(&mut out, entries);
+        list(out, entries);
     }
-    out.push_str("}}}");
-    out
+    out.push('}');
 }
 
 fn list(out: &mut String, items: &[String]) {

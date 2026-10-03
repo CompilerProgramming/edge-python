@@ -125,7 +125,7 @@ fn registered(names: &[String]) -> Vec<String> {
     })
 }
 
-/* Serves the system modules to every package the walk met, opened with its scopes or refused when the root grants it none. */
+/* Serves the system modules to every package the walk met, refused where its importers pass none. */
 fn serve_system(inst: &mut Instance, project: &Project, packages: &Value) -> Vec<String> {
     let root = packages["root"].as_str().unwrap_or_default();
     // An untrusted run grants only through its own bundle manifest, and an empty grant needs no checking.
@@ -133,6 +133,7 @@ fn serve_system(inst: &mut Instance, project: &Project, packages: &Value) -> Vec
     if let Some(problem) = declared.as_ref().and_then(system::check) {
         return vec![format!("edge.json at '{root}edge.json': {problem}")];
     }
+    let granted = declared.is_some();
     let permissions = declared.unwrap_or_else(|| json!({}));
     let entries: Vec<&Value> = permissions.as_object().into_iter().flat_map(|holders| holders.values()).filter_map(Value::as_array).flatten().collect();
     // The refusal names only what the bundle grants, never the eval grant of the pool.
@@ -144,7 +145,7 @@ fn serve_system(inst: &mut Instance, project: &Project, packages: &Value) -> Vec
             .into_iter()
             .flatten()
             .filter_map(|(holder, listed)| {
-                let missing = system::unmet(&json!({ "eval": ceiling }), "eval", &json!({ "main": listed }));
+                let missing = system::unmet(&system::held(&json!([[{ "eval": ceiling }, "eval"]])), &json!({ "main": listed }));
                 (!missing.is_empty()).then(|| (holder, missing.join(", ")))
             })
             .collect();
@@ -180,9 +181,11 @@ fn serve_system(inst: &mut Instance, project: &Project, packages: &Value) -> Vec
     }
     for pair in packages["dirs"].as_array().into_iter().flatten() {
         let (Some(dir), Some(pkg)) = (pair[0].as_str(), pair[1].as_str()) else { continue };
+        // A run that grants nothing of its own holds nothing, whatever its manifests pass on.
+        let chain = if granted { pair[2].clone() } else { json!([]) };
         for module in SYSTEM_MODULES {
             let spec = system_spec(module, dir);
-            let served = match system::scopes(&permissions, pkg, module) {
+            let served = match system::scopes(&chain, module) {
                 Some(held) => inst.register_system(&spec, pkg, module, &held),
                 None => inst.register_error(&spec, &format!("'{pkg}' imports {module}, which edge.json does not grant it")),
             };

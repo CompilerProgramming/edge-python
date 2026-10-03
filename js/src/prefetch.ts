@@ -3,7 +3,7 @@ import { loadNativeModule, nativeTable } from './native.ts';
 import type { CompilerExports } from './wasm.ts';
 import type { Rt } from './rt.ts';
 import { MODULES } from './system/names.ts';
-import type { Permissions } from './system/grants.ts';
+import type { Chain, Permissions } from './system/grants.ts';
 import { errMsg, writeBytes } from './util.ts';
 
 const TD = new TextDecoder();
@@ -20,9 +20,9 @@ interface PrefetchCtx {
     rt: Rt
 }
 
-/* Who a run's modules belong to, each manifest dir with its package, and what the root grants. */
+/* Each manifest dir of a run with its package and grants, and what the root grants. */
 export interface Packages {
-    dirs: [string, string][]
+    dirs: [string, string, Chain][]
     root: string
     permissions: Permissions
     // Whether anything can reach a system module, a name no manifest declared or a plugin.

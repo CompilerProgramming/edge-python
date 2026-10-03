@@ -12,7 +12,7 @@ pub const MAX_DESCRIPTION: usize = 60;
 pub const MAX_NAME: usize = 40;
 pub const MAX_REPOSITORY: usize = 256;
 
-// The holders a permissions section names beside packages, so no package may be named any of them.
+// The holders a permissions section names beside import keys, so no package or import takes one.
 pub const HOLDERS: [&str; 3] = ["all", "main", "eval"];
 
 const VERSION_RULE: &str = "major.minor.patch, each part 0 to 99 without leading zeros";
@@ -75,10 +75,14 @@ pub fn name_error(name: &str, system: &[&str]) -> Option<String> {
     system.contains(&name).then(|| s!("name '", str name, "' is reserved for the system module of that name"))
 }
 
-/* Why a declared import cannot stand, a system module's name taken or a version spelled against the rule. */
+/* Why a declared import cannot stand, a system module or holder name taken or a version spelled against the rule. */
 pub fn import_error(name: &str, target: &str, system: &[&str]) -> Option<String> {
     if system.contains(&name) {
         return Some(s!("import '", str name, "' takes the name of a system module, grant it under permissions instead"));
+    }
+    // A holder as an import key would hand the package the grants of that holder.
+    if HOLDERS.contains(&name) {
+        return Some(s!("import '", str name, "' is reserved for permissions"));
     }
     (shaped_like_version(target) && !is_version(target)).then(|| s!("'", str name, "' is declared '", str target, "', and a version is ", str VERSION_RULE))
 }
@@ -181,6 +185,7 @@ mod tests {
             (r#"{ "description": "Turn absolutely any text that you have into a tidy url slug fast." }"#, "the cap is 60"),
             (r#"{ "repository": "git@github.com:x/slugify.git" }"#, "must be an https url"),
             (r#"{ "imports": { "time": "./fake.py" } }"#, "takes the name of a system module"),
+            (r#"{ "imports": { "main": "./lib/main.py" } }"#, "import 'main' is reserved for permissions"),
             (r#"{ "imports": { "json": "0.01.0" } }"#, "is declared '0.01.0'"),
         ] {
             let err = check(&parse_manifest(body.as_bytes()).unwrap(), &SYSTEM).unwrap_err();

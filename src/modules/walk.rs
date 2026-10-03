@@ -1,12 +1,19 @@
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::s;
 use crate::util::hash::{FxHashMap, FxHashSet};
 use super::bundle::Bundle;
 use super::lock::{self, Lock};
-use super::{dir_of, join_relative, parse_integrity, parse_manifest, rules, scan_imports, walk_up_dirs, ImportSpec, Manifest};
+use super::{dir_of, join_relative, parent_dir, parse_integrity, parse_manifest, rules, scan_imports, walk_up_dirs, ImportSpec, Manifest};
+
+// How deep importers may nest before a chain of grants is cut, far past any real tree.
+const MAX_DEPTH: usize = 64;
+
+/* Each section from the root to a package, beside the key the next comes in under. */
+pub type Chain = Vec<(Vec<(String, Vec<String>)>, String)>;
 
 /* What the walk needs next, from its host or from the runtime it registers into. */
 pub enum Step {
@@ -29,8 +36,8 @@ pub enum Step {
 
 /* Who the modules belong to and what the root grants, what serving the system modules takes. */
 pub struct Packages {
-    // Every manifest dir read, sorted, each with the package it names.
-    pub dirs: Vec<(String, String)>,
+    // Every manifest dir read, sorted, with the name its package answers to and its grants.
+    pub dirs: Vec<(String, String, Chain)>,
     // The root manifest's dir, where a malformed grant is reported.
     pub root: String,
     pub permissions: Vec<(String, Vec<String>)>,
@@ -68,24 +75,31 @@ enum Waiting {
 pub struct Walk {
     entry_dir: String,
     system: Vec<String>,
-    // Bare name to spec, the nearest manifest wins.
-    table: FxHashMap<String, String>,
     visited: FxHashSet<String>,
     queue: VecDeque<String>,
     failures: Vec<String>,
-    // Bare names seen before a manifest declared them, retried after each merge.
-    pending_bare: Vec<(String, Option<String>)>,
+    // Bare names waiting on the manifest of their importer, then the ones no manifest declares.
+    pending_bare: Vec<(String, String, Option<String>)>,
     // Root-relative imports waiting on their importer's manifest chain.
     pending_root: Vec<(String, String, Option<String>)>,
     manifest_dirs: FxHashSet<String>,
+    // The same dirs in one spelling, the identity of a package.
+    homes: FxHashSet<String>,
     missing: FxHashSet<String>,
     // Spec to the name its first importer wrote and that importer's own name, None for the entry.
     origins: FxHashMap<String, (String, Option<String>)>,
     // Files of every imported package, keyed under the package spec it came in as.
     mounted: FxHashMap<String, Vec<u8>>,
-    // Each manifest dir to the package name it declares and the grants it writes.
-    names: FxHashMap<String, String>,
+    // Each manifest dir to its joined imports and the dir it extends, spelled like the compiler.
+    imports: FxHashMap<String, Vec<(String, String)>>,
+    extends: FxHashMap<String, String>,
     grants: FxHashMap<String, Vec<(String, Vec<String>)>>,
+    // Each manifest as the compiler reads it, so a copy can point one import elsewhere.
+    manifests: FxHashMap<String, Manifest>,
+    // Every bare import resolved, with the manifest dir, the name and the spec it reached.
+    edges: Vec<(String, String, String)>,
+    // Each copy to the package it copies, both without the closing slash.
+    copies: Vec<(String, String)>,
     plugins: bool,
     out: VecDeque<Step>,
     waiting: Option<Waiting>,
@@ -98,18 +112,22 @@ impl Walk {
         let mut walk = Walk {
             entry_dir: entry_dir.to_string(),
             system,
-            table: FxHashMap::default(),
             visited: FxHashSet::default(),
             queue: VecDeque::new(),
             failures: Vec::new(),
             pending_bare: Vec::new(),
             pending_root: Vec::new(),
             manifest_dirs: FxHashSet::default(),
+            homes: FxHashSet::default(),
             missing: FxHashSet::default(),
             origins: FxHashMap::default(),
             mounted: FxHashMap::default(),
-            names: FxHashMap::default(),
+            imports: FxHashMap::default(),
+            extends: FxHashMap::default(),
             grants: FxHashMap::default(),
+            manifests: FxHashMap::default(),
+            edges: Vec::new(),
+            copies: Vec::new(),
             plugins: false,
             out: VecDeque::new(),
             waiting: None,
@@ -132,6 +150,9 @@ impl Walk {
                 return Step::Done(core::mem::take(&mut self.failures));
             }
             let Some(spec) = self.queue.pop_front() else {
+                if self.settle() {
+                    continue;
+                }
                 self.waiting = Some(Waiting::System);
                 return Step::System(self.packages());
             };
@@ -172,7 +193,7 @@ impl Walk {
         }
         self.failures.extend(failures);
         let mut seen = FxHashSet::default();
-        let names: Vec<String> = core::mem::take(&mut self.pending_bare).into_iter().map(|(name, _)| name).filter(|name| seen.insert(name.clone())).collect();
+        let names: Vec<String> = core::mem::take(&mut self.pending_bare).into_iter().map(|(name, _, _)| name).filter(|name| seen.insert(name.clone())).collect();
         if names.is_empty() {
             self.done = true;
             return;
@@ -226,7 +247,7 @@ impl Walk {
         };
         match held {
             Some(answer) => self.fetched(answer),
-            None => self.out.push_back(Step::Fetch(spec)),
+            None => self.out.push_back(Step::Fetch(self.real(&spec))),
         }
     }
 
@@ -237,6 +258,7 @@ impl Walk {
             Fetched::Missing(_) if spec == "edge.json" => b"{}".to_vec(),
             Fetched::Missing(_) => {
                 self.missing.insert(spec);
+                self.retry_pending();
                 return self.retry_root();
             }
             Fetched::Failed(e) => return self.failures.push(e),
@@ -253,13 +275,9 @@ impl Walk {
         }
         let dir = dir_of(&spec);
         self.manifest_dirs.insert(dir.clone());
-        let key = norm(&dir).to_string();
-        // A package named after a holder answers to its dir, so it never takes its grants.
-        if let Some(name) = manifest.name.as_ref().filter(|n| !rules::HOLDERS.contains(&n.as_str())) {
-            self.names.insert(key.clone(), name.clone());
-        }
+        self.homes.insert(norm(&dir).to_string());
         if let Some(grants) = &manifest.permissions {
-            self.grants.insert(key, grants.clone());
+            self.grants.insert(norm(&dir).to_string(), grants.clone());
         }
         if manifest.imports.iter().any(|(_, target)| lock::needs_lock(target)) {
             let beside = s!(str &dir, str lock::FILE);
@@ -290,20 +308,21 @@ impl Walk {
             }
         }
         let dir = dir_of(&spec);
-        for (name, target) in &resolved {
-            self.table.entry(name.clone()).or_insert_with(|| join_relative(&dir, target));
-        }
+        self.imports.insert(dir.clone(), resolved.iter().map(|(name, target)| (name.clone(), join_relative(&dir, target))).collect());
         let extends = manifest.extends.clone();
-        self.out.push_back(Step::Manifest { spec, manifest: Manifest { imports: resolved, ..manifest } });
-        self.retry_pending();
-        self.retry_root();
+        let manifest = Manifest { imports: resolved, ..manifest };
+        self.manifests.insert(spec.clone(), manifest.clone());
+        self.out.push_back(Step::Manifest { spec, manifest });
         if let Some(ext) = extends {
             let mut next = join_relative(&dir, &ext);
             if !next.ends_with('/') {
                 next.push('/');
             }
             self.queue.push_back(s!(str &next, "edge.json"));
+            self.extends.insert(dir, next);
         }
+        self.retry_pending();
+        self.retry_root();
     }
 
     /* A published package, verified whole, then its entry runs as the module and its other files answer from inside it. */
@@ -386,23 +405,135 @@ impl Walk {
             Some(Some(root)) => norm(&root).to_string(),
             _ => String::new(),
         };
+        let owners = self.owners();
         let mut dirs: Vec<String> = self.manifest_dirs.iter().cloned().collect();
         dirs.sort();
         let dirs = dirs.into_iter().map(|dir| {
-            let pkg = self.package_of(&dir, &root);
-            (dir, pkg)
+            let (name, chain) = self.reach(norm(&dir), &root, &owners, 0);
+            (dir, name, chain)
         }).collect();
         let permissions = self.grants.get(&root).cloned().unwrap_or_default();
         Packages { dirs, permissions, needed: !self.pending_bare.is_empty() || self.plugins, root }
     }
 
-    /* The package a manifest dir belongs to, `main` for the root, else the name its manifest declares or the dir itself. */
-    fn package_of(&self, dir: &str, root: &str) -> String {
-        let dir = norm(dir);
+    /* The name a package dir answers to and the grants reaching it, importer by importer. */
+    fn reach(&self, dir: &str, root: &str, owners: &FxHashMap<String, (String, String)>, depth: usize) -> (String, Chain) {
+        let section = |at: &str| self.grants.get(at).cloned().unwrap_or_default();
         if dir == root {
-            return s!("main");
+            return (s!("main"), vec![(section(root), s!("main"))]);
         }
-        self.names.get(dir).cloned().unwrap_or_else(|| dir.to_string())
+        if depth < MAX_DEPTH
+            && let Some((from, key)) = owners.get(dir)
+        {
+            // The root grants its imports outright, any other importer passes on only what it holds.
+            let mut chain = if from == root { Vec::new() } else { self.reach(from, root, owners, depth + 1).1 };
+            chain.push((section(from), key.clone()));
+            return (key.clone(), chain);
+        }
+        // Reached by path and no key, it holds what the package around it holds.
+        match self.enclosing(dir) {
+            Some(outer) if depth < MAX_DEPTH => self.reach(&outer, root, owners, depth + 1),
+            _ => (dir.to_string(), Vec::new()),
+        }
+    }
+
+    /* Each package dir to the manifest dir and key that first import it. */
+    fn owners(&self) -> FxHashMap<String, (String, String)> {
+        let mut owners = FxHashMap::default();
+        for (from, key, spec) in &self.edges {
+            if let Some(home) = self.landing(from, spec) {
+                owners.entry(home).or_insert_with(|| (norm(from).to_string(), key.clone()));
+            }
+        }
+        owners
+    }
+
+    /* Copies a shared package for each importer but the first, true while that queued work. */
+    fn settle(&mut self) -> bool {
+        self.retry_pending();
+        self.retry_root();
+        let owners = self.owners();
+        let shared: Vec<(usize, String)> = self.edges.iter().enumerate().filter_map(|(i, (from, key, spec))| {
+            let home = self.landing(from, spec)?;
+            let (owner, named) = &owners[&home];
+            (owner != norm(from) || named != key).then_some((i, home))
+        }).collect();
+        for (i, home) in shared {
+            if !self.cycles(&self.edges[i].0, &home, &owners) {
+                self.copy(i, &home);
+            }
+        }
+        !self.queue.is_empty() || !self.out.is_empty()
+    }
+
+    /* Points one import at a copy beside the original, so relative imports reach the same files. */
+    fn copy(&mut self, i: usize, home: &str) {
+        let (from, key, spec) = self.edges[i].clone();
+        let n = self.copies.len() + 1;
+        let original = home.trim_end_matches('/');
+        let copy = match (parent_dir(home), original.rsplit_once('/')) {
+            (Some(_), Some((parent, last))) => s!(str parent, "/.edge-copy-", int n, "-", str last),
+            (Some(_), None) => s!(".edge-copy-", int n, "-", str original),
+            (None, _) => s!(str original, "/.edge-copy-", int n),
+        };
+        let Some(rest) = norm(&spec).strip_prefix(original) else { return };
+        let rebased = s!(str &copy, str rest);
+        self.copies.push((copy, original.to_string()));
+        let written = written_from(&from, &rebased);
+        let spec = join_relative(&from, &written);
+        set(self.imports.entry(from.clone()).or_default(), &key, spec.clone());
+        let m_spec = s!(str &from, "edge.json");
+        if let Some(manifest) = self.manifests.get_mut(&m_spec) {
+            set(&mut manifest.imports, &key, written);
+            let manifest = manifest.clone();
+            self.out.push_back(Step::Manifest { spec: m_spec, manifest });
+        }
+        let via = self.origins.get(&self.edges[i].2).and_then(|(_, via)| via.clone());
+        self.edges[i].2 = spec.clone();
+        self.enqueue(spec, key, via);
+    }
+
+    /* Where an import from `from` lands, None inside that package or one around it. */
+    fn landing(&self, from: &str, spec: &str) -> Option<String> {
+        let home = norm(&self.root_for(&dir_of(spec))??).to_string();
+        let around = walk_up_dirs(norm(from)).any(|d| d == home);
+        (!around).then_some(home)
+    }
+
+    /* Whether `home` already holds the importer or one above it, a cycle copies would never end. */
+    fn cycles(&self, from: &str, home: &str, owners: &FxHashMap<String, (String, String)>) -> bool {
+        let home = self.real(home);
+        let mut at = norm(from).to_string();
+        for _ in 0..MAX_DEPTH {
+            if self.real(&at) == home {
+                return true;
+            }
+            at = match owners.get(&at) {
+                Some((parent, _)) => parent.clone(),
+                None => match self.enclosing(&at) {
+                    Some(outer) => outer,
+                    None => return false,
+                },
+            };
+        }
+        true
+    }
+
+    /* The nearest manifest dir above `dir`, the package whose code reached it by path. */
+    fn enclosing(&self, dir: &str) -> Option<String> {
+        walk_up_dirs(dir).skip(1).find(|d| self.homes.contains(d.as_str()))
+    }
+
+    /* Where the bytes of `spec` live, a copy read from the package it copies. */
+    fn real(&self, spec: &str) -> String {
+        let mut at = spec.to_string();
+        for (copy, original) in self.copies.iter().rev() {
+            let next = norm(&at).strip_prefix(copy.as_str()).filter(|rest| rest.is_empty() || rest.starts_with(['/', '#'])).map(|rest| s!(str original, str rest));
+            if let Some(next) = next {
+                at = next;
+            }
+        }
+        at
     }
 
     // Queues a module spec, the first importer to reach it names it in refusals.
@@ -416,19 +547,41 @@ impl Walk {
         match imp {
             ImportSpec::Relative(path) => self.enqueue(join_relative(dir, &path), path, via),
             ImportSpec::Root(path) => self.enqueue_root(path, dir.to_string(), via),
-            ImportSpec::Bare(name) => match self.table.get(&name) {
-                Some(spec) => self.enqueue(spec.clone(), name, via),
-                None => self.pending_bare.push((name, via)),
-            },
+            ImportSpec::Bare(name) => self.enqueue_bare(name, dir.to_string(), via),
         }
     }
 
-    fn retry_pending(&mut self) {
-        for (name, via) in core::mem::take(&mut self.pending_bare) {
-            match self.table.get(&name) {
-                Some(spec) => self.enqueue(spec.clone(), name, via),
-                None => self.pending_bare.push((name, via)),
+    // A bare name waits on the manifest of its importer, then its import is kept.
+    fn enqueue_bare(&mut self, name: String, dir: String, via: Option<String>) {
+        let Some(Some((from, spec))) = self.declared(&name, &dir) else {
+            return self.pending_bare.push((name, dir, via));
+        };
+        if !self.edges.iter().any(|(at, key, _)| *at == from && *key == name) {
+            self.edges.push((from, name.clone(), spec.clone()));
+        }
+        self.enqueue(spec, name, via);
+    }
+
+    /* Where a bare name from `dir` leads, through the nearest manifest and what it extends. */
+    fn declared(&self, name: &str, dir: &str) -> Option<Option<(String, String)>> {
+        let Some(from) = self.root_for(dir)? else { return Some(None) };
+        let mut at = from.clone();
+        // Bounded like the compiler, so an extends loop ends.
+        for _ in 0..32 {
+            if let Some((_, spec)) = self.imports.get(&at)?.iter().find(|(key, _)| key == name) {
+                return Some(Some((from, spec.clone())));
             }
+            match self.extends.get(&at) {
+                Some(next) if !self.missing.contains(&s!(str next, "edge.json")) => at = next.clone(),
+                _ => return Some(None),
+            }
+        }
+        Some(None)
+    }
+
+    fn retry_pending(&mut self) {
+        for (name, dir, via) in core::mem::take(&mut self.pending_bare) {
+            self.enqueue_bare(name, dir, via);
         }
     }
 
@@ -469,6 +622,29 @@ impl Walk {
         for (spec, dir, via) in core::mem::take(&mut self.pending_root) {
             self.enqueue_root(spec, dir, via);
         }
+    }
+}
+
+/* Points `key` at `target`, added when the manifest only reached it through what it extends. */
+fn set(imports: &mut Vec<(String, String)>, key: &str, target: String) {
+    match imports.iter_mut().find(|(name, _)| name == key) {
+        Some((_, at)) => *at = target,
+        None => imports.push((key.to_string(), target)),
+    }
+}
+
+/* `spec` as a manifest in `dir` writes it, since the compiler joins targets to that dir. */
+fn written_from(dir: &str, spec: &str) -> String {
+    if spec.contains("://") || spec.starts_with('/') {
+        return spec.to_string();
+    }
+    let from: Vec<&str> = norm(dir).split('/').filter(|part| !part.is_empty()).collect();
+    let to: Vec<&str> = norm(spec).split('/').collect();
+    let common = from.iter().zip(&to[..to.len() - 1]).take_while(|(a, b)| a == b).count();
+    let rest = to[common..].join("/");
+    match from.len() - common {
+        0 => s!("./", str &rest),
+        up => s!(str &"../".repeat(up), str &rest),
     }
 }
 
@@ -541,6 +717,17 @@ mod tests {
         (path, text.as_bytes().to_vec())
     }
 
+    /* The name a package dir answers to and the key of each link of grants that reaches it. */
+    fn grants(seen: &Seen, dir: &str) -> (String, Vec<String>) {
+        let packages = seen.packages.as_ref().unwrap();
+        let (_, name, chain) = packages.dirs.iter().find(|(at, _, _)| at == dir).unwrap_or_else(|| panic!("no package at {dir}: {:?}", packages.dirs.iter().map(|(at, _, _)| at).collect::<Vec<_>>()));
+        (name.clone(), chain.iter().map(|(_, key)| key.clone()).collect())
+    }
+
+    fn named(name: &str, keys: &[&str]) -> (String, Vec<String>) {
+        (name.to_string(), keys.iter().map(|key| key.to_string()).collect())
+    }
+
     #[test]
     fn a_declared_version_resolves_through_its_lock_to_pinned_bytes() {
         let dep = b"def shout(w):\n    return w.upper()\n".to_vec();
@@ -584,9 +771,101 @@ mod tests {
         assert!(seen.failures.is_empty(), "{:?}", seen.failures);
         assert_eq!(seen.plugins, vec![s!("https://cdn.test/pkg/fast/0.1.0/app.edge/fast.wasm")]);
         assert!(!seen.fetched.iter().any(|f| f.contains("app.edge/")), "files inside a package never reach the host: {:?}", seen.fetched);
+        assert!(seen.packages.as_ref().unwrap().needed);
+        assert_eq!(grants(&seen, "https://cdn.test/pkg/fast/0.1.0/app.edge/"), named("fast", &["fast"]));
+    }
+
+    // The name a manifest gives itself never counts, so `other` cannot pose as `analytics`.
+    #[test]
+    fn a_package_is_granted_through_the_keys_that_import_it() {
+        let seen = walk(&[
+            file("edge.json", r#"{ "imports": { "analytics": "./analytics/main.py", "other": "./other/main.py" }, "permissions": { "analytics": ["secret:KEY"] } }"#),
+            file("analytics/edge.json", r#"{ "name": "analytics", "imports": { "trace": "./trace/main.py" }, "permissions": { "trace": ["secret:KEY"] } }"#),
+            file("analytics/main.py", "import trace\n"),
+            file("analytics/trace/edge.json", r#"{ "name": "trace" }"#),
+            file("analytics/trace/main.py", ""),
+            file("other/edge.json", r#"{ "name": "analytics" }"#),
+            file("other/main.py", "from .inner.main import x\n"),
+            file("other/inner/edge.json", r#"{ "name": "analytics" }"#),
+            file("other/inner/main.py", "x = 1\n"),
+        ], "import analytics\nimport other\n");
+        assert!(seen.failures.is_empty(), "{:?}", seen.failures);
+        assert_eq!(grants(&seen, ""), named("main", &["main"]));
+        assert_eq!(grants(&seen, "./analytics/"), named("analytics", &["analytics"]));
+        assert_eq!(grants(&seen, "./analytics/trace/"), named("trace", &["analytics", "trace"]));
+        assert_eq!(grants(&seen, "./other/"), named("other", &["other"]));
+        // Reached by path, so it holds what the package around it holds.
+        assert_eq!(grants(&seen, "./other/inner/"), named("other", &["other"]));
         let packages = seen.packages.unwrap();
-        assert!(packages.needed);
-        assert!(packages.dirs.contains(&(s!("https://cdn.test/pkg/fast/0.1.0/app.edge/"), s!("fast"))));
+        let (_, _, chain) = packages.dirs.iter().find(|(at, _, _)| at == "./analytics/trace/").unwrap();
+        assert_eq!(chain[1].0, vec![(s!("trace"), vec![s!("secret:KEY")])]);
+    }
+
+    // Two importers of one package each get a copy, so each copy holds only what its own importer passes.
+    #[test]
+    fn a_package_two_importers_share_loads_once_for_each() {
+        let seen = walk(&[
+            file("edge.json", r#"{ "imports": { "pay": "./pay/main.py", "shop": "./shop/main.py" } }"#),
+            file("pay/edge.json", r#"{ "imports": { "vault": "../vault/main.py" }, "permissions": { "vault": ["secret:PAY"] } }"#),
+            file("pay/main.py", "import vault\n"),
+            file("shop/edge.json", r#"{ "imports": { "vault": "../vault/main.py" }, "permissions": { "vault": ["secret:SHOP"] } }"#),
+            file("shop/main.py", "import vault\n"),
+            file("vault/edge.json", "{}"),
+            file("vault/main.py", "from .util import x\n"),
+            file("vault/util.py", "x = 1\n"),
+        ], "import pay\nimport shop\n");
+        assert!(seen.failures.is_empty(), "{:?}", seen.failures);
+        assert_eq!(grants(&seen, "./vault/"), named("vault", &["pay", "vault"]));
+        assert_eq!(grants(&seen, "./.edge-copy-1-vault/"), named("vault", &["shop", "vault"]));
+        for spec in ["./vault/main.py", "./vault/util.py", "./.edge-copy-1-vault/main.py", "./.edge-copy-1-vault/util.py"] {
+            assert!(seen.code.contains(&s!(str spec)), "{spec} never loaded: {:?}", seen.code);
+        }
+        assert!(!seen.fetched.iter().any(|f| f.contains(".edge-copy")), "a copy reads the original: {:?}", seen.fetched);
+        let shop = &seen.manifests.iter().rev().find(|(spec, _)| spec == "./shop/edge.json").unwrap().1;
+        assert_eq!(shop.imports, vec![(s!("vault"), s!("../.edge-copy-1-vault/main.py"))]);
+    }
+
+    #[test]
+    fn a_shared_bundle_opens_its_copy_beside_itself() {
+        let bundle = Bundle {
+            entry: s!("main.py"),
+            files: vec![
+                Entry { path: s!("main.py"), bytes: b"from .util import x\n".to_vec() },
+                Entry { path: s!("edge.json"), bytes: br#"{ "name": "http" }"#.to_vec() },
+                Entry { path: s!("util.py"), bytes: b"x = 1\n".to_vec() },
+            ],
+        }.encode();
+        let importer = r#"{ "imports": { "http": "https://cdn.test/pkg/http/0.1.0/app.edge" } }"#;
+        let seen = walk(&[
+            file("edge.json", r#"{ "imports": { "pay": "./pay/main.py", "shop": "./shop/main.py" } }"#),
+            file("pay/edge.json", importer),
+            file("pay/main.py", "import http\n"),
+            file("shop/edge.json", importer),
+            file("shop/main.py", "import http\n"),
+            ("https://cdn.test/pkg/http/0.1.0/app.edge", bundle),
+        ], "import pay\nimport shop\n");
+        assert!(seen.failures.is_empty(), "{:?}", seen.failures);
+        assert_eq!(grants(&seen, "https://cdn.test/pkg/http/0.1.0/app.edge/"), named("http", &["pay", "http"]));
+        let copy = "https://cdn.test/pkg/http/0.1.0/.edge-copy-1-app.edge/";
+        assert_eq!(grants(&seen, copy), named("http", &["shop", "http"]));
+        assert!(seen.code.contains(&s!(str copy, "util.py")), "{:?}", seen.code);
+        assert!(!seen.fetched.iter().any(|f| f.contains(".edge-copy")), "a copy reads the original: {:?}", seen.fetched);
+    }
+
+    // A package importing the one that imports it reaches that same package, since a copy would never end.
+    #[test]
+    fn an_import_cycle_between_packages_ends() {
+        let seen = walk(&[
+            file("edge.json", r#"{ "imports": { "a": "./a/main.py" } }"#),
+            file("a/edge.json", r#"{ "imports": { "b": "../b/main.py" } }"#),
+            file("a/main.py", "import b\n"),
+            file("b/edge.json", r#"{ "imports": { "a": "../a/main.py" } }"#),
+            file("b/main.py", "import a\n"),
+        ], "import a\n");
+        assert!(seen.failures.is_empty(), "{:?}", seen.failures);
+        assert_eq!(grants(&seen, "./a/"), named("a", &["a"]));
+        assert_eq!(grants(&seen, "./b/"), named("b", &["a", "b"]));
+        assert!(!seen.packages.unwrap().dirs.iter().any(|(dir, _, _)| dir.contains(".edge-copy")));
     }
 
     #[test]
@@ -611,8 +890,9 @@ mod tests {
     fn the_root_is_main_even_without_a_manifest_and_a_missing_module_fails() {
         let seen = walk(&[], "from .helper import x\n");
         assert!(seen.failures.contains(&s!("could not read module './helper.py'")), "{:?}", seen.failures);
+        assert_eq!(grants(&seen, ""), named("main", &["main"]));
         let packages = seen.packages.unwrap();
-        assert_eq!(packages.dirs, vec![(String::new(), s!("main"))]);
+        assert_eq!(packages.dirs.len(), 1);
         assert!(!packages.needed);
     }
 }

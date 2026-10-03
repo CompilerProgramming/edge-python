@@ -16,24 +16,23 @@ import secret
 
 ## Permissions
 
-Only the root `edge.json` grants. Its `permissions` section maps each holder to a list of entries, each `module:scope`.
+The root `edge.json` grants each package it imports, and each package passes on to the ones it imports. A `permissions` section maps each holder to a list of entries, each `module:scope`.
 
 ```json
 {
-  "imports": { "http": "0.2.0", "analytics": "1.2.0" },
+  "imports": { "analytics": "1.2.0" },
   "permissions": {
     "main": ["net:api.example.com", "time:wall", "time:zone"],
-    "analytics": ["net:api.telemetry.com", "time:monotonic"],
-    "http": ["net"]
+    "analytics": ["net:api.telemetry.com", "time:monotonic"]
   }
 }
 ```
 
 | Holder | Who holds its entries |
 |---|---|
-| `main` | The program's own code, every module under the root `edge.json` |
-| `all` | Every package, `main` included |
-| A package name | That package only, wherever it sits in the tree |
+| `main` | The code of the package itself, for the root every module under the root `edge.json` |
+| `all` | `main` and every package it imports |
+| An import key | The package that key imports |
 | `eval` | Nobody, it caps what a bundle may grant in an [eval group](/docs/reference/actors#untrusted-code) |
 
 | Entry | Allows |
@@ -47,26 +46,25 @@ Only the root `edge.json` grants. Its `permissions` section maps each holder to 
 | `fs:./<folder>` | `read` and `list` under that folder of the project, written from the root `edge.json`, so `fs:./shop` reaches `shop/Gemfile` and never `shopping/` |
 | `fs:.` | `read` and `list` anywhere in the project |
 
-A package is the nearest `edge.json` above its files. The root's own modules belong to `main`, and a dependency answers to the `name` its own manifest carries. An entry without a scope, such as `"net"`, lets the package import the module and reach nothing. What a package holds is its own entries joined with those for `all`, and code outside any package holds nothing.
+A package is what an import key brings in, the nearest `edge.json` above its files. It holds what its importer writes under that key joined with what the importer writes for `all`, and an importer other than the root passes on only what it holds itself. The `name` a manifest gives itself never counts, so no package can pose as another. Code reached by a relative import belongs to the package that imports it, even under an `edge.json` of its own, and a package two importers share loads once for each, so each copy holds only what its own importer passes it. An entry without a scope, such as `"net"`, lets the package import the module and reach nothing, and code outside any package holds nothing.
 
-### What a dependency asks for
+### What a dependency asks for and passes on
 
-A dependency writes what it needs in its own `edge.json`, in the same shape under `main` or `all`. That grants it nothing, it is the list the root has to cover. What it grants other packages counts for nothing, so trust is never inherited, and the root writes out every entry for every package it pulls in however deep. A generic client such as `http` asks for `"net"` alone and leaves the hosts to the root.
+A dependency writes in its own `edge.json` what its code needs under `main`, and what each package it imports needs under that import key. It passes on only what it holds, so its importer has to give it everything it lists. A generic client such as `http` asks for `"net"` alone, and the package that imports it passes the hosts.
 
 ```json
-{ "name": "analytics", "permissions": { "main": ["net:api.telemetry.com", "time:monotonic"] } }
+{ "name": "analytics", "imports": { "http": "0.2.0" }, "permissions": { "main": ["time:monotonic"], "http": ["net:api.telemetry.com"] } }
 ```
 
-`edge add` prints what each new package asks for. `edge lock` walks the whole tree, each package through its own `edge.lock`, and writes nothing until the root grants every ask, naming each package that misses one and the packages it came through. `edge build`, `edge run` and `edge test` hold the tree to the same check before anything compiles, so an edit after the last lock cannot slip past it.
+`edge add` prints what each new package asks for. `edge lock` walks the whole tree, each package through its own `edge.lock`, and writes nothing until the root gives each package it imports everything that package lists, naming each one that misses something. A package that passes an import less than it asks fails the lock the same way. `edge build`, `edge run` and `edge test` hold the tree to the same check before anything compiles, so an edit after the last lock cannot slip past it.
 
 ```text
 error: edge.json does not grant what these packages ask for
-  http 0.2.0                        net
-  analytics 1.2.0, via http 0.2.0   net:api.telemetry.com
+  analytics 1.2.0   net:api.telemetry.com, time:monotonic
 help: grant them under "permissions" in edge.json
 ```
 
-A package that asks for anything needs a `name`, since that is what the root grants by, and no package may be named `all`, `main` or `eval`, which the registry refuses to publish.
+No import may be named `all`, `main` or `eval`, since the package it brings in would answer to that holder, and the registry refuses to publish a package named any of them.
 
 ### Where a grant is checked
 

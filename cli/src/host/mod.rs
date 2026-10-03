@@ -192,11 +192,11 @@ pub struct Plugin {
 #[derive(Clone)]
 pub enum Native {
     Plugin(Box<Plugin>),
-    // A system call, opened for one package and answered by SpiderMonkey.
+    // A system call, opened under the spec its package imports it by, answered by SpiderMonkey.
     System {
         module: String,
         name: String,
-        package: String,
+        spec: String,
     },
 }
 

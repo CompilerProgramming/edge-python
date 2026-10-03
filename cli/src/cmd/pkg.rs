@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use compiler::modules::rules::shaped_like_version;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::io::Read;
 use std::path::Path;
 
@@ -76,7 +76,7 @@ pub fn add(path: &Path, pkgs: &[String]) -> Result<()> {
     let mut asking = false;
     for package in packages.iter().filter(|p| !p.section.is_null()) {
         // Against an empty grant every ask comes back unmet, which lists them all.
-        let asked = system::unmet(&json!({}), &package.name, &package.section);
+        let asked = system::unmet(&[], &package.section);
         if !asked.is_empty() {
             ui::asks(&package.who(), &asked);
             asking = true;

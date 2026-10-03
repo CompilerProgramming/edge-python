@@ -391,12 +391,12 @@
   },
   {
     "given": {
-      "clock/edge.json": "{\"name\": \"clock\", \"imports\": {\"trace\": \"./trace/main.py\"}}\n",
+      "clock/edge.json": "{\"name\": \"clock\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"trace\": [\"time:wall\"]}}\n",
       "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
       "clock/trace/edge.json": "{\"name\": \"trace\"}\n",
       "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n",
       "main.py": "from clock import now\nprint(now())\n",
-      "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}, \"permissions\": {\"trace\": [\"time:wall\"]}}\n"
+      "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}, \"permissions\": {\"clock\": [\"time:wall\"]}}\n"
     },
     "run": ["run", "main.py"],
     "stdout": ["True"]
@@ -430,21 +430,21 @@
     "given": {
       "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}}\n",
       "main.py": "from clock import now\nprint(now())\n",
-      "clock/edge.json": "{\"name\": \"clock\", \"version\": \"0.2.0\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"]}}\n",
+      "clock/edge.json": "{\"name\": \"clock\", \"version\": \"0.2.0\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"], \"trace\": [\"time:wall\", \"net\"]}}\n",
       "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
-      "clock/trace/edge.json": "{\"name\": \"trace\", \"permissions\": {\"main\": [\"time:wall\", \"net\"], \"other\": [\"net:evil.example\"]}}\n",
+      "clock/trace/edge.json": "{\"name\": \"trace\", \"permissions\": {\"main\": [\"time:wall\", \"net\"]}}\n",
       "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n"
     },
     "run": ["lock"],
-    "fails": ["edge.json does not grant what these packages ask for", "  clock 0.2.0              time:wall\n", "  trace, via clock 0.2.0   time:wall, net\n", "help: grant them under \"permissions\" in edge.json"]
+    "fails": ["edge.json does not grant what these packages ask for", "  clock 0.2.0   time:wall, net\n", "help: grant them under \"permissions\" in edge.json"]
   },
   {
     "given": {
       "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}}\n",
       "main.py": "from clock import now\nprint(now())\n",
-      "clock/edge.json": "{\"name\": \"clock\", \"version\": \"0.2.0\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"]}}\n",
+      "clock/edge.json": "{\"name\": \"clock\", \"version\": \"0.2.0\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"], \"trace\": [\"time:wall\", \"net\"]}}\n",
       "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
-      "clock/trace/edge.json": "{\"name\": \"trace\", \"permissions\": {\"main\": [\"time:wall\", \"net\"], \"other\": [\"net:evil.example\"]}}\n",
+      "clock/trace/edge.json": "{\"name\": \"trace\", \"permissions\": {\"main\": [\"time:wall\", \"net\"]}}\n",
       "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n"
     },
     "run": ["build"],
@@ -454,9 +454,9 @@
     "given": {
       "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}}\n",
       "main.py": "from clock import now\nprint(now())\n",
-      "clock/edge.json": "{\"name\": \"clock\", \"version\": \"0.2.0\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"]}}\n",
+      "clock/edge.json": "{\"name\": \"clock\", \"version\": \"0.2.0\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"], \"trace\": [\"time:wall\", \"net\"]}}\n",
       "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
-      "clock/trace/edge.json": "{\"name\": \"trace\", \"permissions\": {\"main\": [\"time:wall\", \"net\"], \"other\": [\"net:evil.example\"]}}\n",
+      "clock/trace/edge.json": "{\"name\": \"trace\", \"permissions\": {\"main\": [\"time:wall\", \"net\"]}}\n",
       "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n",
       "green_test.py": "raise SystemExit(0)\n"
     },
@@ -465,11 +465,11 @@
   },
   {
     "given": {
-      "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}, \"permissions\": {\"clock\": [\"time:wall\"], \"trace\": [\"time:wall\", \"net:api.example.com\"]}}\n",
+      "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}, \"permissions\": {\"clock\": [\"time:wall\", \"net\"]}}\n",
       "main.py": "from clock import now\nprint(now())\n",
-      "clock/edge.json": "{\"name\": \"clock\", \"version\": \"0.2.0\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"]}}\n",
+      "clock/edge.json": "{\"name\": \"clock\", \"version\": \"0.2.0\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"], \"trace\": [\"time:wall\", \"net\"]}}\n",
       "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
-      "clock/trace/edge.json": "{\"name\": \"trace\", \"permissions\": {\"main\": [\"time:wall\", \"net\"], \"other\": [\"net:evil.example\"]}}\n",
+      "clock/trace/edge.json": "{\"name\": \"trace\", \"permissions\": {\"main\": [\"time:wall\", \"net\"]}}\n",
       "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n"
     },
     "run": ["run", "main.py"],
@@ -477,23 +477,34 @@
   },
   {
     "given": {
-      "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}}\n",
-      "main.py": "from clock import now\n",
-      "clock/main.py": "def now():\n    return 0\n",
-      "clock/edge.json": "{\"name\": \"main\"}\n"
+      "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}, \"permissions\": {\"clock\": [\"time:wall\"]}}\n",
+      "main.py": "from clock import now\nprint(now())\n",
+      "clock/edge.json": "{\"name\": \"clock\", \"version\": \"0.2.0\", \"imports\": {\"trace\": \"./trace/main.py\"}, \"permissions\": {\"main\": [\"time:wall\"]}}\n",
+      "clock/main.py": "from trace import stamp\n\ndef now():\n    return stamp()\n",
+      "clock/trace/edge.json": "{\"name\": \"trace\", \"permissions\": {\"main\": [\"time:wall\"]}}\n",
+      "clock/trace/main.py": "import time\n\ndef stamp():\n    return time.now() > 0\n"
     },
     "run": ["lock"],
-    "fails": ["edge.json at 'clock/edge.json': name 'main' is reserved for permissions"]
+    "fails": ["edge.json at 'clock/trace/edge.json' asks for time:wall, which clock 0.2.0 does not pass it"]
+  },
+  {
+    "given": {
+      "edge.json": "{\"imports\": {\"main\": \"./clock/main.py\"}}\n",
+      "main.py": "from clock import now\n",
+      "clock/main.py": "def now():\n    return 0\n"
+    },
+    "run": ["lock"],
+    "fails": ["import 'main' is reserved for permissions"]
   },
   {
     "given": {
       "edge.json": "{\"imports\": {\"clock\": \"./clock/main.py\"}}\n",
       "main.py": "from clock import now\n",
       "clock/main.py": "def now():\n    return 0\n",
-      "clock/edge.json": "{\"permissions\": {\"main\": [\"time:wall\"]}}\n"
+      "clock/edge.json": "{\"name\": \"timer\", \"permissions\": {\"main\": [\"time:wall\"]}}\n"
     },
     "run": ["lock"],
-    "fails": ["edge.json at 'clock/edge.json': a package that asks for permissions needs a name"]
+    "fails": ["edge.json does not grant what these packages ask for\n  clock   time:wall\n"]
   },
   {
     "given": {

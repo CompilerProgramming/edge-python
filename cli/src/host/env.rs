@@ -97,7 +97,7 @@ fn call_native(caller: &mut Caller<'_, State>, id: i32, call_id: i32, argv_ptr: 
             }
             Ok(status)
         }
-        Native::System { module, name, package } => {
+        Native::System { module, name, spec } => {
             let raw = read(caller, ex.memory, argv_ptr, argc.max(1) * 4);
             let handles: Vec<u32> = raw.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
             // The trailing slot holds the kwargs, which a system call never takes.
@@ -117,7 +117,7 @@ fn call_native(caller: &mut Caller<'_, State>, id: i32, call_id: i32, argv_ptr: 
             }
             let state = caller.data();
             let called = match state.events.clone() {
-                Some(events) => super::system::invoke(state.run, &package, &module, &name, &args, call_id as u32, events),
+                Some(events) => super::system::invoke(state.run, &spec, &name, &args, call_id as u32, events),
                 None => Err(format!("RuntimeError: {module}.{name} has no interpreter to answer")),
             };
             let answer = called.map(|called| match called {

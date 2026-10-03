@@ -1,5 +1,5 @@
-/* The system calls on their own, each opened for one package with the scopes the root grants it. */
-import { check, scopes, unmet } from "../src/system/grants.ts";
+/* The system calls on their own, each opened for one package with the scopes its importers pass it. */
+import { check, held, scopes, unmet } from "../src/system/grants.ts";
 import fs from "../src/system/fs.ts";
 import net from "../src/system/net.ts";
 import secret from "../src/system/secret.ts";
@@ -17,23 +17,27 @@ const raises = (fn, name, message) => {
 
 const denied = (fn, message) => raises(fn, "PermissionError", message);
 
-Deno.test("system: a package holds its own entries and those for all", () => {
-    const permissions = { all: ["time:wall"], main: ["net:api.example.com", "time:zone"], http: ["net"] };
-    if (JSON.stringify(scopes(permissions, "main", "time")) !== '["wall","zone"]') throw new Error("main time");
-    if (JSON.stringify(scopes(permissions, "main", "net")) !== '["api.example.com"]') throw new Error("main net");
-    if (JSON.stringify(scopes(permissions, "http", "net")) !== "[]") throw new Error("an entry without a scope holds the module alone");
-    if (scopes(permissions, "http", "db") !== null || scopes(permissions, "analytics", "net") !== null) throw new Error("an ungranted module");
-    if (scopes(permissions, "", "time") !== null) throw new Error("code outside any package holds nothing");
+Deno.test("system: a package holds what its importer grants its key, and an importer passes on only what it holds", () => {
+    const root = { all: ["time:wall"], main: ["net:api.example.com", "time:zone"], http: ["net"] };
+    if (JSON.stringify(scopes(held([[root, "main"]]), "time")) !== '["wall","zone"]') throw new Error("main time");
+    if (JSON.stringify(scopes(held([[root, "main"]]), "net")) !== '["api.example.com"]') throw new Error("main net");
+    if (JSON.stringify(scopes(held([[root, "http"]]), "net")) !== "[]") throw new Error("an entry without a scope holds the module alone");
+    if (scopes(held([[root, "http"]]), "db") !== null || scopes(held([[root, "analytics"]]), "net") !== null) throw new Error("an ungranted module");
+    if (scopes(held([]), "time") !== null) throw new Error("code outside any package holds nothing");
+    const pay = { all: ["time:wall"], http: ["net:api.stripe.com", "secret:OTHER"], dns: ["net"] };
+    const granted = [{ pay: ["net:api.stripe.com", "time:wall"] }, "pay"];
+    if (JSON.stringify(held([granted, [pay, "http"]])) !== '["time:wall","net:api.stripe.com"]') throw new Error("passed on past what the importer holds");
+    if (JSON.stringify(held([granted, [pay, "dns"]])) !== '["time:wall","net"]') throw new Error("a bare entry passes on with any entry for its module");
 });
 
-Deno.test("system: a package asks under main and all, and only the root's grant meets it", () => {
-    const root = { all: ["time:wall"], analytics: ["net:api.telemetry.com"], http: ["net:api.example.com"] };
-    const asks = (pkg, section) => JSON.stringify(unmet(root, pkg, section));
-    if (asks("analytics", { main: ["net:api.telemetry.com", "time:wall"] }) !== "[]") throw new Error("a met ask");
-    if (asks("analytics", { main: ["time:monotonic"], all: ["net:evil.example"] }) !== '["time:monotonic","net:evil.example"]') throw new Error("unmet asks");
-    if (asks("http", { main: ["net"] }) !== "[]") throw new Error("a bare ask is met by any entry for its module");
-    if (asks("kv", { main: ["net"] }) !== '["net"]') throw new Error("a bare ask the root never meets");
-    if (asks("analytics", { http: ["net:evil.example"] }) !== "[]") throw new Error("what a package grants others is no ask");
+Deno.test("system: a package needs what it lists for itself and for what it imports", () => {
+    const has = ["time:wall", "net:api.telemetry.com"];
+    const asks = (section) => JSON.stringify(unmet(has, section));
+    if (asks({ main: ["net:api.telemetry.com", "time:wall"] }) !== "[]") throw new Error("a met ask");
+    if (asks({ main: ["time:monotonic"], all: ["net:evil.example"] }) !== '["time:monotonic","net:evil.example"]') throw new Error("unmet asks");
+    if (asks({ main: ["net"] }) !== "[]") throw new Error("a bare ask is met by any entry for its module");
+    if (JSON.stringify(unmet([], { main: ["net"] })) !== '["net"]') throw new Error("a bare ask nothing meets");
+    if (asks({ http: ["net:evil.example"] }) !== '["net:evil.example"]') throw new Error("what a package passes on it needs itself");
 });
 
 Deno.test("system: a malformed permissions section says what it needs", () => {
