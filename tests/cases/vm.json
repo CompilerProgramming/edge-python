@@ -1899,7 +1899,7 @@
   {"src": "print('a-b-c'.rpartition('-'))", "output": ["('a-b', '-', 'c')"]},
   {"src": "print('xyz'.rpartition('-'))", "output": ["('', '', 'xyz')"]},
   {"src": "def g():\n    for i in range(5000):\n        def f():\n            return i\n        yield i\nprint(len(list(g())))", "output": ["5000"]},
-  {"src": "print(id(-0.0))", "output": ["0"]},
+  {"src": "print(id(-0.0) != id(0.0), id(-0.0) >= 0, id(-0.0) == id(-0.0))", "output": ["True True True"]},
   {"src": "''i(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((()),range(]", "output": [], "error": "'(' was never closed"},
   {"src": "''i(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((()),range(,]", "output": [], "error": "'(' was never closed"},
   {"src": "''f(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((()),range(]", "output": [], "error": "'(' was never closed"},
@@ -5191,5 +5191,13 @@
   {"src": "vals = [float('nan') for _ in range(3)]\nprint(len(set(vals)), len({v: 0 for v in vals}), sum(1 for v in vals if v in vals), vals.count(vals[1]))", "output": ["3 3 3 1"]},
   {"src": "n = float('nan')\nprint(str(n), repr(-n), f'{n:5}|', round(1.5) is not n, -n is n, (n * 0) is n, n != n)", "output": ["nan nan   nan| True False False True"]},
   {"src": "n = float(\"nan\")\nfor spec in [\"5\", \"05\", \"<5\", \"^7\", \"=+6\", \"+\", \"-8\", \".2f\", \"08.3f\", \"e\", \"g\"]:\n    print(repr(format(n, spec)), repr(format(float(\"-inf\"), spec)), repr(format(float(\"inf\"), spec)))", "output": ["'  nan' ' -inf' '  inf'", "'00nan' '-0inf' '00inf'", "'nan  ' '-inf ' 'inf  '", "'  nan  ' ' -inf  ' '  inf  '", "'+  nan' '-  inf' '+  inf'", "'+nan' '-inf' '+inf'", "'     nan' '    -inf' '     inf'", "'nan' '-inf' 'inf'", "'00000nan' '-0000inf' '00000inf'", "'nan' '-inf' 'inf'", "'nan' '-inf' 'inf'"]},
-  {"src": "print(f\"{float('nan'):>6}|{float('nan'):F}|{float('inf'):+.1f}|{-float('inf'):08}|{float('nan'):,}\")", "output": ["   nan|NAN|+inf|-0000inf|nan"]}
+  {"src": "print(f\"{float('nan'):>6}|{float('nan'):F}|{float('inf'):+.1f}|{-float('inf'):08}|{float('nan'):,}\")", "output": ["   nan|NAN|+inf|-0000inf|nan"]},
+  {"src": "print(id(1.5) == id(-1.5), 1.5 is -1.5, id(2.0) == id(-2.0))", "output": ["False False False"]},
+  {"src": "l = []\nn = 2 ** 47 - id(l) % 2 ** 47\nprint(id(n) == id(l), n is l)", "output": ["False False"]},
+  {"src": "vals = [[], {}, set(), 7, -7, 2.5, -2.5, 'a', None, True, False, (1,), 1.0]\nids = [id(v) for v in vals]\nprint(len(set(ids)) == len(ids), all(i >= 0 for i in ids))", "output": ["True True"]},
+  {"src": "a = [1]\nb = a\nc = [1]\nprint(id(a) == id(b), id(a) == id(c), (id(a) == id(c)) == (a is c))", "output": ["True False True"]},
+  {"src": "x = 3.25\nprint(id(x) == id(x), id(None) == id(None), id(True) != id(1), id(0) != id(False))", "output": ["True True True True"]},
+  {"src": "class C:\n    pass\nobjs = [C() for _ in range(5)]\nprint(len({id(o) for o in objs}), all((id(p) == id(q)) == (p is q) for p in objs for q in objs))", "output": ["5 True"]},
+  {"src": "n = float('nan')\nm = float('nan')\nprint(id(n) == id(n), id(n) != id(m), (id(n) == id(m)) == (n is m))", "output": ["True True True"]},
+  {"src": "big = 10 ** 30\nneg = -10 ** 30\nprint(id(big) != id(neg), (id(big) == id(big)), id(big) >= 0, id(neg) >= 0)", "output": ["True True True True"]}
 ]

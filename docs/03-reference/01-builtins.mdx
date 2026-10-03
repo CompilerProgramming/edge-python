@@ -614,7 +614,7 @@ False
 
 ### id, hash
 
-`id(x)` returns a stable numeric identifier for the value. `hash(x)` returns the hash of a hashable value. Lists, dicts, and sets are unhashable and raise `TypeError`. Ints hash to themselves. Integral floats hash as the equal int, so `hash(1) == hash(1.0)`.
+`id(x)` returns a stable numeric identifier, equal for two values exactly when `is` holds. `hash(x)` returns the hash of a hashable value. Lists, dicts, and sets are unhashable and raise `TypeError`. Ints hash to themselves. Integral floats hash as the equal int, so `hash(1) == hash(1.0)`.
 
 ```edge-python
 print(hash("hello") == hash("hello"))

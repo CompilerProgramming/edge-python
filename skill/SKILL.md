@@ -870,7 +870,7 @@ print([f() for f in fns])
 [0, 1, 2]
 ```
 
-Inline integers and floats compare by value under `is`, so `is` on numbers does not mean identity, except that every NaN keeps its own. Reserve `is` for `None` and sentinels.
+Equal numbers and short strings are one object under `is`, a NaN aside. Reserve `is` for `None` and sentinels.
 
 ```python
 a = 1000

@@ -290,22 +290,8 @@ Handle these at the embedder layer (path validation, encoding, size check) befor
 A few supported operations have implementation-defined or by-design behavior worth knowing:
 
 - **Set iteration and `repr` order.** Sets store elements in a hash table, so iteration and `repr` follow hash order, not insertion order. Do not rely on it. `{3, 1, 2}` may `repr` as `{3, 2, 1}`.
-- **`is` on numbers.** Inline integers and floats are compared by value, so `a = 1000; b = 1000; a is b` is `True`. Only a NaN keeps an identity of its own, so `float("nan") is float("nan")` is `False` as in Python. Use `==` for value equality and reserve `is` for `None` and identity checks.
+- **`is` on equal values.** Equal numbers and short strings are one object, so `a = 1000; b = 1000; a is b` is `True`, a NaN aside. Use `==` for values and `is` for `None`.
 - **`str.casefold`.** Simple lowercasing without full Unicode case-fold expansion: `'ß'.casefold()` stays `'ß'` rather than expanding to `'ss'`.
-
-The `is` note, demonstrated:
-
-```edge-python
-a = 1000
-b = 1000
-print(a is b)
-print(a == b)
-```
-
-```output
-True
-True
-```
 
 ## Determinism
 
