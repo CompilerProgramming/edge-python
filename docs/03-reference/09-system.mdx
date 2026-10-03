@@ -181,7 +181,7 @@ Every worker lives in a sandboxed frame with an origin of its own, so a program 
 
 ### Trace
 
-A worker created with `trace: true` reports every system call of a run through `onTrace`, timed in milliseconds from the start of the run, which the first event gives as milliseconds since the epoch. An event names the package, the call, what it reached and how it ended, which for `net` is the method, host and path, for `secret` the name and for `time` the clock. It never carries a secret value, a body, a header or a query. A `print` and a wait on the wall clock arrive in the same stream.
+A worker created with `trace: true` reports every system call of a run through `onTrace`, timed in milliseconds from the start of the run, which the first event gives as milliseconds since the epoch. An event names the package, the call, what it reached and how it ended, which for `net` is the method, host and path, for `secret` the name and for `time` the clock. It never carries a body, a header or a query, and shows a secret by its first two characters, none under eight. A `print` and a wait on the wall clock arrive in the same stream.
 
 ```js
 const worker = await createWorker({ trace: true, permissions: { main: ["net:api.example.com"] } });

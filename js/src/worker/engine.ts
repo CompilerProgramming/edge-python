@@ -7,7 +7,7 @@ import type { Rt, EdgeValue } from '../rt.ts';
 import { nativeTable, resetNativeTable, waiting } from '../native.ts';
 import { SYSTEM } from '../system/index.ts';
 import type { Host } from '../system/index.ts';
-import { printed, traced } from '../system/trace.ts';
+import { masker, printed, traced } from '../system/trace.ts';
 import type { TraceEvent } from '../system/trace.ts';
 import { check, scopes } from '../system/grants.ts';
 import type { Permissions } from '../system/grants.ts';
@@ -109,9 +109,10 @@ export async function load({ wasmUrl, wasm = null, imports = null, permissions =
 
 export async function run(opts: RunOpts, onLine?: (text: string) => void, onTrace?: (event: TraceEvent) => void): Promise<ExecResult> {
     running = true;
-    emitTrace = tracing && onTrace ? onTrace : null;
-    // A print lands in the trace beside the calls, timed on the same clock.
-    const line = onLine && emitTrace ? (text: string) => { emitTrace?.(printed(since(), text)); onLine(text); } : onLine;
+    const mask = masker(secretsMap);
+    emitTrace = tracing && onTrace ? (event) => onTrace(event.kind === 'call' ? { ...event, scope: mask(event.scope) } : event) : null;
+    // A print lands in the trace beside the calls, its secrets hidden before the cut so none shows half.
+    const line = onLine && emitTrace ? (text: string) => { emitTrace?.(printed(since(), mask(text))); onLine(text); } : onLine;
     try {
         const payload = TE.encode(opts.src);
         // REPL inputs keep the interpreter alive in the wasm instance, implying incremental so the instance itself persists too.

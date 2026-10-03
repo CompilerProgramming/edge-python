@@ -22,6 +22,17 @@ function place(url: unknown): string {
     }
 }
 
+// A secret this short shows nothing of itself, a longer one its first two characters.
+const SHOWN = 8;
+
+/* Hides each value the host keeps for the program, as written, as a url path and as the place a url reaches. */
+export function masker(secrets: Record<string, string> | null): (text: string) => string {
+    const forms = Object.values(secrets ?? {}).filter(Boolean).flatMap((value) => [value, encodeURI(value), place(value)].filter(Boolean).map((form) => [form, value.length < SHOWN ? '…' : `${form.slice(0, 2)}…`] as const));
+    // The longest first, so a url is hidden whole before a shorter secret inside it.
+    forms.sort((a, b) => b[0].length - a[0].length);
+    return (text) => forms.reduce((out, [form, shown]) => out.replaceAll(form, shown), text);
+}
+
 /* What a call reached and what came back about it, the name of a secret but never what it holds. */
 function reached(module: string, name: string, args: EdgeValue[], value: unknown) {
     if (name === 'batch') return { scope: Array.isArray(args[0]) ? `${args[0].length} calls` : '' };
