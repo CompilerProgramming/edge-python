@@ -68,15 +68,26 @@ fn the_memory_model_never_counts_less_than_what_a_program_holds() {
     assert!(short.is_empty(), "{}", short.join("\n"));
 }
 
+/* What `src` holds once it ran and the most it held at once, both by the memory model. */
+fn peaked(src: &str) -> (usize, usize) {
+    let (tokens, _) = lex(src);
+    let (chunk, errs) = Parser::new(src, tokens.into_iter()).parse();
+    assert!(errs.is_empty(), "{src}");
+    let mut vm = VM::with_limits(&chunk, Limits::sandbox());
+    vm.run().unwrap();
+    (vm.memory(), vm.memory_peak())
+}
+
 #[test]
 fn the_peak_keeps_what_a_program_held_after_a_collection_let_it_go() {
     // The list goes before the loop starts collecting, so only the peak still remembers it.
-    let src = "xs = [0] * 1000000\nxs = None\nn = 0\nfor i in range(100000):\n    n += len([i])\n";
-    let (tokens, _) = lex(src);
-    let (chunk, errs) = Parser::new(src, tokens.into_iter()).parse();
-    assert!(errs.is_empty());
-    let mut vm = VM::with_limits(&chunk, Limits::sandbox());
-    vm.run().unwrap();
-    assert!(vm.memory_peak() >= 8_000_000, "peak {}", vm.memory_peak());
-    assert!(vm.memory() < 4_000_000, "held {}", vm.memory());
+    let (held, peak) = peaked("xs = [0] * 1000000\nxs = None\nn = 0\nfor i in range(100000):\n    n += len([i])\n");
+    assert!(peak >= 8_000_000 && held < 4_000_000, "peak {peak} held {held}");
+}
+
+#[test]
+fn the_peak_keeps_what_a_container_held_before_it_shrank() {
+    // The set shrinks in place with no collection, which only the shrink itself can record.
+    let (held, peak) = peaked("s = set(range(100000))\ns.difference_update(range(100000))\n");
+    assert!(peak >= 2_000_000 && held < peak / 2, "peak {peak} held {held}");
 }

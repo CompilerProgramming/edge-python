@@ -623,8 +623,8 @@ pub struct HeapPool {
     alloc_count: Cell<usize>,
     // What the slots hold by the memory model, garbage since the last sweep included.
     bytes: Cell<usize>,
-    // The highest count before a sweep, where it stands tallest since only a sweep lowers it.
-    peak: usize,
+    // The highest count, kept at each place it goes down, so no high point is missed.
+    peak: Cell<usize>,
     limit: usize,
     // The first collection whose running count missed the recount, as the two totals.
     #[cfg(feature = "memcheck")]
@@ -668,7 +668,7 @@ impl HeapPool {
             gc_threshold: 512,
             alloc_count: Cell::new(0),
             bytes: Cell::new(0),
-            peak: 0,
+            peak: Cell::new(0),
             limit,
             #[cfg(feature = "memcheck")]
             drift: None,
@@ -781,11 +781,15 @@ impl HeapPool {
         let out = f(c);
         let after = c.bytes();
         if after != before {
+            if after < before { self.keep_peak(); }
             self.bytes.set(self.bytes.get().saturating_sub(before));
             self.charge(after);
         }
         out
     }
+
+    // Remembers the count before it goes down.
+    fn keep_peak(&self) { self.peak.set(self.peak.get().max(self.bytes.get())); }
 
     /* Charges what an object took, past the limit the next safe point collects. */
     #[inline]
@@ -800,8 +804,8 @@ impl HeapPool {
     /* What the slots hold by the memory model, garbage since the last sweep included. */
     pub fn bytes(&self) -> usize { self.bytes.get() }
 
-    /* The most the slots held at once, garbage included, the count now or before any sweep. */
-    pub fn peak(&self) -> usize { self.peak.max(self.bytes.get()) }
+    /* The most the slots held at once, garbage included, the count now or the highest it fell from. */
+    pub fn peak(&self) -> usize { self.peak.get().max(self.bytes.get()) }
 
     /* The same total counted again from every occupied slot, which the running count must always equal. */
     fn recount(&self) -> usize {
@@ -838,7 +842,7 @@ impl HeapPool {
     }
 
     pub fn sweep(&mut self) {
-        self.peak = self.peak.max(self.bytes.get());
+        self.keep_peak();
         // The survivors are counted again, so a sweep leaves the running count exact.
         let mut kept = 0;
         for idx in 0..self.slots.len() {
@@ -888,6 +892,7 @@ impl HeapPool {
             self.live += 1;
             self.intern_insert(idx as u32);
         }
+        self.keep_peak();
         self.bytes.set(self.recount());
         self.gc_threshold = (self.live * 2).max(512);
         self.alloc_limit = 4096;
@@ -898,6 +903,7 @@ impl HeapPool {
     /* Swap a live slot's object during restore. */
     pub(crate) fn replace_obj(&mut self, idx: u32, obj: HeapObj) {
         let before = self.slots[idx as usize].obj.as_ref().map_or(0, footprint);
+        self.keep_peak();
         self.bytes.set((self.bytes.get() + footprint(&obj)).saturating_sub(before));
         self.slots[idx as usize] = HeapSlot::new(Some(obj));
     }

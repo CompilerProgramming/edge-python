@@ -22,12 +22,15 @@ struct Snapshot {
     rustc: String,
     threshold: f64,
     case_threshold: f64,
+    // MB a case may move in memory before its own threshold applies, so one small object is not a finding.
+    memory_floor: f64,
     cases: BTreeMap<String, (f64, f64)>,
 }
 
 // How a report words one measure, so time and memory are held to the same rules.
 struct Measure {
     pick: fn((f64, f64)) -> f64,
+    floor: fn(&Snapshot) -> f64,
     unit: &'static str,
     places: usize,
     grew: &'static str,
@@ -38,8 +41,8 @@ struct Measure {
     total: (&'static str, &'static str),
 }
 
-const TIME: Measure = Measure { pick: |c| c.0, unit: "s", places: 9, grew: "got slower", shrank: "got faster", most_grown: "Most slowed", most_shrunk: "Biggest gains", own: "", total: ("runs in", "of reference time") };
-const MEMORY: Measure = Measure { pick: |c| c.1, unit: "MB", places: 6, grew: "holds more memory", shrank: "holds less memory", most_grown: "Most grown", most_shrunk: "Biggest drops", own: " in memory", total: ("peaks at", "summed over its cases") };
+const TIME: Measure = Measure { pick: |c| c.0, floor: |_| 0.0, unit: "s", places: 9, grew: "got slower", shrank: "got faster", most_grown: "Most slowed", most_shrunk: "Biggest gains", own: "", total: ("runs in", "of reference time") };
+const MEMORY: Measure = Measure { pick: |c| c.1, floor: |s| s.memory_floor, unit: "MB", places: 6, grew: "holds more memory", shrank: "holds less memory", most_grown: "Most grown", most_shrunk: "Biggest drops", own: " in memory", total: ("peaks at", "summed over its cases") };
 
 fn main() {
     let update = std::env::args().any(|a| a == "--update");
@@ -60,17 +63,28 @@ fn main() {
     let ran: Vec<(String, (u64, u64))> = cases.iter().map(|case| (key(case), run(&engine, &module, case))).collect();
     let measured = ran.iter().map(|(k, (ops, peak))| (k.clone(), ((*ops as f64 * SECONDS_PER_INSTRUCTION * 1e9).round() / 1e9, (*peak as f64 / MB * 1e6).round() / 1e6))).collect();
     let rustc = Command::new("rustc").arg("--version").current_dir(ROOT).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let now = Snapshot { rustc, threshold: 0.005, case_threshold: 0.05, cases: measured };
+    let now = Snapshot { rustc, threshold: 0.005, case_threshold: 0.05, memory_floor: 0.004, cases: measured };
     let sources: BTreeMap<String, &str> = cases.iter().map(|c| (key(c), c["src"].as_str().unwrap_or(""))).collect();
 
-    let last = std::fs::read_to_string(SNAPSHOT).ok().and_then(|s| serde_json::from_str::<Snapshot>(&s).ok());
+    // Only a missing snapshot is taken without comparing, one that does not parse fails unless --update replaces it.
+    let last = match std::fs::read_to_string(SNAPSHOT) {
+        Err(_) => None,
+        Ok(text) => match serde_json::from_str::<Snapshot>(&text) {
+            Ok(snapshot) => Some(snapshot),
+            Err(_) if update => None,
+            Err(e) => {
+                annotate("error", &format!("bench/.snapshot does not parse, {e}, take it again with --update."));
+                std::process::exit(1);
+            }
+        },
+    };
     let failures = last.as_ref().map(|l| check(l, &now, &sources)).unwrap_or_default();
     for failure in &failures {
         annotate("error", failure);
     }
     if update || last.is_none() {
-        let thresholds = last.map_or((now.threshold, now.case_threshold), |l| (l.threshold, l.case_threshold));
-        write(&Snapshot { threshold: thresholds.0, case_threshold: thresholds.1, ..now });
+        let (threshold, case_threshold, memory_floor) = last.map_or((now.threshold, now.case_threshold, now.memory_floor), |l| (l.threshold, l.case_threshold, l.memory_floor));
+        write(&Snapshot { threshold, case_threshold, memory_floor, ..now });
         return println!("  snapshot written");
     }
     if !failures.is_empty() {
@@ -98,9 +112,10 @@ fn check(last: &Snapshot, now: &Snapshot, sources: &BTreeMap<String, &str>) -> V
 /* One measure against the snapshot, its geometric mean held to the band and each case to its own threshold. */
 fn compare(m: &Measure, last: &Snapshot, now: &Snapshot, sources: &BTreeMap<String, &str>) -> Vec<String> {
     let mut failures = Vec::new();
-    let unit = m.unit;
+    let (unit, floor) = (m.unit, (m.floor)(last));
+    let all: Vec<(&String, f64, f64)> = now.cases.iter().filter_map(|(k, &n)| last.cases.get(k).map(|&l| (k, (m.pick)(l), (m.pick)(n)))).collect();
     // Every case weighs the same in a geometric mean, so no single long case decides it.
-    let paired: Vec<(&String, f64, f64)> = now.cases.iter().filter_map(|(k, &n)| last.cases.get(k).map(|&l| (k, (m.pick)(l), (m.pick)(n)))).filter(|&(_, l, n)| l > 0.0 && n > 0.0).collect();
+    let paired: Vec<(&String, f64, f64)> = all.iter().copied().filter(|&(_, l, n)| l > 0.0 && n > 0.0).collect();
     if paired.is_empty() {
         return failures;
     }
@@ -116,11 +131,14 @@ fn compare(m: &Measure, last: &Snapshot, now: &Snapshot, sources: &BTreeMap<Stri
     } else if change < -last.threshold {
         failures.push(format!("vm.json {}, {total:.3} {unit} against {before:.3} {unit}, {:+.2}%. The snapshot no longer matches the code, run --update and commit it with the change. {}{}", m.shrank, change * 100.0, m.most_shrunk, list(&moved(false))));
     }
-    let mut apart: Vec<&(&String, f64, f64)> = paired.iter().filter(|(_, l, n)| (n / l - 1.0).abs() > last.case_threshold).collect();
-    apart.sort_by(|a, b| (b.2 / b.1).ln().abs().total_cmp(&(a.2 / a.1).ln().abs()));
+    // A case at 0 has no ratio, so leaving 0 or reaching it moves it on its own, ahead of the rest.
+    let by = |&(_, l, n): &(&String, f64, f64)| if l > 0.0 && n > 0.0 { (n / l).ln().abs() } else { f64::INFINITY };
+    let mut apart: Vec<(&String, f64, f64)> = all.iter().copied().filter(|&(_, l, n)| (n - l).abs() > floor && (l == 0.0 || n == 0.0 || (n / l - 1.0).abs() > last.case_threshold)).collect();
+    apart.sort_by(|a, b| by(b).total_cmp(&by(a)));
     if !apart.is_empty() {
-        let lines: Vec<String> = apart.iter().map(|&&(k, l, n)| moved_line(m, sources, k, l, n)).collect();
-        failures.push(format!("{} cases moved past ±{:.0}% on their own{}.{}", apart.len(), last.case_threshold * 100.0, m.own, list(&lines)));
+        let lines: Vec<String> = apart.iter().map(|&(k, l, n)| moved_line(m, sources, k, l, n)).collect();
+        let past = if floor > 0.0 { format!("±{:.0}% and {floor} {unit}", last.case_threshold * 100.0) } else { format!("±{:.0}%", last.case_threshold * 100.0) };
+        failures.push(format!("{} cases moved past {past} on their own{}.{}", apart.len(), m.own, list(&lines)));
     }
 
     // Printed even when a finding fails, so adding cases never hides how the existing ones moved.
@@ -130,7 +148,8 @@ fn compare(m: &Measure, last: &Snapshot, now: &Snapshot, sources: &BTreeMap<Stri
 
 fn moved_line(m: &Measure, sources: &BTreeMap<String, &str>, key: &str, last: f64, now: f64) -> String {
     let (unit, places) = (m.unit, m.places);
-    format!("{} {last:.places$} {unit} to {now:.places$} {unit} ({:+.1}%)", source(sources, key), (now / last - 1.0) * 100.0)
+    let change = if last > 0.0 { format!("{:+.1}%", (now / last - 1.0) * 100.0) } else { String::from("from 0") };
+    format!("{} {last:.places$} {unit} to {now:.places$} {unit} ({change})", source(sources, key))
 }
 
 fn source(sources: &BTreeMap<String, &str>, key: &str) -> String {
@@ -209,8 +228,8 @@ fn write(snapshot: &Snapshot) {
     let (t, m) = (TIME.places, MEMORY.places);
     let cases: Vec<String> = snapshot.cases.iter().map(|(k, (s, mb))| format!("    \"{k}\": [{s:.t$}, {mb:.m$}]")).collect();
     let json = format!(
-        "{{\n  \"rustc\": {:?},\n  \"threshold\": {},\n  \"case_threshold\": {},\n  \"cases\": {{\n{}\n  }}\n}}\n",
-        snapshot.rustc, snapshot.threshold, snapshot.case_threshold, cases.join(",\n")
+        "{{\n  \"rustc\": {:?},\n  \"threshold\": {},\n  \"case_threshold\": {},\n  \"memory_floor\": {},\n  \"cases\": {{\n{}\n  }}\n}}\n",
+        snapshot.rustc, snapshot.threshold, snapshot.case_threshold, snapshot.memory_floor, cases.join(",\n")
     );
     std::fs::write(SNAPSHOT, json).expect("writing bench/.snapshot");
 }

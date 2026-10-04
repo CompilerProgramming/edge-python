@@ -116,11 +116,12 @@ impl Slot {
         }
     }
 
-    /* Drops the run and REPL interpreters, then the chunks they borrowed. */
+    /* Drops the run and REPL interpreters and the last memory peak, then the chunks they borrowed. */
     pub fn clear_run(&mut self) {
         self.paused_run = None;
         self.repl_vm = None;
         self.repl_mode = false;
+        self.memory_peak = 0;
         self.chunks.clear();
     }
 }
