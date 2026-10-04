@@ -5,6 +5,8 @@ import { cached, json, tooMany } from '../../lib/server/http'
 import { MARK, searched } from '../../lib/server/packages'
 import { parts } from '../../lib/docs/sections'
 import { slugOf, tree } from '../../lib/docs/tree'
+import { programs } from '../../data/programs'
+import { hidden } from '../../draft'
 
 // A trigram needs three characters to be a term, so a shorter query matches names and headings instead.
 const TERM = 3
@@ -22,11 +24,24 @@ export const GET: APIRoute = async ({ url, request }) => {
   if (await tooMany(env.READ_IP, request)) return json({ error: 'Too many requests. Try again later.' }, 429)
 
   const asked = (url.searchParams.get('q') ?? '').trim().slice(0, MAX)
-  if (!asked) return json({ docs: [], packages: [], people: [] })
+  if (!asked) return json({ docs: [], programs: [], packages: [], people: [] })
 
   const [docs, packages, people] = await Promise.all([ours(asked), theirs(asked), them(asked)])
 
-  return cached({ docs, packages, people }, CACHE_SECONDS)
+  return cached({ docs, programs: made(asked), packages, people }, CACHE_SECONDS)
+}
+
+/* The programs the site ships, by name or description, left out while their page is a draft. */
+function made(asked: string): Found[] {
+  const asks = asked.toLowerCase()
+
+  return programs
+    .filter((each) => !hidden(`/programs/${each.slug}`) && `${each.name} ${each.description}`.toLowerCase().includes(asks))
+    .slice(0, KEEP)
+    .map((each) => {
+      const at = each.description.toLowerCase().indexOf(asks)
+      return { title: each.name, where: 'Program', href: `/programs/${each.slug}`, snippet: at < 0 ? each.description : around(each.description, at, asked.length) }
+    })
 }
 
 /* Whoever publishes, by handle or by the name they chose, because a reader who remembers the author and not the package still knows where to look. */

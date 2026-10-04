@@ -55,7 +55,7 @@ const edge = 'pointer-events-none absolute inset-y-0 w-16 from-page to-transpare
       <p class="mt-1 text-fg-hint">Edge Python reads its code as a graph, not as text.</p>
     </div>
 
-    <Field name="repo" label="GitHub repo" hideLabel placeholder="Paste a GitHub repo" icon="search" autocomplete="off" autocapitalize="off" spellcheck="false" class={bar}>
+    <Field name="repo" label="Git repo" hideLabel placeholder="Paste any git repo URL" icon="fork" autocomplete="off" autocapitalize="off" spellcheck="false" class={bar}>
       {/* Solid in the colour of the text, shown only once the bar holds something to send. */}
       <button type="submit" aria-label="Trace" class="-my-1.5 -mr-2.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-fg text-page transition hover:bg-solid-hover peer-placeholder-shown:hidden">
         <Icon name="up" size="sm" />
@@ -83,7 +83,7 @@ const edge = 'pointer-events-none absolute inset-y-0 w-16 from-page to-transpare
   </footer>
 
   <script>
-    import { flow } from '../../lib/templates/flow'
+    import { flow } from '../../lib/programs/flow'
 
     const canvas = document.querySelector<HTMLCanvasElement>('[data-flow]')!
     const input = document.querySelector<HTMLInputElement>('input[name="repo"]')!

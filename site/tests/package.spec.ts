@@ -141,11 +141,11 @@ test('opens an older version under ?v= and keeps the newest at the bare address'
   await expect(page.getByText('Not found')).toBeVisible()
 })
 
-test('shelves templates beside the packages under Community and sends std to its maintainer', async ({ page, request }) => {
+test('shelves programs beside the packages under Community and sends std to its maintainer', async ({ page, request }) => {
   const { name } = await published(request)
 
   await page.goto('/')
-  await expect(page.locator('[data-cards]').getByRole('link', { name: 'Rails cracker' })).toHaveAttribute('href', '/templates/rails-cracker')
+  await expect(page.locator('[data-cards]').getByRole('link', { name: 'Rails cracker' })).toHaveAttribute('href', '/programs/rails-cracker')
   await expect(page.locator(`[data-cards] a[href="/package/${name}"]`)).toHaveCount(1)
 
   await page.locator('[data-shelf] input').fill('nothing like it')

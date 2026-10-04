@@ -2,7 +2,7 @@ import type { MiddlewareNext } from 'astro'
 import { env } from 'cloudflare:workers'
 
 /* Everything still being built, named by the address that already reaches it. A path is a page of its own and a fragment is a surface inside one, which is the name a deep link already uses. */
-const DRAFT = ['/plans', '/runs', '/templates', '/#templates', '/settings#billing', '/settings#invoices', '/settings#upkeep']
+const DRAFT = ['/plans', '/runs', '/programs', '/#programs', '/settings#billing', '/settings#invoices', '/settings#upkeep']
 
 // What a surface renders with, so a group, its tab, its icon and its panel all answer to one name.
 const HOOKS = ['data-group', 'data-panel', 'data-view', 'data-bar-icon']
@@ -30,6 +30,9 @@ function stripped(response: Response) {
 
   return rewriter.transform(response)
 }
+
+/* Whether this deploy answers a path as missing, so a json answer can leave it out as well. */
+export const hidden = (path: string) => !env.DRAFT && isPage(path)
 
 /* Answers a draft page as a 404 and takes every draft surface out of the pages that stay. The binding is read per request, because bindings are not populated while a module is still loading. */
 export async function drafted(url: URL, next: MiddlewareNext) {

@@ -6,7 +6,7 @@ const { class: className } = Astro.props
 // What the product holds, shown before a query so somebody who does not know the words can still find the door.
 const doors = [
   { label: 'Docs', detail: 'The language, the CLI, the ABI', href: '/docs' },
-  { label: 'Packages', detail: 'Everything published', href: '/' },
+  { label: 'Artifacts', detail: 'Everything published', href: '/' },
   { label: 'Runs', detail: 'Executions, programs, snapshots', href: '/runs' },
   { label: 'Plans', detail: 'What each one covers', href: '/plans' }
 ]
@@ -185,6 +185,7 @@ const label = 'px-4 pb-1 pt-2 text-2xs text-fg-subtle'
         doors.hidden = true
 
         draw('Packages', found.packages ?? [])
+        draw('Programs', found.programs ?? [])
         draw('People', found.people ?? [])
         draw('Docs', found.docs ?? [])
 

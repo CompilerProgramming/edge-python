@@ -10,7 +10,7 @@ import { publicUser, userByHandle } from '../lib/server/users'
 import { avatarFor, type Palette } from '../lib/account/avatar'
 import { OWNER } from '../lib/account/handle'
 import { count } from '../lib/format'
-import { templates } from '../data/templates'
+import { programs } from '../data/programs'
 
 // Repos a visitor may know, each a tag that opens Rails cracker on it.
 const repos = [['rails', 'rails/rails'], ['django', 'django/django'], ['express', 'expressjs/express'], ['flask', 'pallets/flask'], ['next.js', 'vercel/next.js']]
@@ -21,25 +21,26 @@ const { user } = Astro.locals
 // A query narrows the shelf, and it arrives in the url so the form works before any script does.
 const asked = (Astro.url.searchParams.get('q') ?? '').trim().slice(0, 64)
 
-// Community holds templates and packages on one shelf, std is the maintainer's own.
+// Community holds programs and packages on one shelf, std is the maintainer's own.
 const sorts = [
   { label: 'Community', href: asked ? `/?${new URLSearchParams({ q: asked })}` : '/', current: true },
   { label: 'std', href: `/@${OWNER}`, current: false }
 ]
 
 const packages = (await listed(env.DB, { asked: asked || undefined })).results
-const total = await counted(env.DB)
+// Every artifact the shelf can show, the packages published and the programs the site ships.
+const total = (await counted(env.DB)) + programs.length
 
-const shown = templates.filter((each) => `${each.name} ${each.description}`.toLowerCase().includes(asked.toLowerCase()))
+const shown = programs.filter((each) => `${each.name} ${each.description}`.toLowerCase().includes(asked.toLowerCase()))
 
 const authors = new Map(await Promise.all([...new Set(shown.map((each) => each.author))].map(async (handle) => {
   const found = await userByHandle(env.DB, handle)
   return [handle, found ? (publicUser(found).avatar ?? avatarFor(found.id)) : avatarFor(handle)] as const
 })))
 
-// Templates and packages share one row, a template has no license and no installs.
+// Programs and packages share one row, a program has no license and no installs.
 const rows = [
-  ...shown.map((each) => ({ name: each.name, href: `/templates/${each.slug}`, description: each.description as string | null, handle: each.author, avatar: authors.get(each.author)!, license: null as string | null, downloads: null as number | null })),
+  ...shown.map((each) => ({ name: each.name, href: `/programs/${each.slug}`, description: each.description as string | null, handle: each.author, avatar: authors.get(each.author)!, license: null as string | null, downloads: null as number | null })),
   ...packages.map((item) => ({ name: item.name, href: `/package/${item.name}`, description: item.description, handle: item.handle, avatar: item.avatar_icon && item.avatar_palette ? { icon: item.avatar_icon, palette: item.avatar_palette as Palette } : avatarFor(item.name), license: item.license, downloads: item.downloads as number | null }))
 ]
 
@@ -52,7 +53,7 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
       <h1 class="text-xl font-semibold">Edge Python</h1>
 
       <div class="order-2 sm:order-3 ml-auto sm:ml-0 sm:basis-full flex items-center gap-4 text-2xs text-fg-hint">
-        <span class="flex items-center gap-1.5"><Icon name="create" size="xs" />{total} {total === 1 ? 'package' : 'packages'}</span>
+        <span class="flex items-center gap-1.5"><Icon name="create" size="xs" />{total} {total === 1 ? 'artifact' : 'artifacts'}</span>
       </div>
 
       <div class="order-3 sm:order-2 basis-full sm:basis-auto sm:ml-auto flex items-center gap-3 text-sm">
@@ -81,26 +82,26 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
       </div>
 
       {/* A repo sent from here lands on the Rails cracker page. */}
-      <form action="/templates/rails-cracker" class="w-full max-w-[520px]">
-        <label class="flex h-10 items-center gap-2.5 rounded-full border border-line-emphasis bg-surface px-4 text-sm transition-shadow hover:border-link/60 hover:ring-2 hover:ring-link/20 focus-within:border-link/60 focus-within:ring-2 focus-within:ring-link/20">
-          <span class="sr-only">GitHub repo</span>
-          <Icon name="search" size="sm" class="shrink-0 text-fg-placeholder" />
-          <input name="repo" placeholder="Paste a GitHub repo" autocomplete="off" spellcheck="false" class="peer min-w-0 flex-1 bg-transparent outline-none placeholder:text-fg-placeholder" />
-          <button type="submit" aria-label="Trace" class="-mr-2 flex size-7 shrink-0 items-center justify-center rounded-full bg-fg text-page transition hover:bg-solid-hover peer-placeholder-shown:hidden"><Icon name="up" size="sm" /></button>
+      <form data-trace action="/programs/rails-cracker" class="w-full max-w-[520px]">
+        <label class="flex h-9 items-center gap-2.5 rounded-full border border-line-emphasis bg-surface px-4 text-sm transition-shadow hover:border-link/60 hover:ring-2 hover:ring-link/20 focus-within:border-link/60 focus-within:ring-2 focus-within:ring-link/20">
+          <span class="sr-only">Git repo</span>
+          <Icon name="fork" size="sm" class="shrink-0 text-fg-placeholder" />
+          <input name="repo" placeholder="Paste any git repo URL" autocomplete="off" spellcheck="false" class="peer min-w-0 flex-1 bg-transparent outline-none placeholder:text-fg-placeholder" />
+          <button type="submit" aria-label="Trace" class="-mr-3 flex size-6.5 shrink-0 items-center justify-center rounded-full bg-fg text-page transition hover:bg-solid-hover peer-placeholder-shown:hidden"><Icon name="up" size="sm" /></button>
         </label>
       </form>
 
       <div class="flex flex-wrap justify-center gap-2">
-        {repos.map(([label, repo]) => <a href={`/templates/rails-cracker?repo=${repo}`} class="rounded-full border border-line-strong px-3 py-1 text-xs text-fg-faint transition hover:text-fg">{label}</a>)}
+        {repos.map(([label, repo]) => <a href={`/programs/rails-cracker?repo=${repo}`} data-repo={repo} class="rounded-full border border-line-strong px-3 py-1 text-xs text-fg-faint transition hover:text-fg">{label}</a>)}
       </div>
     </section>
 
     <section class="flex flex-col gap-3">
-      <h2 class="ml-4">Packages</h2>
+      <h2 class="ml-4">Artifacts</h2>
 
       <div class="flex flex-col gap-3 text-sm sm:flex-row sm:items-center">
         <form data-shelf role="search" class="w-full sm:w-[341px]">
-          <Field name="q" label="Filter packages" hideLabel type="search" placeholder="Filter packages" icon="search" value={asked} class="[&>span]:h-8.5 [&>span]:py-0 [&>span]:transition-shadow [&>span]:focus-within:border-link/60 [&>span]:focus-within:ring-2 [&>span]:focus-within:ring-link/20" />
+          <Field name="q" label="Search artifacts" hideLabel type="search" placeholder="Search artifacts" icon="search" value={asked} class="[&>span]:h-8.5 [&>span]:py-0 [&>span]:transition-shadow [&>span]:focus-within:border-link/60 [&>span]:focus-within:ring-2 [&>span]:focus-within:ring-link/20 [&>span]:hover:border-link/60 [&>span]:hover:ring-2 [&>span]:hover:ring-link/20" />
         </form>
 
         <div data-sorts class="flex items-center gap-4 sm:ml-auto">
@@ -133,13 +134,13 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
                   <Avatar {...row.avatar} size="sm" />
                   <span class="hidden truncate sm:inline">@{row.handle}</span>
                 </a>
-                <span class="hidden w-24 text-right text-2xs text-fg-hint sm:block">{row.license ?? 'Template'}</span>
+                <span class="hidden w-24 text-right text-2xs text-fg-hint sm:block">{row.license ?? 'Program'}</span>
                 <span class="w-12 text-right text-2xs tabular-nums text-fg-disabled">{row.downloads === null ? '' : count(row.downloads)}</span>
               </li>
             ))}
           </ul>
         ) : (
-          <p class="ml-4 text-sm text-fg-hint">{asked ? 'Nothing matches that.' : 'No packages yet.'}</p>
+          <p class="ml-4 text-sm text-fg-hint">{asked ? 'Nothing matches that.' : 'No artifacts yet.'}</p>
         )}
       </div>
     </section>
@@ -151,6 +152,17 @@ const outline = 'flex items-center gap-2 transition border border-line text-fg-h
 <script>
   // Short enough to feel like typing, long enough that one word is one request.
   const WAIT = 120
+
+  // A tag writes its repo into the trace input, and without a script it opens the trace.
+  const trace = document.querySelector<HTMLInputElement>('[data-trace] input')
+  for (const tag of document.querySelectorAll<HTMLAnchorElement>('[data-repo]')) {
+    tag.addEventListener('click', (event) => {
+      if (!trace) return
+      event.preventDefault()
+      trace.value = tag.dataset.repo ?? ''
+      trace.focus()
+    })
+  }
 
   const form = document.querySelector<HTMLFormElement>('[data-shelf]')
   const input = form?.querySelector<HTMLInputElement>('input')
