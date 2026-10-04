@@ -26,7 +26,7 @@ use crate::util::hash::FxHashMap as HashMap;
 pub use types::{Val, HeapObj, HeapPool, VmErr, Limits};
 
 use types::*;
-use cache::{OpcodeCache, Templates};
+use cache::{CachePool, Templates};
 use alloc::{string::{String, ToString}, vec::Vec};
 
 pub(crate) use types::ExceptionFrame;
@@ -155,7 +155,7 @@ pub struct VM<'a> {
     pub(crate) default_slots: Vec<Vec<(usize, Val)>>,
     /* Pre-resolved `<name>_0` body slot for self-reference binding, None for lambdas. */
     pub(crate) self_ref_slot: Vec<Option<usize>>,
-    pub(crate) opcode_caches: HashMap<*const SSAChunk, OpcodeCache>,
+    pub(crate) opcode_caches: HashMap<*const SSAChunk, CachePool>,
     /* Per-chunk `bare -> [(version, slot)]` index for the free-load fallback. */
     pub(crate) chunk_name_versions: HashMap<*const SSAChunk, NameVersionIndex>,
     /* Cached per (caller chunk, callee fi), name matching is static, so hash it once, not per call. */

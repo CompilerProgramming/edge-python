@@ -155,11 +155,11 @@ impl<'a> VM<'a> {
         let delta_base = self.pending.delta_save.len();
         let key = chunk as *const _;
 
-        let mut cache = self.opcode_caches.remove(&key).unwrap_or_else(|| OpcodeCache::new(chunk));
+        let mut cache = self.opcode_caches.entry(key).or_default().take(chunk);
         cache.ensure_fused(chunk);
         // Pre-materialise the constant pool here (not in OpcodeCache::new) because Str allocates into the live HeapPool.
         if let Err(e) = cache.ensure_const_vals(chunk, &mut self.heap) {
-            self.opcode_caches.insert(key, cache);
+            self.park_cache(key, cache);
             return Err(e);
         }
 
@@ -290,8 +290,13 @@ impl<'a> VM<'a> {
         self.active_const_pools.pop();
         self.active_slots.pop();
         self.frame_safe = outer_safe;
-        self.opcode_caches.insert(key, cache);
+        self.park_cache(key, cache);
         result
+    }
+
+    /* Hands a frame's cache back to its chunk's pool. */
+    fn park_cache(&mut self, key: *const SSAChunk, cache: OpcodeCache) {
+        if let Some(pool) = self.opcode_caches.get_mut(&key) { pool.put(cache); }
     }
 
     pub(crate) fn exec_from(&mut self, chunk: &SSAChunk, slots: &mut [Val], start_ip: usize) -> Result<Val, VmErr> {
@@ -386,12 +391,12 @@ impl<'a> VM<'a> {
         match ins.opcode {
             // Short-circuit jumps, instance `__bool__` / `__len__` may run via `truthy_op`.
             OpCode::JumpIfFalseOrPop => {
-                let v = *self.stack.last().ok_or(cold_runtime("stack underflow"))?;
+                let v = *self.stack.last().ok_or_else(|| cold_runtime("stack underflow"))?;
                 if !self.truthy_op(v, chunk, slots)? { *ip = op as usize; }
                 else { self.pop()?; }
             }
             OpCode::JumpIfTrueOrPop => {
-                let v = *self.stack.last().ok_or(cold_runtime("stack underflow"))?;
+                let v = *self.stack.last().ok_or_else(|| cold_runtime("stack underflow"))?;
                 if self.truthy_op(v, chunk, slots)? { *ip = op as usize; }
                 else { self.pop()?; }
             }
@@ -450,23 +455,26 @@ impl<'a> VM<'a> {
                 }
             }
             OpCode::LoadGlobal => {
-                let name = chunk.names.get(op as usize).ok_or(cold_runtime("LoadGlobal: name index out of bounds"))?;
+                let name = chunk.names.get(op as usize).ok_or_else(|| cold_runtime("LoadGlobal: name index out of bounds"))?;
                 let v = self.module_state.get(name.as_str()).copied().or_else(|| self.global(name)).filter(|v| !v.is_undef());
                 self.push(v.ok_or_else(|| VmErr::Name(name.clone()))?);
             }
             OpCode::StoreGlobal => {
                 let v = self.pop()?;
-                let name = chunk.names.get(op as usize).ok_or(cold_runtime("StoreGlobal: name index out of bounds"))?;
+                let name = chunk.names.get(op as usize).ok_or_else(|| cold_runtime("StoreGlobal: name index out of bounds"))?;
                 // A `global` store rebinds a name some cached result may have read.
                 self.templates.clear();
                 self.note_builtin_binding(name);
                 self.globals_written = true;
-                self.module_state.insert(name.clone(), v);
+                match self.module_state.get_mut(name.as_str()) {
+                    Some(s) => *s = v,
+                    None => { self.module_state.insert(name.clone(), v); }
+                }
             }
             OpCode::LoadConst => {
                 // Constants are pre-materialised at exec entry, so this is a single bounds-checked index instead of a Value->Val conversion.
                 let v = *consts.get(op as usize)
-                    .ok_or(cold_runtime("constant index out of bounds"))?;
+                    .ok_or_else(|| cold_runtime("constant index out of bounds"))?;
                 self.push(v);
             }
 
@@ -593,8 +601,8 @@ impl<'a> VM<'a> {
             OpCode::StoreAttr => self.exec_store_attr(op, chunk, slots)?,
 
             OpCode::LoadModule => {
-                let entry = chunk.imports.get(op as usize).ok_or(cold_runtime("LoadModule: import index out of range"))?;
-                let v = *self.module_table.get(&entry.spec).ok_or(cold_runtime("LoadModule: module not initialised"))?;
+                let entry = chunk.imports.get(op as usize).ok_or_else(|| cold_runtime("LoadModule: import index out of range"))?;
+                let v = *self.module_table.get(&entry.spec).ok_or_else(|| cold_runtime("LoadModule: module not initialised"))?;
                 self.push(v);
             }
 
@@ -611,12 +619,12 @@ impl<'a> VM<'a> {
             OpCode::MatMul => self.handle_matmul(operand, chunk, slots)?,
             OpCode::MakeTypeAlias => {
                 let value = self.pop()?;
-                let name = chunk.names.get(operand as usize).ok_or(cold_runtime("MakeTypeAlias: bad name index"))?.clone();
+                let name = chunk.names.get(operand as usize).ok_or_else(|| cold_runtime("MakeTypeAlias: bad name index"))?.clone();
                 let alias = self.heap.alloc(HeapObj::TypeAlias(name, value))?;
                 self.push(alias);
             }
             OpCode::MakeTypeVar => {
-                let name = chunk.names.get(operand as usize).ok_or(cold_runtime("MakeTypeVar: bad name index"))?.clone();
+                let name = chunk.names.get(operand as usize).ok_or_else(|| cold_runtime("MakeTypeVar: bad name index"))?.clone();
                 let v = self.heap.alloc(HeapObj::TypeVar(name))?;
                 self.push(v);
             }
@@ -641,7 +649,7 @@ impl<'a> VM<'a> {
                 self.push(v);
             }
             OpCode::Dup => {
-                let v = *self.stack.last().ok_or(cold_runtime("stack underflow"))?;
+                let v = *self.stack.last().ok_or_else(|| cold_runtime("stack underflow"))?;
                 self.push(v);
             }
             OpCode::MatchSeq => {
@@ -697,7 +705,7 @@ impl<'a> VM<'a> {
             OpCode::BeginFinally => self.unwind_stack.push(Unwind::Normal),
             // Stages `__exit__` for the plain Call behind it, parking-safe.
             OpCode::WithExit => {
-                let cm = self.with_stack.pop().ok_or(cold_runtime("WithExit without matching WithEnter"))?;
+                let cm = self.with_stack.pop().ok_or_else(|| cold_runtime("WithExit without matching WithEnter"))?;
                 let (exit_fn, class) = self.with_dunder(cm, "__exit__")?;
                 // Reraise selects `__exit__(type, exc, None)`, other exits pass three Nones.
                 let (exc_type, exc) = if matches!(self.unwind_stack.last(), Some(Unwind::Reraise(..))) {
@@ -1009,7 +1017,7 @@ impl<'a> VM<'a> {
     fn exec_store_attr(&mut self, op: u16, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         let value = self.pop()?;
         let obj = self.pop()?;
-        let name = chunk.names.get(op as usize).ok_or(cold_runtime("StoreAttr: bad name index"))?;
+        let name = chunk.names.get(op as usize).ok_or_else(|| cold_runtime("StoreAttr: bad name index"))?;
         self.store_attr(obj, name, value, chunk, slots)
     }
 

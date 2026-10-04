@@ -247,12 +247,12 @@ fn format_fields(vm: &mut VM, tmpl: &str, pos: &[Val], chunk: &crate::parser::SS
             let val = if name.is_empty() {
                 if manual == Some(true) { return Err(cold_value("cannot switch from manual field specification to automatic field numbering")); }
                 manual = Some(false);
-                let v = *pos.get(auto).ok_or(cold_index("Replacement index out of range"))?;
+                let v = *pos.get(auto).ok_or_else(|| cold_index("Replacement index out of range"))?;
                 auto += 1; v
             } else if let Ok(idx) = name.parse::<usize>() {
                 if manual == Some(false) { return Err(cold_value("cannot switch from automatic field numbering to manual field specification")); }
                 manual = Some(true);
-                *pos.get(idx).ok_or(cold_index("Replacement index out of range"))?
+                *pos.get(idx).ok_or_else(|| cold_index("Replacement index out of range"))?
             } else {
                 return Err(cold_type("str.format() does not support keyword fields"));
             };

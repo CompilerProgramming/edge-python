@@ -470,7 +470,7 @@ impl<'a> VM<'a> {
     /* Suspend until `s` real seconds elapse. */
     pub fn call_sleep(&mut self) -> Result<(), VmErr> {
         let n = self.pop()?;
-        let secs = num_as_f64(n, &self.heap).ok_or(cold_type("sleep() requires a number"))?.max(0.0);
+        let secs = num_as_f64(n, &self.heap).ok_or_else(|| cold_type("sleep() requires a number"))?.max(0.0);
         let until = self.now_ns().saturating_add((secs * 1_000_000_000.0) as u64);
         self.pending.sleep_until_ns = Some(until);
         // Push None as the yield value, the scheduler ignores it.
@@ -500,7 +500,7 @@ impl<'a> VM<'a> {
         if !matches!(self.heap.try_get(coro), Some(HeapObj::Coroutine(..))) {
             return Err(cold_type("with_timeout() requires a coroutine"));
         }
-        let secs = num_as_f64(secs_v, &self.heap).ok_or(cold_type("with_timeout() seconds must be a number"))?;
+        let secs = num_as_f64(secs_v, &self.heap).ok_or_else(|| cold_type("with_timeout() seconds must be a number"))?;
         let deadline_ns = self.now_ns().saturating_add((secs.max(0.0) * 1_000_000_000.0) as u64);
         self.schedule(&[coro]);
         self.park_on(vec![coro], WaitKind::Timeout { deadline_ns, target: coro });

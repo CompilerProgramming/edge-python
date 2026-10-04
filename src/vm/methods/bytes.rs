@@ -88,7 +88,7 @@ pub fn fromhex(vm: &mut VM, _recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let mut hi: Option<u8> = None;
     for c in s.chars() {
         if c.is_ascii_whitespace() { continue; }
-        let d = c.to_digit(16).ok_or(cold_value("non-hexadecimal number found in fromhex() arg"))? as u8;
+        let d = c.to_digit(16).ok_or_else(|| cold_value("non-hexadecimal number found in fromhex() arg"))? as u8;
         match hi { None => hi = Some(d), Some(h) => { out.push((h << 4) | d); hi = None; } }
     }
     if hi.is_some() { return Err(cold_value("non-hexadecimal number found in fromhex() arg")); }

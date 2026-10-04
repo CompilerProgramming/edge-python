@@ -52,7 +52,7 @@ impl<'a> VM<'a> {
         let heap = &mut self.heap; // split borrow, lets closures take &mut heap while iterating other fields
         for frame in &self.iter_stack { frame.for_each_val(&mut |v| heap.mark(v)); }
         for sf in &self.pending_sync_frames { sf.for_each_val(&mut |v| heap.mark(v)); }
-        for cache in self.opcode_caches.values() {
+        for cache in self.opcode_caches.values().flat_map(|p| p.caches()) {
             if let Some(consts) = cache.const_vals_opt() {
                 for &v in consts { self.heap.mark(v); }
             }

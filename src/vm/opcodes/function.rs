@@ -166,7 +166,7 @@ impl<'a> VM<'a> {
         let global = self.fn_index.iter()
             .find(|(p, _)| *p == chunk_ptr)
             .and_then(|(_, v)| v.get(operand as usize).copied())
-            .ok_or(cold_runtime("MakeFunction: unknown function index"))? as usize;
+            .ok_or_else(|| cold_runtime("MakeFunction: unknown function index"))? as usize;
 
         if opcode == OpCode::MakeCoroutine {
             if self.is_async.len() <= global { self.is_async.resize(global + 1, false); }
@@ -282,14 +282,14 @@ impl<'a> VM<'a> {
 
     /* Calls a rebound builtin with the args a fused site stacked, the callee slotted under them. */
     fn call_rebound(&mut self, callee: Val, pos: usize, kw: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
-        let at = self.stack.len().checked_sub(pos + 2 * kw).ok_or(cold_runtime("stack underflow"))?;
+        let at = self.stack.len().checked_sub(pos + 2 * kw).ok_or_else(|| cold_runtime("stack underflow"))?;
         self.stack.insert(at, callee);
         self.exec_call_n(pos, kw, chunk, slots)
     }
 
     /* A fused builtin given `*` or keywords it cannot count runs as a plain call through its binding. */
     fn call_spread_builtin(&mut self, op: OpCode, pos: usize, kw: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
-        let name = fused_native(op).ok_or(cold_runtime("spread on an unknown fused call"))?.name();
+        let name = fused_native(op).ok_or_else(|| cold_runtime("spread on an unknown fused call"))?.name();
         self.register_builtin(name);
         let callee = self.module_state.get(name).copied().filter(|v| !v.is_undef()).or_else(|| self.global(name)).ok_or_else(|| VmErr::Name(name.into()))?;
         self.call_rebound(callee, pos, kw, chunk, slots)
@@ -463,7 +463,7 @@ impl<'a> VM<'a> {
     pub(crate) fn take_args(&mut self, num_pos: usize, num_kw: usize) -> Result<(Vec<Val>, Vec<Val>), VmErr> {
         let total_items = num_pos + 2 * num_kw;
         // Bulk-copy the stack tail, one memcpy instead of per-item pops plus a reverse.
-        let at = self.stack.len().checked_sub(total_items).ok_or(cold_runtime("stack underflow"))?;
+        let at = self.stack.len().checked_sub(total_items).ok_or_else(|| cold_runtime("stack underflow"))?;
         let kw_flat: Vec<Val> = self.stack[at + num_pos..].to_vec();
         let mut positional = self.stack.split_off(at);
         positional.truncate(num_pos);
@@ -748,13 +748,14 @@ impl<'a> VM<'a> {
         let ptr = chunk as *const SSAChunk;
         let Some(&cfi) = self.body_to_fi.get(&ptr) else { return };
         if self.fn_module[cfi].is_some() { return; }
-        for i in 0..self.body_free_loads[cfi].len() {
-            let (bare, slot, _) = &self.body_free_loads[cfi][i];
+        // Taken out for the loop, so no name is cloned to satisfy the borrow.
+        let loads = core::mem::take(&mut self.body_free_loads[cfi]);
+        for (bare, slot, _) in &loads {
             let Some(&v) = self.module_state.get(bare.as_str()) else { continue };
-            let (bare, slot) = (bare.clone(), *slot);
             // A name an enclosing function binds is its captured local, not the global.
-            if !self.lexical_ancestor_binds(ptr, &bare) && let Some(s) = slots.get_mut(slot) { *s = v; }
+            if !self.lexical_ancestor_binds(ptr, bare) && let Some(s) = slots.get_mut(*slot) { *s = v; }
         }
+        self.body_free_loads[cfi] = loads;
     }
 
     /* Build or fetch the static propagation info for (chunk, fi). Chunks are borrowed for the VM's lifetime, so the pointer key is stable. */
@@ -776,13 +777,15 @@ impl<'a> VM<'a> {
         let lends = |si: u32| same_scope || lent.iter().any(|&(_, s, _)| s == si as usize);
         let body_map = &self.body_maps[fi];
         let param_bm = &self.is_param_slot[fi];
-        let pairs: Vec<(u32, u32)> = chunk.names.iter().enumerate()
-            .filter_map(|(si, name)| {
-                let &bs = body_map.get(name.as_str())?;
+        let mut pairs: Vec<(u32, u32)> = body_map.iter()
+            .filter_map(|(name, &bs)| {
+                let si = chunk.slot_of(name)? as usize;
                 if param_bm.get(bs).copied().unwrap_or(false) || !lends(canon(si)) { return None; }
                 Some((si as u32, bs as u32))
             })
             .collect();
+        // Caller slot order, so a later version still wins a shared body slot.
+        pairs.sort_unstable();
         // Free loads with their caller-chunk (version, slot) candidates resolved once. Candidate slots canonicalise because operand rewriting stores values at the version chain's root.
         let name_index = self.chunk_name_versions.get(&(chunk as *const _));
         let free: Vec<super::super::FreeLoadEntry> = self.body_free_loads[fi].iter()
@@ -907,7 +910,7 @@ impl<'a> VM<'a> {
         let extern_idx = (operand >> 8) as usize;
         // A star spread grows the counts the operand was written with.
         let (pos, kw) = self.close_spread((operand & 0xF) as usize, ((operand >> 4) & 0xF) as usize);
-        let extern_fn = chunk.extern_table.get(extern_idx).ok_or(cold_runtime("CallExtern: extern index out of bounds"))?;
+        let extern_fn = chunk.extern_table.get(extern_idx).ok_or_else(|| cold_runtime("CallExtern: extern index out of bounds"))?;
         let func = extern_fn.func.clone(); // Arc clone, refcount bump only
         let pure = extern_fn.pure;
         let kw_flat = if kw > 0 { self.pop_n(kw * 2)? } else { Vec::new() };

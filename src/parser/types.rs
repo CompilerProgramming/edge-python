@@ -230,6 +230,9 @@ impl SSAChunk {
         i
     }
 
+    /* The slot of `n` in this chunk, None when the chunk never named it. */
+    pub(crate) fn slot_of(&self, n: &str) -> Option<u16> { self.name_index.get(n).copied() }
+
     /* Builds `prev_slots`, coalesces SSA versions to canonical root, rewrites operands, builds `phi_map`. */
     pub fn finalize_prev_slots(&mut self) {
         let n = self.names.len();

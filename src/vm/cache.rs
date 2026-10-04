@@ -40,6 +40,37 @@ struct CacheSlot {
     inst: Option<InstanceCache>,
 }
 
+/* One chunk's caches, each running frame holds one and returns it here. */
+#[derive(Default)]
+pub struct CachePool {
+    active: u32,
+    main: Option<OpcodeCache>,
+    /* Only a recursion fills it, so a plain call never allocates here. */
+    spare: Vec<OpcodeCache>,
+}
+
+impl CachePool {
+    pub fn take(&mut self, chunk: &SSAChunk) -> OpcodeCache {
+        self.active += 1;
+        self.main.take().or_else(|| self.spare.pop()).unwrap_or_else(|| OpcodeCache::new(chunk))
+    }
+
+    /* The outermost frame returning keeps one cache and frees the rest. */
+    pub fn put(&mut self, cache: OpcodeCache) {
+        self.active -= 1;
+        if self.active == 0 {
+            self.spare.clear();
+            self.main = Some(cache);
+        } else if self.main.is_none() {
+            self.main = Some(cache);
+        } else {
+            self.spare.push(cache);
+        }
+    }
+
+    pub fn caches(&self) -> impl Iterator<Item = &OpcodeCache> { self.main.iter().chain(&self.spare) }
+}
+
 pub struct OpcodeCache {
     slots: Vec<CacheSlot>,
     fused: Option<Vec<Instruction>>,

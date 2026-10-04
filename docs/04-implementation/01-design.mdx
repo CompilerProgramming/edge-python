@@ -30,11 +30,11 @@ Each `Instruction` is 4 bytes. That is a 1-byte `OpCode` (`#[repr(u8)]`), a 2-by
 
 ## Dispatch shape
 
-The hot loop reads `cache.fused_ref()[ip]`, a snapshot of the instruction stream with `LoadAttr` + `Call` sites fused into `CallMethod` + `CallMethodArgs`. Fusion happens after first dispatch when every argument is a single-push load, up to 8 arguments, never across a jump target. The arg loads shift down one slot so the pair sits adjacent at the call. Fusion runs once per chunk and is cached.
+The hot loop reads `cache.fused_ref()[ip]`, a snapshot of the instruction stream with `LoadAttr` + `Call` sites fused into `CallMethod` + `CallMethodArgs`. Fusion happens after first dispatch when every argument is a single-push load, up to 8 arguments, never across a jump target. The arg loads shift down one slot so the pair sits adjacent at the call. Fusion runs once per cache, and a recursion holds one cache per depth.
 
 A build with the `coverage` feature marks every instruction the loop dispatches, and `vm.ran(chunk, ip)` says whether `chunk.instructions[ip]` ran, still after a run that raised. Fusion stays off in that build, so each ip is the one the compiler wrote, and a chunk answers under the same pointer the caller built, an imported module under its entry in `chunk.imports`.
 
-For arith and compare opcodes the loop checks `cache.get_fast(ip)`. A present `FastOp` runs inline without a function call.
+For arith and compare opcodes `exec_arith_or_compare` checks `cache.get_fast(ip)` first. A present `FastOp` runs inside that call and skips the generic handler.
 
 `LoadConst` reads a pre-materialised `Vec<Val>` built on first dispatch. Inline-range ints stay inline. Ints from 2⁴⁷ to 2¹²⁷ allocate a `HeapObj::LongInt` slot. Literals beyond ±2¹²⁷ are rejected at parse time.
 

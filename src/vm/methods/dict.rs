@@ -41,7 +41,7 @@ pub fn clear(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
 // `dict.popitem()`, pop the last (k, v), KeyError on empty dict.
 pub fn popitem(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
     let pair = dict_mut(vm, recv, "popitem: receiver is not a dict", |dict, heap| {
-        let (k, v) = dict.last().ok_or(cold_key("popitem(): dictionary is empty"))?;
+        let (k, v) = dict.last().ok_or_else(|| cold_key("popitem(): dictionary is empty"))?;
         dict.remove(&k, heap);
         Ok((k, v))
     })?;

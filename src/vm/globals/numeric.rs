@@ -215,7 +215,7 @@ impl<'a> VM<'a> {
     pub fn call_chr(&mut self) -> Result<(), VmErr> {
         let o = self.pop()?;
         if !o.is_int() { return Err(cold_type("chr() requires an integer")); }
-        let c = char::from_u32(o.as_int() as u32).ok_or(cold_value("chr() arg out of range"))?;
+        let c = char::from_u32(o.as_int() as u32).ok_or_else(|| cold_value("chr() arg out of range"))?;
         let mut s = String::with_capacity(4);
         s.push(c);
         self.alloc_and_push_str(s)
@@ -262,7 +262,7 @@ impl<'a> VM<'a> {
             }
             // Ints/bools round to themselves, negative ndigits round to tens/hundreds.
             (Some(o), n) if o.is_bool() || o.is_int() || (o.is_heap() && matches!(self.heap.get(o), HeapObj::LongInt(_))) => {
-                let i = if o.is_bool() { o.as_bool() as i128 } else { self.as_i128(o).ok_or(cold_type("round() requires a number"))? };
+                let i = if o.is_bool() { o.as_bool() as i128 } else { self.as_i128(o).ok_or_else(|| cold_type("round() requires a number"))? };
                 let nd = match n { Some(n) if n.is_int() => n.as_int(), _ => 0 };
                 let r = if nd < 0 { round_int_banker(i, (-nd) as u32) } else { i };
                 self.int_to_val(Some(r))?
@@ -396,7 +396,7 @@ impl<'a> VM<'a> {
                 // Modular exponentiation (a ** b) % c on i128.
                 let (Some(base), Some(modulus)) = (self.as_i128(args[0]), self.as_i128(args[2]))
                 else { return Err(cold_type("pow() with 3 args requires integers")); };
-                let exp = self.as_i128(args[1]).ok_or(cold_type("pow() with 3 args requires integer exponent"))?;
+                let exp = self.as_i128(args[1]).ok_or_else(|| cold_type("pow() with 3 args requires integer exponent"))?;
                 if exp < 0 { return Err(cold_value("pow() exponent must be non-negative")); }
                 if modulus == 0 { return Err(VmErr::ZeroDiv); }
 
@@ -438,11 +438,11 @@ impl<'a> VM<'a> {
                 let mut e = exp;
                 while e > 0 {
                     if e & 1 == 1 {
-                        result = result.checked_mul(base).ok_or(cold_overflow())?;
+                        result = result.checked_mul(base).ok_or_else(cold_overflow)?;
                     }
                     e >>= 1;
                     if e > 0 {
-                        base = base.checked_mul(base).ok_or(cold_overflow())?;
+                        base = base.checked_mul(base).ok_or_else(cold_overflow)?;
                     }
                 }
                 return self.int_to_val(Some(result));

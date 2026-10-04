@@ -32,6 +32,17 @@ pub(crate) fn slice_bounds(start: Val, stop: Val, step: Val, len: i64) -> Result
 impl<'a> VM<'a> {
 
     pub fn get_item(&mut self, ip: usize, chunk: &crate::parser::SSAChunk, slots: &mut [Val], cache: &mut crate::vm::cache::OpcodeCache) -> Result<(), VmErr> {
+        // An in-range int index on a list or tuple needs no dunder or coercion.
+        let n = self.stack.len();
+        if n >= 2 && self.stack[n - 1].is_int() && self.stack[n - 2].is_heap() {
+            let i = self.stack[n - 1].as_int();
+            let hit = match self.heap.get(self.stack[n - 2]) {
+                HeapObj::List(v) => { let b = v.borrow(); b.get(normalize_index(i, b.len())).copied() }
+                HeapObj::Tuple(v) => v.get(normalize_index(i, v.len())).copied(),
+                _ => None,
+            };
+            if let Some(v) = hit { self.stack.truncate(n - 2); self.push(v); return Ok(()); }
+        }
         let idx = self.pop()?;
         let obj = self.pop()?;
 
@@ -126,11 +137,11 @@ impl<'a> VM<'a> {
                 let i = idx.as_int();
                 let one: String = if ascii {
                     let b = s.as_bytes();
-                    let c = *b.get(normalize_index(i, b.len())).ok_or(cold_index("string index out of range"))?;
+                    let c = *b.get(normalize_index(i, b.len())).ok_or_else(|| cold_index("string index out of range"))?;
                     (c as char).to_string()
                 } else {
                     let ui = normalize_index(i, s.chars().count());
-                    s.chars().nth(ui).ok_or(cold_index("string index out of range"))?.to_string()
+                    s.chars().nth(ui).ok_or_else(|| cold_index("string index out of range"))?.to_string()
                 };
                 let val = self.heap.alloc(HeapObj::Str(one))?;
                 self.push(val);
@@ -142,7 +153,7 @@ impl<'a> VM<'a> {
             && let HeapObj::Bytes(b) = self.heap.get(obj) {
                 let i = idx.as_int();
                 let ui = normalize_index(i, b.len());
-                let byte = *b.get(ui).ok_or(cold_index("bytes index out of range"))?;
+                let byte = *b.get(ui).ok_or_else(|| cold_index("bytes index out of range"))?;
                 self.push(Val::int(byte as i64));
                 return Ok(());
         }
@@ -166,7 +177,7 @@ impl<'a> VM<'a> {
             &HeapObj::Range(rs, re, rst) => {
                 let (a, b, c) = slice_bounds(start, stop, step, range_len(rs, re, rst) as i64)?;
                 let at = |k: i64| i64::try_from(rs as i128 + k as i128 * rst as i128).map_err(|_| cold_overflow());
-                let r = HeapObj::Range(at(a)?, at(b)?, rst.checked_mul(c).ok_or(cold_overflow())?);
+                let r = HeapObj::Range(at(a)?, at(b)?, rst.checked_mul(c).ok_or_else(cold_overflow)?);
                 return self.heap.alloc(r);
             }
             _ => return Err(cold_type("object is not sliceable")),
@@ -221,13 +232,13 @@ impl<'a> VM<'a> {
                 if !idx.is_int() { return Err(bad(self, "list")); }
                 let b = v.borrow(); let i = idx.as_int();
                 let ui = normalize_index(i, b.len());
-                b.get(ui).copied().ok_or(cold_index("list index out of range"))
+                b.get(ui).copied().ok_or_else(|| cold_index("list index out of range"))
             }
             HeapObj::Tuple(v) => {
                 if !idx.is_int() { return Err(bad(self, "tuple")); }
                 let i = idx.as_int();
                 let ui = normalize_index(i, v.len());
-                v.get(ui).copied().ok_or(cold_index("tuple index out of range"))
+                v.get(ui).copied().ok_or_else(|| cold_index("tuple index out of range"))
             }
             HeapObj::Dict(p) => {
                 let hit = p.borrow().get(&idx, &self.heap).copied();
@@ -290,6 +301,18 @@ impl<'a> VM<'a> {
     }
 
     pub fn store_item(&mut self, chunk: &crate::parser::SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
+        let n = self.stack.len();
+        if n >= 3 && self.stack[n - 2].is_int() && self.stack[n - 3].is_heap()
+            && let HeapObj::List(v) = self.heap.get(self.stack[n - 3]) {
+            let mut b = v.borrow_mut();
+            let ui = normalize_index(self.stack[n - 2].as_int(), b.len());
+            if ui < b.len() {
+                b[ui] = self.stack[n - 1];
+                drop(b);
+                self.stack.truncate(n - 3);
+                return Ok(());
+            }
+        }
         let value = self.pop()?;
         let idx_val = self.pop()?;
         let cont = self.pop()?;

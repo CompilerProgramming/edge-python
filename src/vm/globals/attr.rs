@@ -56,7 +56,7 @@ impl<'a> VM<'a> {
     /* `del obj.attr` opcode, pop the object, remove the named attribute in place. */
     pub fn exec_del_attr(&mut self, op: u16, chunk: &crate::parser::SSAChunk) -> Result<(), VmErr> {
         let obj = self.pop()?;
-        let name = chunk.names.get(op as usize).ok_or(cold_runtime("DelAttr: bad name index"))?.clone();
+        let name = chunk.names.get(op as usize).ok_or_else(|| cold_runtime("DelAttr: bad name index"))?.clone();
         self.delete_attr_named(obj, &name)
     }
 

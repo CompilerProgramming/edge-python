@@ -111,8 +111,8 @@ impl<'a> VM<'a> {
     }
 
     pub fn bitwise_op(&mut self, a: Val, b: Val, op: impl Fn(i128, i128) -> i128) -> Result<Val, VmErr> {
-        let ai = as_i128(a, &self.heap).ok_or(cold_type("bitwise op requires integer operands"))?;
-        let bi = as_i128(b, &self.heap).ok_or(cold_type("bitwise op requires integer operands"))?;
+        let ai = as_i128(a, &self.heap).ok_or_else(|| cold_type("bitwise op requires integer operands"))?;
+        let bi = as_i128(b, &self.heap).ok_or_else(|| cold_type("bitwise op requires integer operands"))?;
         let r = op(ai, bi);
         self.int_to_val(Some(r))
     }
@@ -604,7 +604,7 @@ impl<'a> VM<'a> {
         if let Some(c) = fill_cost && c.saturating_mul(VAL_BYTES) <= self.heap.room() { self.charge_steps(c)?; }
         match self.heap.get(seq_val) {
             HeapObj::Str(s) => {
-                let bytes = s.len().checked_mul(n).ok_or(cold_overflow())?;
+                let bytes = s.len().checked_mul(n).ok_or_else(cold_overflow)?;
                 self.heap.reserve(bytes)?;
                 let r = s.repeat(n);
                 return self.heap.alloc(HeapObj::Str(r));
@@ -620,7 +620,7 @@ impl<'a> VM<'a> {
                 return self.heap.alloc(HeapObj::Tuple(out));
             }
             HeapObj::Bytes(b) => {
-                let bytes = b.len().checked_mul(n).ok_or(cold_overflow())?;
+                let bytes = b.len().checked_mul(n).ok_or_else(cold_overflow)?;
                 self.heap.reserve(bytes)?;
                 let r = b.repeat(n);
                 return self.heap.alloc(HeapObj::Bytes(r));
@@ -634,7 +634,7 @@ impl<'a> VM<'a> {
     fn repeat_seq(&self, src: &[Val], n: usize) -> Result<Vec<Val>, VmErr> {
         // Empty source means result is empty for any n, so skip the n-iteration loop.
         if src.is_empty() { return Ok(Vec::new()); }
-        let cap = src.len().checked_mul(n).ok_or(cold_overflow())?;
+        let cap = src.len().checked_mul(n).ok_or_else(cold_overflow)?;
         self.heap.reserve(cap.saturating_mul(VAL_BYTES))?;
         let mut out = Vec::with_capacity(cap);
         for _ in 0..n { out.extend_from_slice(src); }
@@ -655,13 +655,13 @@ impl<'a> VM<'a> {
     }
 
     pub(crate) fn to_f64_coerce(&self, v: Val) -> Result<f64, VmErr> {
-        num_as_f64(v, &self.heap).ok_or(cold_type("numeric operand required"))
+        num_as_f64(v, &self.heap).ok_or_else(|| cold_type("numeric operand required"))
     }
 
     /* Wrap an i128 into the narrowest Val, None->Overflow, 48-bit->inline, else LongInt. */
     #[inline]
     pub(crate) fn int_to_val(&mut self, r: Option<i128>) -> Result<Val, VmErr> {
-        self.heap.int(r.ok_or(cold_overflow())?)
+        self.heap.int(r.ok_or_else(cold_overflow)?)
     }
 }
 

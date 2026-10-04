@@ -532,7 +532,7 @@ impl<'a> VM<'a> {
             }
             "popitem" => {
                 let Some(rc) = self.dict_rc(recv) else { return Ok(false) };
-                let i = rc.borrow().last_index().ok_or(cold_key("popitem(): dictionary is empty"))?;
+                let i = rc.borrow().last_index().ok_or_else(|| cold_key("popitem(): dictionary is empty"))?;
                 let k = rc.borrow().key_at(i);
                 let v = rc.borrow_mut().remove_at(i);
                 return self.alloc_and_push_tuple(alloc::vec![k, v]).map(|_| true);
@@ -559,7 +559,7 @@ impl<'a> VM<'a> {
                 None
             }
             "pop" => {
-                let &(h, v) = mine.first().ok_or(cold_key("pop from an empty set"))?;
+                let &(h, v) = mine.first().ok_or_else(|| cold_key("pop from an empty set"))?;
                 rc.borrow_mut().remove_exact(v, h);
                 self.push(v);
                 return Ok(true);

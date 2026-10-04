@@ -122,7 +122,7 @@ impl<'a> VM<'a> {
         }
         let (Some(ai), Some(bi)) = (self.as_i128(a), self.as_i128(b)) else { return Err(cold_type(err)); };
         if bi == 0 { return Err(VmErr::ZeroDiv); }
-        let (q, r) = crate::vm::int_divmod(ai, bi).ok_or(cold_overflow())?;
+        let (q, r) = crate::vm::int_divmod(ai, bi).ok_or_else(cold_overflow)?;
         Ok((self.int_to_val(Some(q))?, self.int_to_val(Some(r))?))
     }
 
@@ -177,7 +177,7 @@ impl<'a> VM<'a> {
             }
             if i >= chars.len() { return Err(cold_value("incomplete format")); }
             let conv = chars[i]; i += 1;
-            let val = *args.get(ai).ok_or(cold_type("not enough arguments for format string"))?;
+            let val = *args.get(ai).ok_or_else(|| cold_type("not enough arguments for format string"))?;
             ai += 1;
             // Map printf conversion -> (format value, spec type char, is-numeric).
             let (fval, ty, numeric): (Val, Option<char>, bool) = match conv {
@@ -218,7 +218,7 @@ impl<'a> VM<'a> {
 
     /* Reads a `*` width/precision argument as an i64, non-integers raise TypeError like Python. */
     fn star_arg_int(args: &[Val], ai: &mut usize) -> Result<i64, VmErr> {
-        let v = *args.get(*ai).ok_or(cold_type("not enough arguments for format string"))?;
+        let v = *args.get(*ai).ok_or_else(|| cold_type("not enough arguments for format string"))?;
         *ai += 1;
         if v.is_bool() { return Ok(v.as_bool() as i64); }
         if v.is_int() { return Ok(v.as_int()); }
@@ -259,7 +259,7 @@ impl<'a> VM<'a> {
                 self.push(r);
                 return Ok(());
             }
-            let i = self.as_i128(v).ok_or(cold_type("~ requires an integer"))?;
+            let i = self.as_i128(v).ok_or_else(|| cold_type("~ requires an integer"))?;
             let out = self.int_to_val(Some(!i))?;
             self.push(out);
             return Ok(());
@@ -311,7 +311,7 @@ impl<'a> VM<'a> {
         for v in [a, b] {
             if v.is_none() {
                 self.register_builtin("NoneType");
-                members.push(self.global("NoneType").ok_or(cold_runtime("NoneType is not registered"))?);
+                members.push(self.global("NoneType").ok_or_else(|| cold_runtime("NoneType is not registered"))?);
                 continue;
             }
             if !v.is_heap() { return Ok(None); }
@@ -344,7 +344,7 @@ impl<'a> VM<'a> {
         let shift = b.as_int();
         if shift < 0 { return Err(cold_value("negative shift count")); }
         if shift >= 128 { return Err(cold_overflow()); }
-        let ai = self.as_i128(a).ok_or(cold_type("<< requires an integer"))?;
+        let ai = self.as_i128(a).ok_or_else(|| cold_type("<< requires an integer"))?;
         self.int_to_val(ai.checked_shl(shift as u32))
     }
 
@@ -352,7 +352,7 @@ impl<'a> VM<'a> {
         if !b.is_int() { return Err(cold_type("shift count must be an integer")); }
         let shift = b.as_int();
         if shift < 0 { return Err(cold_value("negative shift count")); }
-        let ai = self.as_i128(a).ok_or(cold_type(">> requires an integer"))?;
+        let ai = self.as_i128(a).ok_or_else(|| cold_type(">> requires an integer"))?;
         // i128 >> is arithmetic (floor on negatives), and `.min(127)` dodges shift-count UB.
         self.int_to_val(Some(ai >> shift.min(127)))
     }

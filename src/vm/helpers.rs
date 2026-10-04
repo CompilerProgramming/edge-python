@@ -80,13 +80,13 @@ impl<'a> VM<'a> {
     #[inline] pub(crate) fn push(&mut self, v: Val) { self.stack.push(v); }
 
     #[inline] pub(crate) fn pop(&mut self) -> Result<Val, VmErr> {
-        self.stack.pop().ok_or(cold_runtime("stack underflow"))
+        self.stack.pop().ok_or_else(|| cold_runtime("stack underflow"))
     }
     #[inline] pub(crate) fn pop2(&mut self) -> Result<(Val, Val), VmErr> {
         let b = self.pop()?; let a = self.pop()?; Ok((a, b))
     }
     #[inline] pub(crate) fn pop_n(&mut self, n: usize) -> Result<Vec<Val>, VmErr> {
-        let at = self.stack.len().checked_sub(n).ok_or(cold_runtime("stack underflow"))?;
+        let at = self.stack.len().checked_sub(n).ok_or_else(|| cold_runtime("stack underflow"))?;
         Ok(self.stack.split_off(at))
     }
 

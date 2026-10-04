@@ -37,7 +37,7 @@ pub fn discard(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
 pub fn pop(vm: &mut VM, recv: Val, _pos: &[Val]) -> Result<(), VmErr> {
     let popped = set_mut(vm, recv, "pop: receiver is not a set", |set, heap| {
         // No `pop()`, grab the first element via `iter()` and remove. Empty set raises.
-        let pick = set.iter().next().copied().ok_or(cold_key("pop from an empty set"))?;
+        let pick = set.iter().next().copied().ok_or_else(|| cold_key("pop from an empty set"))?;
         set.remove(pick, heap);
         Ok(pick)
     })?;
