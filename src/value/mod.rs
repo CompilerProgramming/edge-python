@@ -1,5 +1,5 @@
 use alloc::{rc::Rc, string::String, vec::Vec};
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use crate::util::hash::FxHashMap as HashMap;
 
 pub mod frames;
@@ -14,12 +14,73 @@ pub use err::*;
 pub use math::*;
 pub use scheduler::*;
 
-/* Per-execution caps for recursion depth, op budget, heap quota. Every execution is metered, tighter values are allowed, none is not. */
+/* Per-execution caps for the op budget and the bytes a program holds, every execution is metered. */
 #[derive(Clone, Copy)]
-pub struct Limits { pub calls: usize, pub ops: usize, pub heap: usize }
+pub struct Limits { pub ops: usize, pub memory: usize }
 
 impl Limits {
-    pub fn sandbox() -> Self { Self { calls: 256, ops: 100_000_000, heap: 100_000 } }
+    pub fn sandbox() -> Self { Self { ops: 100_000_000, memory: 256 << 20 } }
+}
+
+// The call depth every execution runs under, below where either host runs out of wasm stack.
+pub const MAX_CALLS: usize = 256;
+
+// The memory model the limit counts, 8 bytes per value by NaN-boxing on every architecture.
+pub const OBJ_BYTES: usize = 224;
+pub const VAL_BYTES: usize = 8;
+// The shared box a mutable container lives in, and the copy an interned short string keeps.
+const BOX_BYTES: usize = 64;
+const INTERN_BYTES: usize = 96;
+const DICT_ENTRY_BYTES: usize = 56;
+const SET_ENTRY_BYTES: usize = 24;
+const NAMED_BYTES: usize = 32;
+const COROUTINE_BYTES: usize = 256;
+
+/* What a mutable container holds by the memory model, read before and after it changes. */
+pub trait Footprint {
+    fn bytes(&self) -> usize;
+}
+
+impl Footprint for Vec<Val> {
+    fn bytes(&self) -> usize { self.capacity() * VAL_BYTES }
+}
+
+impl Footprint for DictMap {
+    fn bytes(&self) -> usize { self.entries.capacity() * DICT_ENTRY_BYTES }
+}
+
+impl Footprint for ValSet {
+    fn bytes(&self) -> usize { self.t.capacity() * SET_ENTRY_BYTES }
+}
+
+impl Footprint for Vec<(usize, Val)> {
+    fn bytes(&self) -> usize { self.capacity() * 2 * VAL_BYTES }
+}
+
+impl Footprint for Vec<(String, Val)> {
+    fn bytes(&self) -> usize { self.capacity() * NAMED_BYTES + self.iter().map(|(name, _)| name.capacity()).sum::<usize>() }
+}
+
+/* What one heap object holds by the memory model, its slot and what it carries. */
+#[inline]
+pub fn footprint(obj: &HeapObj) -> usize {
+    let interned = |len: usize| if len <= 128 { INTERN_BYTES + len } else { 0 };
+    OBJ_BYTES + match obj {
+        HeapObj::Str(s) => s.capacity() + interned(s.len()),
+        HeapObj::Type(s) => s.capacity(),
+        HeapObj::Bytes(b) => b.capacity() + interned(b.len()),
+        HeapObj::List(rc) => BOX_BYTES + rc.borrow().bytes(),
+        HeapObj::Tuple(v) => v.bytes(),
+        HeapObj::Dict(rc) | HeapObj::Instance(_, rc) => BOX_BYTES + rc.borrow().bytes(),
+        HeapObj::Set(rc) => BOX_BYTES + rc.borrow().bytes(),
+        HeapObj::FrozenSet(s) => BOX_BYTES + s.bytes(),
+        HeapObj::ExcInstance(name, args) => name.capacity() + args.bytes(),
+        HeapObj::Func(_, defaults, cells, attrs) => defaults.bytes() + cells.bytes() + attrs.borrow().bytes(),
+        HeapObj::Class(name, bases, members) => name.capacity() + bases.bytes() + members.borrow().bytes(),
+        HeapObj::Module(name, entries) => name.capacity() + entries.bytes(),
+        HeapObj::Coroutine(..) => COROUTINE_BYTES,
+        _ => 0,
+    }
 }
 
 /* Host-provided callable, resolved at compile time and dispatched by `CallExtern`. `Arc<dyn Fn>` lets loaders capture stateful handles, `pure` enables memoization. Third arg is the kwargs slot, `None` for plain positional calls, `Some(dict_val)` when the caller used `name=value` syntax. */
@@ -480,13 +541,12 @@ impl Default for DictMap {
     fn default() -> Self { Self::new() }
 }
 
-/* Insert-or-replace in a named-member list, shared by Class members and Func attrs. */
-pub(crate) fn set_member(members: &Rc<RefCell<Vec<(String, Val)>>>, name: &str, value: Val) {
-    let mut m = members.borrow_mut();
-    match m.iter_mut().find(|(n, _)| n == name) {
+/* Insert-or-replace in a named-member list, shared by Class members and Func attrs, charging what it grew. */
+pub(crate) fn set_member(members: &Rc<RefCell<Vec<(String, Val)>>>, name: &str, value: Val, heap: &HeapPool) {
+    heap.growing(&mut *members.borrow_mut(), |m| match m.iter_mut().find(|(n, _)| n == name) {
         Some(slot) => slot.1 = value,
         None => m.push((String::from(name), value)),
-    }
+    });
 }
 
 /* Visits every reachable `Val` once, single source of truth for GC traversal. */
@@ -559,8 +619,14 @@ pub struct HeapPool {
     free_list: Vec<u32>,
     live: usize,
     pub gc_threshold: usize,
-    alloc_count: usize,
+    // Saturated once memory passes the limit, so the check a loop already makes asks for a collection.
+    alloc_count: Cell<usize>,
+    // What the slots hold by the memory model, garbage since the last sweep included.
+    bytes: Cell<usize>,
     limit: usize,
+    // The first collection whose running count missed the recount, as the two totals.
+    #[cfg(feature = "memcheck")]
+    drift: Option<(usize, usize)>,
     strings: HashMap<String, u32>,
     /* Interns short bytes literals so equal `b"..."` share a Val (Hash uses raw bits). */
     bytes_intern: HashMap<Vec<u8>, u32>,
@@ -598,8 +664,11 @@ impl HeapPool {
             free_list: Vec::new(),
             live: 0,
             gc_threshold: 512,
-            alloc_count: 0,
+            alloc_count: Cell::new(0),
+            bytes: Cell::new(0),
             limit,
+            #[cfg(feature = "memcheck")]
+            drift: None,
             strings: HashMap::default(),
             bytes_intern: HashMap::default(),
             longints: HashMap::default(),
@@ -677,17 +746,73 @@ impl HeapPool {
     /* Reserved for constructing the exception that reports the limit itself, skips the soft limit but not the hard slot cap. */
     pub fn alloc_emergency(&mut self, obj: HeapObj) -> Result<Val, VmErr> { self.admit(obj, false) }
 
-    /* An interned twin, or a fresh slot within the hard cap and, when `soft`, the object limit. */
+    /* An interned twin, or a fresh slot within the hard cap and, when `soft`, twice the memory limit. */
     #[inline(always)]
     fn admit(&mut self, obj: HeapObj, soft: bool) -> Result<Val, VmErr> {
         if let Some(idx) = self.intern_lookup(&obj) { return Ok(Val::heap(idx)); }
-        if soft && self.live >= self.limit { return Err(cold_heap()); }
+        if soft && self.bytes.get() > self.limit.saturating_mul(2) { return Err(cold_heap()); }
         if self.slots.len() >= (1 << 28) { return Err(VmErr::Heap); }
+        self.charge(footprint(&obj));
         let idx = self.place(obj);
         self.intern_insert(idx);
         self.live += 1;
-        self.alloc_count += 1;
+        self.alloc_count.set(self.alloc_count.get().saturating_add(1));
         Ok(Val::heap(idx))
+    }
+
+    /* What a result may still take, the limit or what twice the limit leaves, garbage included. */
+    pub fn room(&self) -> usize {
+        self.limit.min(self.limit.saturating_mul(2).saturating_sub(self.bytes.get()))
+    }
+
+    /* Refuses a result of `extra` bytes before it is built, so it never reaches the allocator. */
+    #[inline]
+    pub fn reserve(&self, extra: usize) -> Result<(), VmErr> {
+        if extra > self.room() { Err(cold_heap()) } else { Ok(()) }
+    }
+
+    /* Charges what a heap container grew by in `f`, or credits what it gave back. */
+    #[inline]
+    pub fn growing<C: Footprint + ?Sized, R>(&self, c: &mut C, f: impl FnOnce(&mut C) -> R) -> R {
+        let before = c.bytes();
+        let out = f(c);
+        let after = c.bytes();
+        if after != before {
+            self.bytes.set(self.bytes.get().saturating_sub(before));
+            self.charge(after);
+        }
+        out
+    }
+
+    /* Charges what an object took, past the limit the next safe point collects. */
+    #[inline]
+    pub fn charge(&self, bytes: usize) {
+        self.bytes.set(self.bytes.get() + bytes);
+        if self.bytes.get() > self.limit { self.alloc_count.set(usize::MAX); }
+    }
+
+    /* Whether the program holds more than its limit, which only a collection can tell from garbage. */
+    pub fn over(&self) -> bool { self.bytes.get() > self.limit }
+
+    /* What the slots hold by the memory model, garbage since the last sweep included. */
+    pub fn bytes(&self) -> usize { self.bytes.get() }
+
+    /* The same total counted again from every occupied slot, which the running count must always equal. */
+    fn recount(&self) -> usize {
+        self.slots.iter().filter_map(|s| s.obj.as_ref()).map(footprint).sum()
+    }
+
+    /* Keeps the first time the running count and a recount disagree, before a sweep hides it. */
+    #[cfg(feature = "memcheck")]
+    pub fn check_count(&mut self) {
+        let (counted, recounted) = (self.bytes.get(), self.recount());
+        if counted != recounted && self.drift.is_none() { self.drift = Some((counted, recounted)); }
+    }
+
+    /* The first disagreement a collection kept, else the running count and a recount right now. */
+    #[cfg(feature = "memcheck")]
+    pub fn drift(&self) -> Option<(usize, usize)> {
+        self.drift.or_else(|| Some((self.bytes.get(), self.recount())).filter(|(a, b)| a != b))
     }
 
     pub fn mark(&mut self, v: Val) {
@@ -707,21 +832,24 @@ impl HeapPool {
     }
 
     pub fn sweep(&mut self) {
+        // The survivors are counted again, so a sweep leaves the running count exact.
+        let mut kept = 0;
         for idx in 0..self.slots.len() {
             let slot = &mut self.slots[idx];
-            if slot.obj.is_none() { continue; }
-            if slot.marked { slot.marked = false; continue; }
+            let Some(obj) = slot.obj.as_ref() else { continue };
+            if slot.marked { slot.marked = false; kept += footprint(obj); continue; }
             self.intern_remove(idx as u32);
             self.slots[idx].obj = None;
             self.free_list.push(idx as u32);
             self.live -= 1;
         }
+        self.bytes.set(kept);
 
         // Both triggers scale with the volume the last mark walked.
         self.gc_threshold = (self.live * 2).max(512).max(self.marked_vals / 4);
         self.alloc_limit = (self.marked_vals / 4).max(4096);
         self.marked_vals = 0;
-        self.alloc_count = 0;
+        self.alloc_count.set(0);
 
         // Cap free list at 512K slots, sort to prefer low indices and reduce fragmentation.
         if self.free_list.len() > 524_288 {
@@ -753,20 +881,23 @@ impl HeapPool {
             self.live += 1;
             self.intern_insert(idx as u32);
         }
+        self.bytes.set(self.recount());
         self.gc_threshold = (self.live * 2).max(512);
         self.alloc_limit = 4096;
         self.marked_vals = 0;
-        self.alloc_count = 0;
+        self.alloc_count.set(0);
     }
 
     /* Swap a live slot's object during restore. */
     pub(crate) fn replace_obj(&mut self, idx: u32, obj: HeapObj) {
+        let before = self.slots[idx as usize].obj.as_ref().map_or(0, footprint);
+        self.bytes.set((self.bytes.get() + footprint(&obj)).saturating_sub(before));
         self.slots[idx as usize] = HeapSlot::new(Some(obj));
     }
 
     pub fn needs_gc(&self) -> bool {
         let alloc_limit = (self.live / 4).max(self.alloc_limit);
-        self.live >= self.gc_threshold || self.alloc_count >= alloc_limit
+        self.live >= self.gc_threshold || self.alloc_count.get() >= alloc_limit
     }
 
     /* ASCII-only Str, scanned once per slot. */

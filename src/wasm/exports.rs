@@ -259,12 +259,13 @@ pub unsafe extern "C" fn set_entry(ptr: *const u8, len: u32) {
     });
 }
 
-/* Caps for the next `run_start` or `repl_eval`, a zero field keeps the sandbox value. */
+/* Caps for the next `run_start` or `repl_eval`, memory in bytes, zero keeps the sandbox value. */
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn set_limits(heap: u64, ops: u64, calls: u64) {
+pub unsafe extern "C" fn set_limits(memory: u64, ops: u64) {
     let sandbox = Limits::sandbox();
     let pick = |v: u64, fallback: usize| if v == 0 { fallback } else { usize::try_from(v).unwrap_or(usize::MAX) };
-    let limits = Limits { heap: pick(heap, sandbox.heap), ops: pick(ops, sandbox.ops), calls: pick(calls, sandbox.calls) };
+    // Half the address space at most, since garbage may take as much again before a collection.
+    let limits = Limits { memory: pick(memory, sandbox.memory).min(usize::MAX / 2), ops: pick(ops, sandbox.ops) };
     with_slot(|s| s.limits = Some(limits));
 }
 

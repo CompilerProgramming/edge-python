@@ -25,7 +25,7 @@ export interface CompilerExports {
     last_yield_deadline_ns(): bigint
     set_preempt_interval?(n: number): void
     set_wall_clock?(on: number): void
-    set_limits?(heap: bigint, ops: bigint, calls: bigint): void
+    set_limits?(memory: bigint, ops: bigint): void
     save_state(): bigint
     restore_state(ptr: number, len: number): number
     state_globals(): number

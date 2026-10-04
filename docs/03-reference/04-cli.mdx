@@ -56,9 +56,9 @@ error: ZeroDivisionError: division by zero
 
 With no path, `edge run` reads the script from piped stdin (`cat app.py | edge run`) and errors when stdin is a terminal. `-c <code>` runs inline code instead (`edge run -c 'print(1)'`). With a path or `-c`, piped stdin instead feeds [`input()`](/docs/reference/builtins) one line per call. A packed `.edge` or an app binary also runs here, `edge run app.edge` unpacks and runs it exactly as `./app` would.
 
-Flags: `--events`, `--save-state`, `--restore-state`, and `--preempt`, see [run flags](/docs/reference/modules#run-flags).
+Flags: `--events`, `--save-state`, `--restore-state`, `--preempt`, `--memory` and `--ops`, see [run flags](/docs/reference/modules#run-flags).
 
-`--web` runs the script on the browser host instead of the native engine, in headless Chrome. The JS host and the engine come out of the binary and are served on a loopback port, so only the modules the manifest declares by URL leave the machine. It drives a Chrome the system already has, or offers to download one the first time into `~/.local/share/edge/chromium`, which `edge uninstall` offers to remove. `EDGE_CHROME_PATH` names a browser directly. The four flags above belong to the native engine and are refused alongside it rather than ignored.
+`--web` runs the script on the browser host instead of the native engine, in headless Chrome. The JS host and the engine come out of the binary and are served on a loopback port, so only the modules the manifest declares by URL leave the machine. It drives a Chrome the system already has, or offers to download one the first time into `~/.local/share/edge/chromium`, which `edge uninstall` offers to remove. `EDGE_CHROME_PATH` names a browser directly. `--events`, `--save-state`, `--restore-state` and `--preempt` belong to the native engine and are refused alongside it rather than ignored, while `--memory` and `--ops` apply to both.
 
 ## `edge serve`: local dev server
 

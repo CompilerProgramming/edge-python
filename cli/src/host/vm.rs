@@ -73,7 +73,12 @@ impl Host {
 
     /* One interpreter on an instance of its own, the shape of every one-shot run. */
     pub fn vm(self: &Rc<Self>, sink: Sink, project: Project, deadline: Option<u64>, memory: Option<usize>) -> Result<Vm> {
-        Ok(Vm::on(self.instance(sink, project, deadline, memory)?, 0))
+        let mut vm = Vm::on(self.instance(sink, project, deadline, memory)?, 0);
+        // What the command line asked for, before a group sets its own.
+        if let Some(limits) = super::RunLimits::get().engine() {
+            vm.set_limits(&limits)?;
+        }
+        Ok(vm)
     }
 }
 
@@ -453,7 +458,7 @@ impl Vm {
         let mut inst = self.enter()?;
         let raw = {
             let Instance { store, ex, .. } = &mut *inst;
-            ex.set_limits.call(&mut *store, (limits.heap as i64, limits.ops as i64, limits.calls as i64))
+            ex.set_limits.call(&mut *store, (limits.memory as i64, limits.ops as i64))
         };
         inst.checked(raw)
     }

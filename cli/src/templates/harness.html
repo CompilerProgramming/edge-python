@@ -11,9 +11,9 @@
     window.__edge = st;
     try {
       // The program, the script it came from and the secrets its grants name, read once for this run.
-      const { src, entry, secrets } = __EDGE_RUN__;
+      const { src, entry, secrets, limits } = __EDGE_RUN__;
       // The page reads the project's edge.json from this server for the worker, its imports already locked.
-      const worker = await createWorker({ baseUrl: `${location.origin}/`, secrets });
+      const worker = await createWorker({ baseUrl: `${location.origin}/`, secrets, limits });
       worker.onOutput((text) => { st.out += text });
       const res = await worker.run(src, { entry });
       st.code = res && res.exitCode ? res.exitCode : 0;

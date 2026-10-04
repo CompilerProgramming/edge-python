@@ -430,8 +430,7 @@ impl<'a> VM<'a> {
                         && let HeapObj::List(rc) = self.heap.get(cell)
                     {
                         let v = slots[op as usize];
-                        let mut b = rc.borrow_mut();
-                        if b.is_empty() { b.push(v); } else { b[0] = v; }
+                        self.heap.growing(&mut *rc.borrow_mut(), |b| if b.is_empty() { b.push(v); } else { b[0] = v; });
                     }
                 }
                 // Mirror entry-chunk stores into `module_state` so functions with `global X` see updates, and mirror Module values into `globals` so `import_module()` finds module aliases.
@@ -485,7 +484,7 @@ impl<'a> VM<'a> {
                 // Backward jumps are loop back-edges, charge them so `while` is bounded like `for`.
                 if target <= rip {
                     self.charge_step()?;
-                    if self.heap.needs_gc() { self.collect(slots); }
+                    if self.heap.needs_gc() { self.collect_point(slots)?; }
                     // Back-edges are the only preempt sampling point.
                     if self.preempt_left != 0 {
                         self.preempt_left -= 1;
@@ -884,7 +883,7 @@ impl<'a> VM<'a> {
     #[inline(never)]
     fn exec_for_iter(&mut self, op: u16, ip: &mut usize, n: usize, chunk: &SSAChunk, slots: &mut [Val]) -> Result<(), VmErr> {
         self.charge_step()?;
-        if self.heap.needs_gc() { self.collect(slots); }
+        if self.heap.needs_gc() { self.collect_point(slots)?; }
         // The next item, or the value a `yield from` over this frame evaluates to once it ends.
         let step = match self.iter_stack.last() {
             // Resume directly so `yielded` distinguishes a yielded value (even None) from exhaustion.
@@ -1037,11 +1036,11 @@ impl<'a> VM<'a> {
         }
         // Class attribute, insert or replace in the mutable members store.
         if let HeapObj::Class(_, _, members) = self.heap.get(obj) {
-            set_member(members, name, value);
+            set_member(members, name, value, &self.heap);
             return Ok(());
         }
         if let HeapObj::Func(_, _, _, attrs) = self.heap.get(obj) {
-            set_member(attrs, name, value);
+            set_member(attrs, name, value, &self.heap);
             // A cached result may have read the old attribute.
             self.templates.clear();
             return Ok(());
@@ -1049,7 +1048,7 @@ impl<'a> VM<'a> {
         let key = self.heap.alloc(HeapObj::Str(name.into()))?;
         match self.heap.get(obj) {
             HeapObj::Instance(_, attrs) => {
-                attrs.borrow_mut().insert(key, value, &self.heap);
+                self.heap.growing(&mut *attrs.borrow_mut(), |a| a.insert(key, value, &self.heap));
             }
             _ => return Err(cold_type("cannot set attribute on this type")),
         }

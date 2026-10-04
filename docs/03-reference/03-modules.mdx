@@ -174,7 +174,7 @@ A page runs a program with `createWorker`, which boots the engine in a Web Worke
 </script>
 ```
 
-A worker runs one program. `baseUrl` is where its files live, and the page reads for it the `edge.json` there, its imports and what it grants, and each file a run imports, never outside that directory and never with the page's cookies. A script in a subdirectory passes its path as `entry`, `worker.run(src, { entry: "sub/main.py" })`, so its relative imports resolve beside it. `createWorker` finds `compiler.wasm` beside the host, `wasmUrl` points it elsewhere, and `imports` with `permissions` stand in for an `edge.json` a page does not have. It needs a page and throws `createWorker needs a page, missing in this runtime` without one. How the frame keeps the program apart from the page is in [System](/docs/reference/system#embedding).
+A worker runs one program. `baseUrl` is where its files live, and the page reads for it the `edge.json` there, its imports and what it grants, and each file a run imports, never outside that directory and never with the page's cookies. A script in a subdirectory passes its path as `entry`, `worker.run(src, { entry: "sub/main.py" })`, so its relative imports resolve beside it. `createWorker` finds `compiler.wasm` beside the host, `wasmUrl` points it elsewhere, `imports` with `permissions` stand in for an `edge.json` a page does not have, and `limits`, such as `{ memory: 512, ops: 1e9 }`, raises what a run may hold and spend. It needs a page and throws `createWorker needs a page, missing in this runtime` without one. How the frame keeps the program apart from the page is in [System](/docs/reference/system#embedding).
 
 ## Writing your own modules
 
@@ -221,6 +221,8 @@ A module that fails to load fails at compile time, at the import that names it, 
 | `--save-state <f>` | On a wait the engine cannot serve, write a [snapshot](/docs/language/snapshots) to the file and exit 0. |
 | `--restore-state <f>` | Boot from a snapshot instead of a script and keep running. An unreadable file exits 2. |
 | `--preempt <n>` | Yield every `n` loop back-edges and resume, so a program with no suspension point stays snapshottable. |
+| `--memory <MB>` | Memory the run may hold, 256 by default, see [Limits](/docs/reference/limits-and-errors#sandboxed-execution). `edge test` and `edge repl` take it too. |
+| `--ops <n>` | Operations the run may spend, 100 million by default. `edge test` and `edge repl` take it too. |
 
 Without `--save-state`, a script parked on a wait the engine cannot serve prints an error and exits 1.
 

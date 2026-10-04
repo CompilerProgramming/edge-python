@@ -142,6 +142,11 @@ mod test {
                     None => failures.push(format!("RAISED {:?}: {}", case.src, e)),
                 }
             }
+            // With memcheck, the running memory count must equal a recount at each collection and the end.
+            #[cfg(feature = "memcheck")]
+            if let Some((counted, recounted)) = vm.memory_drift() {
+                failures.push(format!("MEMORY {:?}\n   counted {counted}, recounted {recounted}", case.src));
+            }
         }
         if !failures.is_empty() {
             let shown = failures.len().min(80);

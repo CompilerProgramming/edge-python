@@ -67,7 +67,7 @@ mod test {
     }
 
     fn limits_for(case: &Case) -> Limits {
-        if case.unmetered { Limits { calls: 1_000, ops: usize::MAX, heap: 10_000_000 } } else { Limits::sandbox() }
+        if case.unmetered { Limits { ops: usize::MAX, memory: 4 << 30 } } else { Limits::sandbox() }
     }
 
     /* Restore target is a bare VM, state arrives from the blob. */
@@ -307,14 +307,14 @@ mod test {
             let vm = VM::with_limits(parse_static(src), limits);
             snapshot::save(&vm, src)
         };
-        let l = snapshot::limits_of(&saved(Limits { calls: 7, ops: 1_234_567, heap: 42_000 })).unwrap();
-        assert_eq!((l.calls, l.ops, l.heap), (7, 1_234_567, 42_000));
+        let l = snapshot::limits_of(&saved(Limits { ops: 1_234_567, memory: 42_000 })).unwrap();
+        assert_eq!((l.ops, l.memory), (1_234_567, 42_000));
         let l = snapshot::limits_of(&saved(Limits::sandbox())).unwrap();
-        assert_eq!((l.calls, l.ops, l.heap), (256, 100_000_000, 100_000));
-        let l = snapshot::limits_of(&saved(Limits { calls: 1, ops: 5, heap: 9 })).unwrap();
-        assert_eq!((l.calls, l.ops, l.heap), (1, 5, 9));
-        let l = snapshot::limits_of(&saved(Limits { calls: 0, ops: 0, heap: 0 })).unwrap();
-        assert_eq!((l.calls, l.ops, l.heap), (0, 0, 0));
+        assert_eq!((l.ops, l.memory), (100_000_000, 256 << 20));
+        let l = snapshot::limits_of(&saved(Limits { ops: 5, memory: 9 })).unwrap();
+        assert_eq!((l.ops, l.memory), (5, 9));
+        let l = snapshot::limits_of(&saved(Limits { ops: 0, memory: 0 })).unwrap();
+        assert_eq!((l.ops, l.memory), (0, 0));
 
         // A partially spent budget records the remainder, never the old ops 1 placeholder.
         let src = "x = 1 + 2\n";

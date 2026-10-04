@@ -86,7 +86,7 @@ impl<'a> VM<'a> {
         let key = if op == OpCode::MapAdd { Some(self.pop()?) } else { None };
         let acc = *self.stack.last().ok_or(VmErr::Runtime("stack underflow"))?;
         match (op, key, self.heap.try_get(acc)) {
-            (OpCode::ListAppend, _, Some(HeapObj::List(rc))) => rc.borrow_mut().push(value),
+            (OpCode::ListAppend, _, Some(HeapObj::List(rc))) => self.heap.growing(&mut *rc.borrow_mut(), |v| v.push(value)),
             (OpCode::SetAdd, _, Some(HeapObj::Set(_))) => { self.set_add(acc, value, chunk, slots)?; }
             (OpCode::MapAdd, Some(k), Some(HeapObj::Dict(_))) => self.dict_set(acc, k, value, chunk, slots)?,
             _ => return Err(cold_runtime("comprehension accumulator corrupted")),
@@ -109,7 +109,7 @@ impl<'a> VM<'a> {
             OpCode::ListExtend => {
                 let items = self.iterable_items(src, chunk, slots)?;
                 match self.heap.get(acc) {
-                    HeapObj::List(rc) => rc.borrow_mut().extend(items),
+                    HeapObj::List(rc) => self.heap.growing(&mut *rc.borrow_mut(), |v| v.extend(items)),
                     _ => return Err(cold_runtime("spread accumulator corrupted")),
                 }
             }

@@ -235,7 +235,7 @@ impl<'a> VM<'a> {
             iter_stack: Vec::with_capacity(16),
             yields: Vec::new(),
             chunk,
-            heap: HeapPool::new(limits.heap),
+            heap: HeapPool::new(limits.memory),
             globals: HashMap::default(),
             builtins: HashMap::default(),
             module_state: HashMap::default(),
@@ -243,7 +243,7 @@ impl<'a> VM<'a> {
             templates: Templates::new(),
             budget: limits.ops,
             depth: 0,
-            max_calls: limits.calls,
+            max_calls: MAX_CALLS,
             with_stack: Vec::new(),
             temp_roots: Vec::new(),
             pending: Pending::new(),
@@ -499,6 +499,13 @@ impl<'a> VM<'a> {
         self.templates.clear();
         self.chunk = chunk;
     }
+
+    /* What the program holds by the memory model, garbage since the last collection included. */
+    pub fn memory(&self) -> usize { self.heap.bytes() }
+
+    /* The running memory count beside a recount of every slot, the first time they disagreed. */
+    #[cfg(feature = "memcheck")]
+    pub fn memory_drift(&self) -> Option<(usize, usize)> { self.heap.drift() }
 
     /* Fresh op budget for the next REPL input. */
     pub fn reset_budget(&mut self, ops: usize) {

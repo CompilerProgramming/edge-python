@@ -11,10 +11,10 @@ pub fn fmt_err(m: &'static str) -> VmErr {
 /* f-string format spec, PEP 3101 subset, `[[fill]align][sign][#][0][width][,][.precision][type]`. Types are d/b/o/x/X (ints), f/F/e/E/g/G (floats), % (percent), s (str), c (codepoint). Returns Err(msg), the caller raises ValueError. */
 pub fn format_value(v: Val, spec: &str, heap: &HeapPool) -> Result<String, &'static str> {
     let parsed = parse_spec(spec)?;
-    // Cap against the heap budget, precision also below core::fmt's u16 abort threshold (panics at >= 65535).
+    // Cap against the memory left, precision also below the u16 threshold where core::fmt panics.
     const PRECISION_MAX: usize = 65_000;
-    if parsed.width > heap.limit() { return Err("format width exceeds limit"); }
-    if parsed.precision.is_some_and(|p| p > heap.limit().min(PRECISION_MAX)) { return Err("format precision exceeds limit"); }
+    if parsed.width > heap.room() { return Err("format width exceeds limit"); }
+    if parsed.precision.is_some_and(|p| p > heap.room().min(PRECISION_MAX)) { return Err("format precision exceeds limit"); }
     apply(v, &parsed, heap)
 }
 

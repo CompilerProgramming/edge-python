@@ -200,11 +200,11 @@ pub fn replace(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let s = recv_str(vm, recv)?;
     let old = val_to_str(vm, pos[0])?;
     let new = val_to_str(vm, pos[1])?;
-    // A result past the heap limit fails before it allocates.
+    // A result past the memory limit fails before it allocates.
     if new.len() > old.len() {
         let hits = if old.is_empty() { s.chars().count() + 1 } else { s.matches(old.as_str()).count() };
         let hits = match pos.get(2) { Some(n) if n.is_int() && n.as_int() >= 0 => hits.min(n.as_int() as usize), _ => hits };
-        if s.len().saturating_add(hits.saturating_mul(new.len() - old.len())) > vm.heap.limit() { return Err(cold_heap()); }
+        vm.heap.reserve(s.len().saturating_add(hits.saturating_mul(new.len() - old.len())))?;
     }
     // Optional third arg is max replacements (<0 means all).
     let out = match pos.get(2) {
@@ -286,7 +286,7 @@ fn width_and_fill(vm: &mut VM, pos: &[Val], width_err: &'static str) -> Result<(
     if !pos[0].is_int() { return Err(cold_type(width_err)); }
     let width = pos[0].as_int().max(0) as usize;
     // User-controlled width drives the output size, cap it so a huge value errors instead of aborting in the allocator.
-    if width > vm.heap.limit() { return Err(cold_heap()); }
+    vm.heap.reserve(width)?;
     let fill = if pos.len() > 1 {
         let f = val_to_str(vm, pos[1])?;
         let mut cs = f.chars();
@@ -319,12 +319,12 @@ pub fn expandtabs(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
         }
         _ => 8,
     };
-    let limit = vm.heap.limit();
+    let limit = vm.heap.room();
     let mut out = String::with_capacity(s.len());
     let mut col = 0usize;
     for c in s.chars() {
         match c {
-            // A large tabsize can blow the column count past the heap budget, bail before materialising the spaces.
+            // A large tabsize can blow the column count past the memory left, bail before materialising the spaces.
             '\t' => {
                 let n = if ts == 0 { 0 } else { ts - (col % ts) };
                 if col.saturating_add(n) > limit { return Err(cold_heap()); }
@@ -422,7 +422,7 @@ pub fn zfill(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let s = recv_str(vm, recv)?;
     let width = pos[0].as_int().max(0) as usize;
     // User-controlled width drives the output size, cap it so a huge value errors instead of aborting in the allocator.
-    if width > vm.heap.limit() { return Err(cold_heap()); }
+    vm.heap.reserve(width)?;
     let nchars = s.chars().count();
     let out = if nchars >= width {
         s

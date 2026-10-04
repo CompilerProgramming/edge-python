@@ -131,7 +131,7 @@ fn run(engine: &Engine, module: &Module, case: &serde_json::Value) -> u64 {
     linker.define_unknown_imports_as_default_values(&mut store, module).expect("stubbing the host imports");
     let inst = linker.instantiate(&mut store, module).expect("instantiating compiler.wasm");
     let memory = inst.get_memory(&mut store, "memory").expect("compiler.wasm exports memory");
-    func::<(i64, i64, i64), ()>(&inst, &mut store, "set_limits").call(&mut store, (0, OPS, 0)).ok();
+    func::<(i64, i64), ()>(&inst, &mut store, "set_limits").call(&mut store, (0, OPS)).ok();
     func::<u32, ()>(&inst, &mut store, "set_wall_clock").call(&mut store, 0).ok();
     if !input.is_empty() {
         let (ptr, len) = stage(&inst, &mut store, memory, &input.join("\n"));

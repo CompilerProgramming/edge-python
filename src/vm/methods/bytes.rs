@@ -175,7 +175,7 @@ pub fn count(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     Ok(())
 }
 
-// `bytes.replace(old, new[, count])`, a result past the heap limit fails before it allocates.
+// `bytes.replace(old, new[, count])`, a result past the memory limit fails before it allocates.
 pub fn replace(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let buf = recv_bytes(vm, recv)?;
     let old = recv_bytes(vm, pos[0])?;
@@ -188,8 +188,8 @@ pub fn replace(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
         hits.push(j);
         i = j + old.len().max(1);
     }
-    if new.len() > old.len() && buf.len().saturating_add(hits.len().saturating_mul(new.len() - old.len())) > vm.heap.limit() {
-        return Err(cold_heap());
+    if new.len() > old.len() {
+        vm.heap.reserve(buf.len().saturating_add(hits.len().saturating_mul(new.len() - old.len())))?;
     }
     let mut out: Vec<u8> = Vec::with_capacity(buf.len() + hits.len() * new.len());
     let mut at = 0;

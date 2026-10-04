@@ -53,13 +53,13 @@ pub(super) fn dict_entries(vm: &VM, recv: Val) -> Result<Vec<(Val, Val)>, VmErr>
     }
 }
 
-/* Borrow `recv`'s list mutably for `f`. The closure can't touch `vm` (held by `heap.get_mut`), so any push must happen after this returns. */
+/* Borrow the list of `recv` for `f`, charging its growth, the closure cannot touch `vm`. */
 #[inline]
 pub(super) fn list_mut<F, R>(vm: &mut VM, recv: Val, err: &'static str, f: F) -> Result<R, VmErr>
 where F: FnOnce(&mut Vec<Val>) -> Result<R, VmErr>
 {
-    match vm.heap.try_get_mut(recv) {
-        Some(HeapObj::List(rc)) => f(&mut rc.borrow_mut()),
+    match vm.heap.try_get(recv) {
+        Some(HeapObj::List(rc)) => vm.heap.growing(&mut *rc.borrow_mut(), f),
         _ => Err(cold_type(err)),
     }
 }
@@ -73,7 +73,7 @@ where F: FnOnce(&mut DictMap, &HeapPool) -> Result<R, VmErr>
         Some(HeapObj::Dict(rc)) => rc.clone(),
         _ => return Err(cold_type(err)),
     };
-    f(&mut rc.borrow_mut(), &vm.heap)
+    vm.heap.growing(&mut *rc.borrow_mut(), |d| f(d, &vm.heap))
 }
 
 // Snapshot a set as Vec so the heap stays free for subsequent allocations.
@@ -103,7 +103,7 @@ where F: FnOnce(&mut ValSet, &HeapPool) -> Result<R, VmErr>
         Some(HeapObj::Set(rc)) => rc.clone(),
         _ => return Err(cold_type(err)),
     };
-    f(&mut rc.borrow_mut(), &vm.heap)
+    vm.heap.growing(&mut *rc.borrow_mut(), |t| f(t, &vm.heap))
 }
 
 // `Vec<Val>` from any iterable (str/range/dict/bytes/frozenset/list/tuple/set), for set ops and dict keys, so every item must hash.

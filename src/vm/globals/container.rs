@@ -153,8 +153,8 @@ impl<'a> VM<'a> {
                 if a.is_int() {
                     let n = a.as_int();
                     if n < 0 { return Err(cold_value("negative count")); }
-                    // Length is user-controlled, cap it against the heap budget so a huge count errors instead of aborting in the allocator.
-                    if n as usize > self.heap.limit() { return Err(cold_heap()); }
+                    // Length is user-controlled, cap it against the memory left so a huge count errors instead of aborting.
+                    self.heap.reserve(n as usize)?;
                     alloc::vec![0u8; n as usize]
                 } else if a.is_heap() {
                     if let HeapObj::Bytes(b) = self.heap.get(a) {

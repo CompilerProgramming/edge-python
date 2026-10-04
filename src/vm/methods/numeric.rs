@@ -17,8 +17,8 @@ pub fn to_bytes(vm: &mut VM, recv: Val, pos: &[Val]) -> Result<(), VmErr> {
     let n = as_i128(recv, &vm.heap).ok_or(cold_type("to_bytes() requires an int"))?;
     if n < 0 { return Err(cold_overflow_msg("can't convert negative int to unsigned")); }
     let length = match pos.first() { Some(v) if v.is_int() => v.as_int().max(0) as usize, None => 1, _ => return Err(cold_type("length must be an integer")) };
-    // Length is user-controlled, cap it against the heap budget so a huge count errors instead of aborting in the allocator.
-    if length > vm.heap.limit() { return Err(cold_heap()); }
+    // Length is user-controlled, cap it against the memory left so a huge count errors instead of aborting.
+    vm.heap.reserve(length)?;
     let big = byteorder_is_big(vm, pos.get(1))?;
     let mut v = n.unsigned_abs();
     let mut out = alloc::vec![0u8; length];

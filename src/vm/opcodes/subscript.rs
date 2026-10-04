@@ -303,7 +303,7 @@ impl<'a> VM<'a> {
         if let HeapObj::Dict(p) = self.heap.get(cont) && !matches!(self.heap.try_get(idx_val), Some(HeapObj::Slice(..))) {
             if p.borrow().is_rich() || is_rich_key(idx_val, &self.heap) { return self.dict_set(cont, idx_val, value, chunk, slots); }
             self.require_hashable(idx_val)?;
-            p.borrow_mut().insert(idx_val, value, &self.heap);
+            self.heap.growing(&mut *p.borrow_mut(), |d| d.insert(idx_val, value, &self.heap));
             return Ok(());
         }
         self.store_item_builtin(cont, idx_val, value)
@@ -332,7 +332,7 @@ impl<'a> VM<'a> {
                 if ui >= b.len() { return Err(cold_index("list assignment index out of range")); }
                 b[ui] = value;
             }
-            HeapObj::Dict(p) => { p.borrow_mut().insert(idx_val, value, &self.heap); }
+            HeapObj::Dict(p) => self.heap.growing(&mut *p.borrow_mut(), |d| d.insert(idx_val, value, &self.heap)),
             HeapObj::Tuple(_) => return Err(cold_type("tuple does not support item assignment")),
             _ => return Err(cold_type("object does not support item assignment")),
         }
@@ -384,7 +384,7 @@ impl<'a> VM<'a> {
         let mut b = rc.borrow_mut();
         let (s, e, st) = slice_bounds(start, stop, step, b.len() as i64)?;
         if st == 1 {
-            b.splice(s as usize..e.max(s) as usize, items.unwrap_or_default());
+            self.heap.growing(&mut *b, |b| { b.splice(s as usize..e.max(s) as usize, items.unwrap_or_default()); });
             return Ok(());
         }
         // Selected positions sit `st` apart from `s`, strictly before `e`.

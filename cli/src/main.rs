@@ -82,9 +82,14 @@ enum Cmd {
         /// Run on the browser host in headless Chrome instead of the native engine.
         #[arg(long)]
         web: bool,
+        #[command(flatten)]
+        limits: host::RunLimits,
     },
     /// Interactive shell. Ctrl+C, Ctrl+D, or .exit to quit.
-    Repl,
+    Repl {
+        #[command(flatten)]
+        limits: host::RunLimits,
+    },
     /// Dev server with live reload.
     Serve {
         /// Bind address, use 0.0.0.0 to expose on your LAN.
@@ -104,6 +109,8 @@ enum Cmd {
         /// Run them on the browser host in headless Chrome instead of the native engine.
         #[arg(long)]
         web: bool,
+        #[command(flatten)]
+        limits: host::RunLimits,
     },
     /// Scaffold a new project.
     Init {
@@ -178,7 +185,7 @@ fn main() {
     let manifest_path = cli.manifest.clone().unwrap_or_else(|| PathBuf::from("edge.json"));
 
     // Every command that compiles the project reads what engine it asks for first, so an old binary says so.
-    let compiles = matches!(cli.cmd, Cmd::Run { .. } | Cmd::Test { .. } | Cmd::Build { .. } | Cmd::Repl | Cmd::Actor { .. });
+    let compiles = matches!(cli.cmd, Cmd::Run { .. } | Cmd::Test { .. } | Cmd::Build { .. } | Cmd::Repl { .. } | Cmd::Actor { .. });
     let checked = || -> Result<()> {
         manifest::Manifest::check_engine(&manifest_path)?;
         // The tree is held to what edge lock checked, so a later edit cannot slip past.
@@ -190,6 +197,9 @@ fn main() {
         ui::error(&e);
         std::process::exit(1);
     }
+    if let Cmd::Run { limits, .. } | Cmd::Test { limits, .. } | Cmd::Repl { limits } = &cli.cmd {
+        limits.set();
+    }
 
     let result = match cli.cmd {
         Cmd::Init { name, bare } => cmd::init::run(name.as_deref(), bare),
@@ -197,7 +207,7 @@ fn main() {
         Cmd::Remove { pkgs } => cmd::pkg::remove(&manifest_path, &pkgs),
         Cmd::Lock => cmd::pkg::lock(&manifest_path),
         Cmd::Serve { host, port, open } => cmd::serve::run(PathBuf::from("."), &host, port, open),
-        Cmd::Run { file, code, events, save_state, restore_state, preempt, web } if web => {
+        Cmd::Run { file, code, events, save_state, restore_state, preempt, web, .. } if web => {
             // The browser host has no stdin, no snapshots and no event file, so a flag meant for the native engine is refused rather than ignored.
             let native_only = [("--events", events.is_some()), ("--save-state", save_state.is_some()), ("--restore-state", restore_state.is_some()), ("--preempt", preempt.is_some())];
             match native_only.iter().find(|(_, given)| *given) {
@@ -219,7 +229,7 @@ fn main() {
                 }
             })
         }
-        Cmd::Repl => cmd::repl::run(cli.manifest.as_deref()),
+        Cmd::Repl { .. } => cmd::repl::run(cli.manifest.as_deref()),
         Cmd::Build { out, web, app } => {
             if web {
                 cmd::build::run(&manifest_path, out.unwrap_or_else(|| PathBuf::from("dist")))
@@ -232,7 +242,7 @@ fn main() {
         Cmd::Publish { artifact } => cmd::publish::run(&artifact),
         Cmd::Uninstall => cmd::uninstall::run(),
         Cmd::Actor { file } => cmd::actor::run(&file, cli.manifest.as_deref()),
-        Cmd::Test { path, web } => cmd::test::run(&manifest_path, cli.manifest.as_deref(), path.as_deref(), web),
+        Cmd::Test { path, web, .. } => cmd::test::run(&manifest_path, cli.manifest.as_deref(), path.as_deref(), web),
     };
 
     if let Err(e) = result {

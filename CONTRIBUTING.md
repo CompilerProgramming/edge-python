@@ -55,7 +55,9 @@ deno lint js/
 
 ### Engine
 
-`cargo test --release` runs `tests/cases/vm.json` under `Limits::sandbox()`, so a budget, heap, or call-depth regression fails as a `MemoryError` or `RecursionError` instead of hanging. Every case must fit that budget, and two cases equal in every field fail the suite.
+`cargo test --release` runs `tests/cases/vm.json` under `Limits::sandbox()`, so a budget, memory, or call-depth regression fails as a `MemoryError` or `RecursionError` instead of hanging. Every case must fit that budget, and two cases equal in every field fail the suite.
+
+`--features memcheck` recounts every slot at each collection and fails a case whose running memory count drifted from it, and `tests/memory.rs` checks the memory model never counts less than the allocator hands out. A change that grows a container the heap holds keeps both green.
 
 ### Bench
 

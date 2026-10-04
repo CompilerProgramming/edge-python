@@ -96,7 +96,7 @@ pub fn run(src: &str, entry: &str, manifest: Option<&Path>) -> Result<i32> {
 
 /* The harness for one run, filled in once so no program text is read as a placeholder. */
 fn page(src: &str, entry: &str, secrets: &serde_json::Map<String, serde_json::Value>) -> Result<String> {
-    Ok(HARNESS.replace("__EDGE_RUN__", &embed(&serde_json::json!({ "src": src, "entry": entry, "secrets": secrets }))?))
+    Ok(HARNESS.replace("__EDGE_RUN__", &embed(&serde_json::json!({ "src": src, "entry": entry, "secrets": secrets, "limits": super::RunLimits::get() }))?))
 }
 
 /* The value of `EDGE_SECRET_<name>` for each name a `secret` entry grants, so the page holds no other variable. */

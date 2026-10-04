@@ -69,7 +69,7 @@ impl VmErr {
             Self::ZeroDiv => String::from("division by zero"),
             Self::Overflow => String::from("integer too large for 128-bit int range"),
             Self::CallDepth => String::from("max depth"),
-            Self::Heap => String::from("heap limit"),
+            Self::Heap => String::from("memory limit"),
             Self::Budget => String::from("budget exceeded"),
             Self::HostYield(_) => String::from("scheduler suspended; embedder must drive run_start / run_resume"),
             Self::HostCallDeferred => String::from("native call deferred to host"),

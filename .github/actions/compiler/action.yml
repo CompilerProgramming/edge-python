@@ -129,6 +129,11 @@ runs:
       shell: bash
       run: cargo test --locked -p edge-python --features coverage coverage
 
+    # On its own too, it recounts every slot at each collection to prove the running count.
+    - name: Memory count
+      shell: bash
+      run: cargo test --locked --release -p edge-python --features memcheck --test tests vm::test::test_cases
+
     # compiler.wasm ships, the speed build goes under _build/ for the CLI jobs.
     - name: Stage on tmp
       uses: ./.github/actions/upload

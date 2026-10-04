@@ -12,12 +12,13 @@ pub use resolver::{fetch_cached, Project};
 pub use vm::{Completion, Instance, Status, Vm};
 
 use anyhow::{anyhow, Result};
+use compiler::vm::types::Limits;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use wasmtime::{AsContextMut, Engine, Instance as Wasm, InstancePre, Linker, Memory, Module, ResourceLimiter, Store, TypedFunc};
 
 const COMPILER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/compiler.cwasm"));
@@ -200,6 +201,41 @@ pub enum Native {
     },
 }
 
+/* What `--memory` in MB and `--ops` asked for, None for the sandbox value. */
+#[derive(clap::Args, serde::Serialize, Clone, Copy, Default)]
+pub struct RunLimits {
+    /// Memory a run may hold, in MB [default: 256]
+    #[arg(long, value_name = "MB")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<usize>,
+    /// Operations a run may spend [default: 100000000]
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ops: Option<usize>,
+}
+
+static RUN_LIMITS: OnceLock<RunLimits> = OnceLock::new();
+
+impl RunLimits {
+    /* Sets them for every run this process starts, once from the command line. */
+    pub fn set(self) {
+        let _ = RUN_LIMITS.set(self);
+    }
+
+    pub fn get() -> RunLimits {
+        RUN_LIMITS.get().copied().unwrap_or_default()
+    }
+
+    /* The engine limits they stand for, None when no flag was given. */
+    pub fn engine(self) -> Option<Limits> {
+        let sandbox = Limits::sandbox();
+        (self.memory.is_some() || self.ops.is_some()).then(|| Limits {
+            memory: self.memory.map_or(sandbox.memory, |mb| mb.saturating_mul(1 << 20)),
+            ops: self.ops.unwrap_or(sandbox.ops),
+        })
+    }
+}
+
 // Refuses linear memory growth past the cap, an untrusted run cannot outgrow its slot.
 pub struct MemoryCap {
     pub max: usize,
@@ -273,7 +309,7 @@ pub struct Exports {
     pub host_edge_release: TypedFunc<i32, ()>,
     pub host_edge_throw: TypedFunc<(i32, i32, i32), ()>,
     pub host_edge_take_error: TypedFunc<(i32, i32, i32), i32>,
-    pub set_limits: TypedFunc<(i64, i64, i64), ()>,
+    pub set_limits: TypedFunc<(i64, i64), ()>,
     pub vm_create: TypedFunc<(), i32>,
     pub vm_select: TypedFunc<i32, i32>,
     pub vm_drop: TypedFunc<i32, i32>,

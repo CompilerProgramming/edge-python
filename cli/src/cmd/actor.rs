@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use crate::actor::{Group, Message, Out, ActorConfig};
+use crate::host::RunLimits;
 use compiler::vm::Limits;
 use serde::Deserialize;
 use std::path::Path;
@@ -55,12 +56,15 @@ struct GroupSpec {
     seed: Vec<String>,
 }
 
+/* What a group may hold and spend, memory in MB, and how often it yields. */
 #[derive(Deserialize, Default)]
 struct LimitSpec {
-    heap: Option<usize>,
+    memory: Option<usize>,
     ops: Option<usize>,
-    calls: Option<usize>,
     preempt: Option<usize>,
+    // Gone, kept only so a file still naming them hears what replaced them.
+    heap: Option<serde::de::IgnoredAny>,
+    calls: Option<serde::de::IgnoredAny>,
 }
 
 // Loads actor.yml, boots the described pool, `manifest_path` overrides every group's manifest walk-up.
@@ -85,12 +89,13 @@ pub fn run(path: &Path, manifest_path: Option<&Path>) -> Result<()> {
             (None, None, true) => (String::new(), dir.clone()),
             (None, None, false) => return Err(anyhow!("group '{name}' needs run, code or eval")),
         };
-        let sandbox = Limits::sandbox();
-        let limits = Limits {
-            heap: spec.limits.heap.unwrap_or(sandbox.heap),
-            ops: spec.limits.ops.unwrap_or(sandbox.ops),
-            calls: spec.limits.calls.unwrap_or(sandbox.calls),
-        };
+        if spec.limits.heap.is_some() {
+            return Err(anyhow!("group '{name}' sets limits.heap, which is gone, limits.memory caps what a run holds, in MB"));
+        }
+        if spec.limits.calls.is_some() {
+            return Err(anyhow!("group '{name}' sets limits.calls, which is gone, the call depth is fixed at 256"));
+        }
+        let limits = RunLimits { memory: spec.limits.memory, ops: spec.limits.ops }.engine().unwrap_or_else(Limits::sandbox);
         let inbox = spec.seed.into_iter().map(|body| Message { group: name.clone(), body, attempts: 0, reply: None }).collect();
         groups.push(Group {
             name,

@@ -7,13 +7,15 @@ description: "Sandbox limits, integer width, error types, and runtime guarantees
 
 ## Sandboxed execution
 
-Every execution is metered, there is no unmetered mode. Both hosts, the JS host and the CLI, run every script under these limits, and an embedder overrides them per field, `createWorker` through its `limits` option and `edge actor` through a group's.
+Every execution is metered, there is no unmetered mode. Both hosts, the JS host and the CLI, run every script under these limits. Memory and operations can be raised, `createWorker` through its `limits` option, `edge actor` through a group's, and `edge run`, `edge test` and `edge repl` through `--memory` and `--ops`. The call depth stays fixed, below where the wasm stack of either host runs out.
 
 | Limit | Value | What hitting it raises |
 |---|---|---|
 | Max call depth | 256 | `RecursionError` |
 | Max operations | 100,000,000 | `RuntimeError` |
-| Max live objects | 100,000 | `MemoryError` |
+| Max memory | 256 MB | `MemoryError` |
+
+Memory counts what the program holds by one model on every architecture, 224 bytes for each object, 8 for each value a list, tuple or attribute keeps, 56 for each dict entry, 24 for each set entry, and the bytes of each string. A number held in a container costs only its 8 bytes. Garbage is collected before the limit applies, so only what the program still holds counts, and a result too large for it, such as `'x' * 10**10`, raises before it is built.
 
 The op-limit `RuntimeError` cannot be caught. The `except` handler is entered but its first operation re-raises because the budget is still exhausted.
 

@@ -11,7 +11,7 @@ use super::{Pending, VM};
 use super::types::*;
 
 const MAGIC: u32 = 0x4E53_5045;
-const FORMAT: u32 = 4;
+const FORMAT: u32 = 5;
 
 pub type SnapErr = String;
 
@@ -536,7 +536,6 @@ pub fn save(vm: &VM, source: &str) -> Vec<u8> {
     w.u64(fingerprint(vm.chunk));
     w.str(source);
     w.usz(vm.budget);
-    w.usz(vm.max_calls);
     w.usz(vm.heap.limit());
     w.boolean(vm.strict_input);
     w.usz(vm.heap.snapshot_objs().count());
@@ -579,9 +578,8 @@ pub fn limits_of(blob: &[u8]) -> Result<Limits, SnapErr> {
     let mut r = R::new(blob);
     r.p = h.body;
     let ops = r.usz()?;
-    let calls = r.usz()?;
-    let heap = r.usz()?;
-    Ok(Limits { calls, ops, heap })
+    let memory = r.usz()?;
+    Ok(Limits { ops, memory })
 }
 
 fn collect_externs(chunk: &SSAChunk, map: &mut ExternMap) {
@@ -623,10 +621,9 @@ pub fn restore(vm: &mut VM, blob: &[u8]) -> Result<(), SnapErr> {
     let mut r = R::new(blob);
     r.p = h.body;
 
-    // A blob may spend what it saved but never past the boot limits, the heap cap included.
+    // A blob may spend what it saved but never past the boot limits, the memory cap included.
     vm.budget = r.usz()?.min(vm.budget);
-    vm.max_calls = r.usz()?.min(vm.max_calls);
-    let _heap_limit = r.usz()?;
+    let _memory = r.usz()?;
     vm.strict_input = r.boolean()?;
 
     let mut externs = ExternMap::default();

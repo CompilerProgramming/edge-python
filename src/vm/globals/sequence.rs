@@ -98,7 +98,7 @@ impl<'a> VM<'a> {
             HeapObj::List(rc) => rc.clone(),
             _ => return Err(cold_type("sort: receiver is not a list")),
         };
-        *rc.borrow_mut() = result;
+        self.heap.growing(&mut *rc.borrow_mut(), |v| *v = result);
         self.mark_impure();
         self.push(Val::none());
         Ok(())
@@ -298,10 +298,10 @@ impl<'a> VM<'a> {
             HeapObj::FrozenSet(v) => Some(v.iter().cloned().collect()),
             HeapObj::Range(s, e, st) => {
                 let (mut cur, end, step) = (*s, *e, *st);
-                // Materialised length is user-controlled, cap it against the heap budget.
+                // Materialised length is user-controlled, cap it against the memory left.
                 let span = (end as i128 - cur as i128).unsigned_abs();
                 let count = if step == 0 { 0 } else { span / (step as i128).unsigned_abs() };
-                if count > self.heap.limit() as u128 { return Err(cold_heap()); }
+                if count.saturating_mul(VAL_BYTES as u128) > self.heap.room() as u128 { return Err(cold_heap()); }
                 let mut out = Vec::new();
                 if step > 0 {
                     while cur < end {
@@ -348,7 +348,7 @@ impl<'a> VM<'a> {
                     vm.exec_call(0, chunk, slots)?;
                     let v = vm.pop()?;
                     if eq_member(v, sentinel, &vm.heap) { break; }
-                    if items.len() >= vm.heap.limit() { return Err(cold_heap()); }
+                    vm.heap.reserve((items.len() + 1) * VAL_BYTES)?;
                     vm.temp_roots.push(v);
                     items.push(v);
                 }

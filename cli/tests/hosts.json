@@ -236,5 +236,29 @@
     "env": { "EDGE_SECRET_PAY": "p-1", "EDGE_SECRET_SHOP": "s-2" },
     "run": ["run", "main.py"],
     "stdout": ["p-1", "'vault' has no secret:PAY, edge.json grants it secret:SHOP", "s-2"]
+  },
+  {
+    "given": {
+      "edge.json": "{}\n",
+      "main.py": "bars = [(float(i), 1.0, 2.0, 3.0) for i in range(100000)]\nprint(len(bars))\n"
+    },
+    "run": ["run", "--memory", "1", "main.py"],
+    "fails": ["MemoryError: memory limit"]
+  },
+  {
+    "given": {
+      "edge.json": "{}\n",
+      "main.py": "bars = [(float(i), 1.0, 2.0, 3.0) for i in range(100000)]\nprint(len(bars))\n"
+    },
+    "run": ["run", "--memory", "64", "main.py"],
+    "stdout": ["100000"]
+  },
+  {
+    "given": {
+      "edge.json": "{}\n",
+      "main.py": "i = 0\nwhile True:\n    i += 1\n"
+    },
+    "run": ["run", "--ops", "1000", "main.py"],
+    "fails": ["RuntimeError: budget exceeded"]
   }
 ]

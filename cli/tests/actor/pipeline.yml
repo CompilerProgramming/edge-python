@@ -3,7 +3,7 @@ groups:
   ingest:
     replicas: 1
     limits:
-      heap: 65536
+      memory: 64
       preempt: 500
     code: |
       msg = receive()

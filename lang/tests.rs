@@ -109,7 +109,7 @@ fn native_wide_int_roundtrip() {
 /* A tightened op budget trips the sandbox instead of hanging. */
 #[test]
 fn limits_enforced() {
-    let tight = Limits { calls: 8, ops: 500, heap: 1000 };
+    let tight = Limits { ops: 500, memory: 1 << 20 };
     let engine = Engine::builder().limits(tight).build();
     let program = engine.compile("i = 0\nwhile i < 1000000:\n  i = i + 1").unwrap();
     let err = program.run().unwrap_err();

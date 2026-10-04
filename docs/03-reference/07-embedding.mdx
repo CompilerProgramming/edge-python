@@ -143,13 +143,13 @@ Whatever a transform emits must be valid Edge Python. Rewrites change the surfac
 
 ## Limits
 
-Every run is metered. `Limits` reexports the engine caps for recursion depth, op budget, and heap quota. The default is `Limits::sandbox`, and tighter is allowed.
+Every run is metered. `Limits` reexports the engine caps for the op budget and the memory a run holds, in bytes, either one tighter or looser than `Limits::sandbox`, the default of 100 million operations and 256 MB. The call depth is fixed at 256.
 
 ```rust
 use lang::{Engine, Limits};
 
 let engine = Engine::builder()
-    .limits(Limits { calls: 64, ops: 1_000_000, heap: 50_000 })
+    .limits(Limits { ops: 1_000_000, memory: 64 << 20 })
     .build();
 ```
 

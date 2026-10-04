@@ -169,7 +169,7 @@ async function execute({ src, payload, start, entry = '', onLine, incremental = 
 
     // Caps the next run_start or repl_eval, a zero field keeps the sandbox value.
     if (limits && exports.set_limits) {
-        exports.set_limits(BigInt(limits.heap ?? 0), BigInt(limits.ops ?? 0), BigInt(limits.calls ?? 0));
+        exports.set_limits(BigInt(Math.round((limits.memory ?? 0) * 1048576)), BigInt(limits.ops ?? 0));
     }
 
     const t0 = performance.now();

@@ -887,13 +887,15 @@ impl<'a> VM<'a> {
             } else { None };
             match cell {
                 Some(c) => if let HeapObj::List(rc) = self.heap.get(c) {
-                    let mut b = rc.borrow_mut();
-                    if b.is_empty() { b.push(val); } else { b[0] = val; }
+                    self.heap.growing(&mut *rc.borrow_mut(), |b| if b.is_empty() { b.push(val); } else { b[0] = val; });
                 },
                 // Nonlocal target not captured at MakeFunction (rare), attach a fresh cell so the next call sees it.
                 None => if let Ok(c) = self.heap.alloc(HeapObj::List(Rc::new(RefCell::new(vec![val]))))
                     && let HeapObj::Func(_, _, caps, _) = self.heap.get_mut(callee) {
+                        let before = caps.bytes();
                         caps.push((canon_body, c));
+                        let grown = caps.bytes() - before;
+                        self.heap.charge(grown);
                     },
             }
         }

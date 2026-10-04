@@ -3,11 +3,10 @@
 import type { Permissions } from './system/grants.ts';
 import type { TraceEvent } from './system/trace.ts';
 
-/* Caps a run boots under, a field left out keeps the engine's sandbox value. */
+/* Caps a run boots under, memory in MB, a field left out keeps the sandbox value of the engine. */
 export interface Limits {
-    heap?: number
+    memory?: number
     ops?: number
-    calls?: number
 }
 
 export interface LoadOpts {

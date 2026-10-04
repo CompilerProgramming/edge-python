@@ -170,7 +170,7 @@ impl<'a> VM<'a> {
         }
         let items = self.set_binop_items(a, b, op)?;
         let s = ValSet::from_vals(&items, &self.heap);
-        if let HeapObj::Set(rc) = self.heap.get(a) { *rc.borrow_mut() = s; }
+        if let HeapObj::Set(rc) = self.heap.get(a) { self.heap.growing(&mut *rc.borrow_mut(), |t| *t = s); }
         self.push(a); Ok(())
     }
 
@@ -601,11 +601,11 @@ impl<'a> VM<'a> {
             HeapObj::Tuple(v) => v.len().checked_mul(n),
             _ => None,
         };
-        if let Some(c) = fill_cost && c <= self.heap.limit() { self.charge_steps(c)?; }
+        if let Some(c) = fill_cost && c.saturating_mul(VAL_BYTES) <= self.heap.room() { self.charge_steps(c)?; }
         match self.heap.get(seq_val) {
             HeapObj::Str(s) => {
                 let bytes = s.len().checked_mul(n).ok_or(cold_overflow())?;
-                if bytes > self.heap.limit() { return Err(cold_heap()); }
+                self.heap.reserve(bytes)?;
                 let r = s.repeat(n);
                 return self.heap.alloc(HeapObj::Str(r));
             }
@@ -621,7 +621,7 @@ impl<'a> VM<'a> {
             }
             HeapObj::Bytes(b) => {
                 let bytes = b.len().checked_mul(n).ok_or(cold_overflow())?;
-                if bytes > self.heap.limit() { return Err(cold_heap()); }
+                self.heap.reserve(bytes)?;
                 let r = b.repeat(n);
                 return self.heap.alloc(HeapObj::Bytes(r));
             }
@@ -635,7 +635,7 @@ impl<'a> VM<'a> {
         // Empty source means result is empty for any n, so skip the n-iteration loop.
         if src.is_empty() { return Ok(Vec::new()); }
         let cap = src.len().checked_mul(n).ok_or(cold_overflow())?;
-        if cap > self.heap.limit() { return Err(cold_heap()); }
+        self.heap.reserve(cap.saturating_mul(VAL_BYTES))?;
         let mut out = Vec::with_capacity(cap);
         for _ in 0..n { out.extend_from_slice(src); }
         Ok(out)

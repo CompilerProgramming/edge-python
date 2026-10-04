@@ -196,7 +196,7 @@ impl<'a> VM<'a> {
         match self.heap.try_get(d) {
             Some(HeapObj::Dict(rc)) if !self.rich_probe(rc.borrow().is_rich(), k) => {
                 self.require_hashable(k)?;
-                rc.borrow_mut().insert(k, v, &self.heap);
+                self.heap.growing(&mut *rc.borrow_mut(), |d| d.insert(k, v, &self.heap));
                 return Ok(());
             }
             Some(HeapObj::Dict(_)) => {}
@@ -207,7 +207,7 @@ impl<'a> VM<'a> {
             let h = match known { Some(h) => h, None => vm.key_hash(k, chunk, slots)? };
             match vm.dict_slot(&rc, k, h, chunk, slots)? {
                 Some(i) => rc.borrow_mut().set_value_at(i, v),
-                None => { let rich = is_rich_key(k, &vm.heap); rc.borrow_mut().push_hashed(k, v, h, rich); }
+                None => { let rich = is_rich_key(k, &vm.heap); vm.heap.growing(&mut *rc.borrow_mut(), |d| d.push_hashed(k, v, h, rich)); }
             }
             Ok(())
         })
@@ -271,14 +271,14 @@ impl<'a> VM<'a> {
     pub(crate) fn set_add_with(&mut self, s: Val, k: Val, known: Option<u64>, chunk: &SSAChunk, slots: &mut [Val]) -> Result<bool, VmErr> {
         if let Some(HeapObj::Set(rc)) = self.heap.try_get(s) && !self.rich_probe(rc.borrow().is_rich(), k) {
             self.require_hashable(k)?;
-            return Ok(rc.borrow_mut().insert(k, &self.heap));
+            return Ok(self.heap.growing(&mut *rc.borrow_mut(), |t| t.insert(k, &self.heap)));
         }
         let Some(t @ Table::Set(_)) = self.table(s) else { return Ok(false) };
         self.with_roots([s, k], |vm| {
             let h = match known { Some(h) => h, None => vm.key_hash(k, chunk, slots)? };
             if vm.set_slot(&t, k, h, chunk, slots)?.is_some() { return Ok(false); }
             let rich = is_rich_key(k, &vm.heap);
-            if let Table::Set(rc) = &t { rc.borrow_mut().push_hashed(k, h, rich); }
+            if let Table::Set(rc) = &t { vm.heap.growing(&mut *rc.borrow_mut(), |t| t.push_hashed(k, h, rich)); }
             Ok(true)
         })
     }
@@ -359,7 +359,7 @@ impl<'a> VM<'a> {
             Ok(out)
         })?;
         if inplace && let Some(HeapObj::Set(rc)) = self.heap.try_get(a) {
-            *rc.borrow_mut() = out;
+            self.heap.growing(&mut *rc.borrow_mut(), |t| *t = out);
             self.push(a);
             return Ok(());
         }
@@ -397,8 +397,7 @@ impl<'a> VM<'a> {
                 // Plain items into a plain set need no user code, so no roots either.
                 if let Some(HeapObj::Set(rc)) = self.heap.try_get(acc) && !rc.borrow().is_rich() && !plain.iter().any(|&v| is_rich_key(v, &self.heap)) {
                     for &v in plain.iter().filter(|v| v.is_heap()) { self.require_hashable(v)?; }
-                    let mut s = rc.borrow_mut();
-                    for v in plain { s.insert(v, &self.heap); }
+                    self.heap.growing(&mut *rc.borrow_mut(), |s| for v in plain { s.insert(v, &self.heap); });
                     return Ok(());
                 }
                 plain.into_iter().map(|v| (None, v)).collect()
@@ -569,7 +568,7 @@ impl<'a> VM<'a> {
             "update" | "union" => {
                 let mut out = rc.borrow().clone();
                 for items in &args { for &(h, v) in items { self.vs_insert(&mut out, h, v, chunk, slots)?; } }
-                if name == "union" { Some(out) } else { *rc.borrow_mut() = out; None }
+                if name == "union" { Some(out) } else { self.heap.growing(&mut *rc.borrow_mut(), |t| *t = out); None }
             }
             "intersection" | "intersection_update" | "difference" | "difference_update" => {
                 let tables: Vec<ValSet> = args.iter().map(|items| self.vs_from(items, chunk, slots)).collect::<Result<_, _>>()?;
@@ -581,7 +580,7 @@ impl<'a> VM<'a> {
                     let keep = if keep_in { hits == tables.len() } else { hits == 0 };
                     if keep { out.push_hashed(v, h, is_rich_key(v, &self.heap)); }
                 }
-                if name.ends_with("_update") { *rc.borrow_mut() = out; None } else { Some(out) }
+                if name.ends_with("_update") { self.heap.growing(&mut *rc.borrow_mut(), |t| *t = out); None } else { Some(out) }
             }
             "symmetric_difference" | "symmetric_difference_update" => {
                 let other = self.vs_from(&args[0], chunk, slots)?;
@@ -589,7 +588,7 @@ impl<'a> VM<'a> {
                 let mut out = ValSet::with_capacity(mine.len());
                 for &(h, v) in &mine { if !self.vs_has(&other, h, v, chunk, slots)? { out.push_hashed(v, h, is_rich_key(v, &self.heap)); } }
                 for (h, v) in other.iter_hashed().collect::<Vec<_>>() { if !self.vs_has(&lhs, h, v, chunk, slots)? { out.push_hashed(v, h, is_rich_key(v, &self.heap)); } }
-                if name.ends_with("_update") { *rc.borrow_mut() = out; None } else { Some(out) }
+                if name.ends_with("_update") { self.heap.growing(&mut *rc.borrow_mut(), |t| *t = out); None } else { Some(out) }
             }
             "issubset" => {
                 let other = self.vs_from(&args[0], chunk, slots)?;

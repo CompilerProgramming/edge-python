@@ -64,10 +64,11 @@ impl<'a> VM<'a> {
     fn delete_attr_named(&mut self, obj: Val, name: &str) -> Result<(), VmErr> {
         let removed = match self.heap.try_get(obj) {
             Some(HeapObj::Class(_, _, members) | HeapObj::Func(_, _, _, members)) => {
-                let mut m = members.borrow_mut();
-                let before = m.len();
-                m.retain(|(n, _)| n != name);
-                m.len() < before
+                self.heap.growing(&mut *members.borrow_mut(), |m| {
+                    let before = m.len();
+                    m.retain(|(n, _)| n != name);
+                    m.len() < before
+                })
             }
             Some(HeapObj::Instance(_, attrs)) => {
                 let key = attrs.borrow().iter().find(|(k, _)| matches!(self.heap.try_get(*k), Some(HeapObj::Str(s)) if s == name)).map(|(k, _)| k);

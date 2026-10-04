@@ -31,7 +31,7 @@ impl<'a> VM<'a> {
             if a_is_list {
                 // Snapshot rhs first so `xs += xs` doubles correctly, TypeError if rhs isn't iterable.
                 let rhs = self.extract_iter(b)?;
-                if let HeapObj::List(la) = self.heap.get(a) { la.borrow_mut().extend_from_slice(&rhs); }
+                if let HeapObj::List(la) = self.heap.get(a) { self.heap.growing(&mut *la.borrow_mut(), |v| v.extend_from_slice(&rhs)); }
                 self.push(a);
                 return Ok(());
             }

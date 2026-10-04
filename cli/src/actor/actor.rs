@@ -16,8 +16,8 @@ const EVAL_DEADLINE_TICKS: u64 = 100;
 const EVAL_TICK_NS: u64 = 100_000_000;
 // The reply when host-side waits would outlast the deadline, worded like the epoch trap.
 const EVAL_TIME_LIMIT: &str = "error: RuntimeError: run exceeded its time limit";
-// Linear memory an untrusted run may grow to.
-const EVAL_MEMORY: usize = 256 << 20;
+// Linear memory past twice the memory limit, room for garbage and the engine itself.
+const EVAL_OVERHEAD: usize = 64 << 20;
 
 // How an actor runs, a fixed program looping over receive(), or an untrusted per-message evaluator.
 enum Mode {
@@ -233,7 +233,8 @@ fn run_eval(ctx: &Context, body: &str, limits: Limits, preempt: usize, capture: 
         true => project.ceiling = Some(ctx.ceiling.clone()),
         false => project.manifest = Some(ctx.manifest.clone()),
     }
-    let mut vm = ctx.host.vm(sink, project, Some(EVAL_DEADLINE_TICKS), Some(EVAL_MEMORY)).map_err(|e| format!("error: {e}"))?;
+    let memory = limits.memory.saturating_mul(2).saturating_add(EVAL_OVERHEAD);
+    let mut vm = ctx.host.vm(sink, project, Some(EVAL_DEADLINE_TICKS), Some(memory)).map_err(|e| format!("error: {e}"))?;
     vm.set_preempt_interval(preempt).map_err(|e| format!("error: {e}"))?;
     vm.set_limits(&limits).map_err(|e| format!("error: {e}"))?;
     // Host-side waits count toward the same budget the epoch ticker enforces inside the sandbox.

@@ -279,8 +279,8 @@ impl<'a> VM<'a> {
             loop {
                 vm.charge_step()?;
                 match vm.iter_next_proto(iter, chunk, slots) {
-                    // Inline ints escape the object quota, so the item count is capped by it too.
-                    Ok(Some(_)) if out.len() >= vm.heap.limit() => return Err(crate::vm::cold_heap()),
+                    // Inline ints take no slot, so the list they fill is capped by the memory left.
+                    Ok(Some(_)) if out.len().saturating_mul(VAL_BYTES) >= vm.heap.room() => return Err(crate::vm::cold_heap()),
                     Ok(Some(v)) => { vm.temp_roots.push(v); out.push(v); }
                     Ok(None) => return Ok(Some(out)),
                     Err(VmErr::Raised(ref m)) if m == "StopIteration" || m.starts_with("StopIteration:") => return Ok(Some(out)),
