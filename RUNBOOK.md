@@ -18,4 +18,6 @@ A push to `main` promotes to dev and a `v` tag ships to production, and either o
 
 ## Migrations
 
-A schema change edits `site/db/schema.sql` and adds its step to `site/db/migrations/` in the same commit. Production runs the step on the next `v` tag, and after that release you delete the file by hand, which the Database job warns about until you do.
+A schema change edits `site/db/schema.sql` and adds its step to `site/db/migrations/` in the same commit, since production keeps its rows. The next `v` tag runs the step before the Worker ships, and after that release you delete the file by hand, which the Database job warns about until you do.
+
+`npm run schema` in `infra/` reads production and checks that it plus the pending migrations matches `schema.sql`. The Database job warns about a mismatch on `main` and enforces it on a tag.
