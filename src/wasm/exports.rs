@@ -275,6 +275,7 @@ fn step_vm(mut vm: VM<'static>, src: &str, prev_paused: Option<Box<PausedRun>>) 
         let _guard = VmGuard::new(&mut vm);
         vm.run()
     };
+    with_slot(|s| s.memory_peak = vm.memory_peak());
     match result {
         Ok(_) => {
             park_repl_or_drop(vm);
@@ -458,6 +459,12 @@ pub unsafe extern "C" fn set_host_error_by_id(id: u32, kind: u32, msg_handle: u3
         let e = bridge::error_from_kind(kind, msg);
         if vm.inject_host_error_by_id(id as u64, e) { 0 } else { 2 }
     })
+}
+
+/* The most the last run held at once by the memory model the limit counts, in bytes. */
+#[unsafe(no_mangle)]
+pub extern "C" fn memory_peak() -> u64 {
+    with_slot(|s| s.memory_peak as u64)
 }
 
 #[unsafe(no_mangle)]

@@ -503,6 +503,9 @@ impl<'a> VM<'a> {
     /* What the program holds by the memory model, garbage since the last collection included. */
     pub fn memory(&self) -> usize { self.heap.bytes() }
 
+    /* The most the program held at once by the same model, which a bench compares run to run. */
+    pub fn memory_peak(&self) -> usize { self.heap.peak() }
+
     /* The running memory count beside a recount of every slot, the first time they disagreed. */
     #[cfg(feature = "memcheck")]
     pub fn memory_drift(&self) -> Option<(usize, usize)> { self.heap.drift() }

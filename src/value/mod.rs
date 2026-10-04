@@ -623,6 +623,8 @@ pub struct HeapPool {
     alloc_count: Cell<usize>,
     // What the slots hold by the memory model, garbage since the last sweep included.
     bytes: Cell<usize>,
+    // The highest count before a sweep, where it stands tallest since only a sweep lowers it.
+    peak: usize,
     limit: usize,
     // The first collection whose running count missed the recount, as the two totals.
     #[cfg(feature = "memcheck")]
@@ -666,6 +668,7 @@ impl HeapPool {
             gc_threshold: 512,
             alloc_count: Cell::new(0),
             bytes: Cell::new(0),
+            peak: 0,
             limit,
             #[cfg(feature = "memcheck")]
             drift: None,
@@ -797,6 +800,9 @@ impl HeapPool {
     /* What the slots hold by the memory model, garbage since the last sweep included. */
     pub fn bytes(&self) -> usize { self.bytes.get() }
 
+    /* The most the slots held at once, garbage included, the count now or before any sweep. */
+    pub fn peak(&self) -> usize { self.peak.max(self.bytes.get()) }
+
     /* The same total counted again from every occupied slot, which the running count must always equal. */
     fn recount(&self) -> usize {
         self.slots.iter().filter_map(|s| s.obj.as_ref()).map(footprint).sum()
@@ -832,6 +838,7 @@ impl HeapPool {
     }
 
     pub fn sweep(&mut self) {
+        self.peak = self.peak.max(self.bytes.get());
         // The survivors are counted again, so a sweep leaves the running count exact.
         let mut kept = 0;
         for idx in 0..self.slots.len() {

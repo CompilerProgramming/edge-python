@@ -61,14 +61,14 @@ deno lint js/
 
 ### Bench
 
-`cargo run -p bench --profile cli` runs every case of `vm.json` on the `cargo wasm-cli` build, and stops when that build is older than `src/`. It counts the WebAssembly instructions each case executes and prices each at 0.82 ns, the 822756 gas that `wasm_regular_op_cost` sets in `core/parameters/res/runtime_configs/parameters.yaml` of nearcore, at the 1 ms per Tgas its gas estimator budgets, so `bench/.snapshot` keeps reference seconds that come out the same on every machine.
+`cargo run -p bench --profile cli` runs every case of `vm.json` on the `cargo wasm-cli` build, and stops when that build is older than `src/`. It counts the WebAssembly instructions each case executes and prices each at 0.82 ns, the 822756 gas that `wasm_regular_op_cost` sets in `core/parameters/res/runtime_configs/parameters.yaml` of nearcore, at the 1 ms per Tgas its gas estimator budgets, so `bench/.snapshot` keeps reference seconds that come out the same on every machine. Each case keeps them beside its memory peak in MB, by the model the memory limit counts, as `[seconds, MB]`.
 
 The Bench job fails a pull request when
 
 - the snapshot was taken with another Rust,
 - a case is missing from it, or an entry has no case,
-- the geometric mean moves past its threshold, slower or faster,
-- a single case moves past its own threshold.
+- the geometric mean of time or memory moves past its threshold, either way,
+- a single case moves past its own threshold in either.
 
 Every run prints how the cases already in the snapshot moved, even when another rule fails. `--update` reports the change and takes the snapshot again, and a faster engine takes it too, so the next change is measured from where the code stands.
 

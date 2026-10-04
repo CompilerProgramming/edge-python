@@ -86,6 +86,8 @@ pub(super) struct Slot {
     pub limits: Option<Limits>,
     /* Whether the next boot sleeps on the host's clock, off keeps the virtual one. */
     pub wall_clock: bool,
+    /* The memory peak of the last run, read through `memory_peak` once the VM is gone. */
+    pub memory_peak: usize,
     /* The script `set_entry` named, naming the entry frame in tracebacks, empty renders the anonymous marker. */
     pub source_name: String,
     /* Directory of the entry `set_entry` named, rooting the walk and the quoted imports of the source. */
@@ -106,6 +108,7 @@ impl Slot {
             preempt_every: 0,
             limits: None,
             wall_clock: true,
+            memory_peak: 0,
             source_name: String::new(),
             entry_dir: String::new(),
             chunks: Vec::new(),

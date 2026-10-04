@@ -11,17 +11,35 @@ const SNAPSHOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/.snapshot");
 const OPS: i64 = 10_000_000;
 // nearcore prices wasm instructions at 822756 gas and one Tgas at 1 ms, so 0.82 ns.
 const SECONDS_PER_INSTRUCTION: f64 = 822_756.0 * 1e-15;
+// The MB the memory limit counts in.
+const MB: f64 = (1 << 20) as f64;
 // A report names at most this many cases.
 const TOP: usize = 5;
 
-// The reference seconds each case takes, the same on every machine and every run.
+// The reference seconds and the memory peak in MB of each case, the same on every machine and every run.
 #[derive(serde::Deserialize)]
 struct Snapshot {
     rustc: String,
     threshold: f64,
     case_threshold: f64,
-    cases: BTreeMap<String, f64>,
+    cases: BTreeMap<String, (f64, f64)>,
 }
+
+// How a report words one measure, so time and memory are held to the same rules.
+struct Measure {
+    pick: fn((f64, f64)) -> f64,
+    unit: &'static str,
+    places: usize,
+    grew: &'static str,
+    shrank: &'static str,
+    most_grown: &'static str,
+    most_shrunk: &'static str,
+    own: &'static str,
+    total: (&'static str, &'static str),
+}
+
+const TIME: Measure = Measure { pick: |c| c.0, unit: "s", places: 9, grew: "got slower", shrank: "got faster", most_grown: "Most slowed", most_shrunk: "Biggest gains", own: "", total: ("runs in", "of reference time") };
+const MEMORY: Measure = Measure { pick: |c| c.1, unit: "MB", places: 6, grew: "holds more memory", shrank: "holds less memory", most_grown: "Most grown", most_shrunk: "Biggest drops", own: " in memory", total: ("peaks at", "summed over its cases") };
 
 fn main() {
     let update = std::env::args().any(|a| a == "--update");
@@ -39,9 +57,10 @@ fn main() {
 
     let cases: Vec<serde_json::Value> = serde_json::from_str(CASES).expect("tests/cases/vm.json is not valid JSON");
     println!("vm.json  {} cases", cases.len());
-    let seconds = cases.iter().map(|case| (key(case), (run(&engine, &module, case) as f64 * SECONDS_PER_INSTRUCTION * 1e9).round() / 1e9)).collect();
+    let ran: Vec<(String, (u64, u64))> = cases.iter().map(|case| (key(case), run(&engine, &module, case))).collect();
+    let measured = ran.iter().map(|(k, (ops, peak))| (k.clone(), ((*ops as f64 * SECONDS_PER_INSTRUCTION * 1e9).round() / 1e9, (*peak as f64 / MB * 1e6).round() / 1e6))).collect();
     let rustc = Command::new("rustc").arg("--version").current_dir(ROOT).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let now = Snapshot { rustc, threshold: 0.005, case_threshold: 0.05, cases: seconds };
+    let now = Snapshot { rustc, threshold: 0.005, case_threshold: 0.05, cases: measured };
     let sources: BTreeMap<String, &str> = cases.iter().map(|c| (key(c), c["src"].as_str().unwrap_or(""))).collect();
 
     let last = std::fs::read_to_string(SNAPSHOT).ok().and_then(|s| serde_json::from_str::<Snapshot>(&s).ok());
@@ -71,35 +90,47 @@ fn check(last: &Snapshot, now: &Snapshot, sources: &BTreeMap<String, &str>) -> V
     if new + gone > 0 {
         failures.push(format!("{new} cases are missing from the snapshot and {gone} entries have no case, run --update."));
     }
-
-    // Every case weighs the same in a geometric mean, so no single long case decides it.
-    let timed: Vec<(&String, f64, f64)> = now.cases.iter().filter_map(|(k, &n)| last.cases.get(k).filter(|&&l| l > 0.0 && n > 0.0).map(|&l| (k, l, n))).collect();
-    let change = (timed.iter().map(|&(_, l, n)| (n / l).ln()).sum::<f64>() / timed.len().max(1) as f64).exp() - 1.0;
-    let (total, was) = timed.iter().fold((0.0, 0.0), |(t, w), &(_, l, n)| (t + n, w + l));
-    let moved = |slower: bool| {
-        let mut picked: Vec<&(&String, f64, f64)> = timed.iter().filter(|(_, l, n)| if slower { n > l } else { n < l }).collect();
-        picked.sort_by(|a, b| (b.2 / b.1).ln().abs().total_cmp(&(a.2 / a.1).ln().abs()));
-        picked.iter().map(|&&(k, l, n)| moved_line(sources, k, l, n)).collect::<Vec<_>>()
-    };
-    if change > last.threshold {
-        failures.push(format!("vm.json got slower, {total:.3} s against {was:.3} s, {:+.2}% across {} cases. Fix it, or accept it with --update if it is intended. Most slowed{}", change * 100.0, timed.len(), list(&moved(true))));
-    } else if change < -last.threshold {
-        failures.push(format!("vm.json got faster, {total:.3} s against {was:.3} s, {:+.2}%. The snapshot no longer matches the code, run --update and commit it with the change. Biggest gains{}", change * 100.0, list(&moved(false))));
-    }
-    let mut apart: Vec<&(&String, f64, f64)> = timed.iter().filter(|(_, l, n)| (n / l - 1.0).abs() > last.case_threshold).collect();
-    apart.sort_by(|a, b| (b.2 / b.1).ln().abs().total_cmp(&(a.2 / a.1).ln().abs()));
-    if !apart.is_empty() {
-        let lines: Vec<String> = apart.iter().map(|&&(k, l, n)| moved_line(sources, k, l, n)).collect();
-        failures.push(format!("{} cases moved past ±{:.0}% on their own.{}", apart.len(), last.case_threshold * 100.0, list(&lines)));
-    }
-
-    // Printed even when a finding fails, so adding cases never hides how the existing ones moved.
-    annotate("notice", &format!("vm.json runs in {total:.3} s of reference time, {:+.2}% against the snapshot across {} cases, the band is ±{:.1}%.", change * 100.0, timed.len(), last.threshold * 100.0));
+    failures.extend(compare(&TIME, last, now, sources));
+    failures.extend(compare(&MEMORY, last, now, sources));
     failures
 }
 
-fn moved_line(sources: &BTreeMap<String, &str>, key: &str, last: f64, now: f64) -> String {
-    format!("{} {last:.9} s to {now:.9} s ({:+.1}%)", source(sources, key), (now / last - 1.0) * 100.0)
+/* One measure against the snapshot, its geometric mean held to the band and each case to its own threshold. */
+fn compare(m: &Measure, last: &Snapshot, now: &Snapshot, sources: &BTreeMap<String, &str>) -> Vec<String> {
+    let mut failures = Vec::new();
+    let unit = m.unit;
+    // Every case weighs the same in a geometric mean, so no single long case decides it.
+    let paired: Vec<(&String, f64, f64)> = now.cases.iter().filter_map(|(k, &n)| last.cases.get(k).map(|&l| (k, (m.pick)(l), (m.pick)(n)))).filter(|&(_, l, n)| l > 0.0 && n > 0.0).collect();
+    if paired.is_empty() {
+        return failures;
+    }
+    let change = (paired.iter().map(|&(_, l, n)| (n / l).ln()).sum::<f64>() / paired.len().max(1) as f64).exp() - 1.0;
+    let (total, before) = paired.iter().fold((0.0, 0.0), |(t, w), &(_, l, n)| (t + n, w + l));
+    let moved = |grew: bool| {
+        let mut picked: Vec<&(&String, f64, f64)> = paired.iter().filter(|(_, l, n)| if grew { n > l } else { n < l }).collect();
+        picked.sort_by(|a, b| (b.2 / b.1).ln().abs().total_cmp(&(a.2 / a.1).ln().abs()));
+        picked.iter().map(|&&(k, l, n)| moved_line(m, sources, k, l, n)).collect::<Vec<_>>()
+    };
+    if change > last.threshold {
+        failures.push(format!("vm.json {}, {total:.3} {unit} against {before:.3} {unit}, {:+.2}% across {} cases. Fix it, or accept it with --update if it is intended. {}{}", m.grew, change * 100.0, paired.len(), m.most_grown, list(&moved(true))));
+    } else if change < -last.threshold {
+        failures.push(format!("vm.json {}, {total:.3} {unit} against {before:.3} {unit}, {:+.2}%. The snapshot no longer matches the code, run --update and commit it with the change. {}{}", m.shrank, change * 100.0, m.most_shrunk, list(&moved(false))));
+    }
+    let mut apart: Vec<&(&String, f64, f64)> = paired.iter().filter(|(_, l, n)| (n / l - 1.0).abs() > last.case_threshold).collect();
+    apart.sort_by(|a, b| (b.2 / b.1).ln().abs().total_cmp(&(a.2 / a.1).ln().abs()));
+    if !apart.is_empty() {
+        let lines: Vec<String> = apart.iter().map(|&&(k, l, n)| moved_line(m, sources, k, l, n)).collect();
+        failures.push(format!("{} cases moved past ±{:.0}% on their own{}.{}", apart.len(), last.case_threshold * 100.0, m.own, list(&lines)));
+    }
+
+    // Printed even when a finding fails, so adding cases never hides how the existing ones moved.
+    annotate("notice", &format!("vm.json {} {total:.3} {unit} {}, {:+.2}% against the snapshot across {} cases, the band is ±{:.1}%.", m.total.0, m.total.1, change * 100.0, paired.len(), last.threshold * 100.0));
+    failures
+}
+
+fn moved_line(m: &Measure, sources: &BTreeMap<String, &str>, key: &str, last: f64, now: f64) -> String {
+    let (unit, places) = (m.unit, m.places);
+    format!("{} {last:.places$} {unit} to {now:.places$} {unit} ({:+.1}%)", source(sources, key), (now / last - 1.0) * 100.0)
 }
 
 fn source(sources: &BTreeMap<String, &str>, key: &str) -> String {
@@ -121,8 +152,8 @@ fn annotate(level: &str, message: &str) {
     }
 }
 
-/* Runs one case on a fresh instance, feeding its input and events, and returns the instructions it executed. */
-fn run(engine: &Engine, module: &Module, case: &serde_json::Value) -> u64 {
+/* Runs one case on a fresh instance, feeding its input and events, and returns the instructions it executed and its memory peak in bytes. */
+fn run(engine: &Engine, module: &Module, case: &serde_json::Value) -> (u64, u64) {
     let texts = |field: &str| case[field].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()).unwrap_or_default();
     let (input, events) = (texts("input"), [texts("events"), texts("interactive_events")].concat());
     let mut store = Store::new(engine, ());
@@ -158,7 +189,8 @@ fn run(engine: &Engine, module: &Module, case: &serde_json::Value) -> u64 {
             _ => break,
         };
     }
-    before - store.get_fuel().unwrap_or(0)
+    let ran = before - store.get_fuel().unwrap_or(0);
+    (ran, func::<(), u64>(&inst, &mut store, "memory_peak").call(&mut store, ()).unwrap_or(0))
 }
 
 fn func<P: wasmtime::WasmParams, R: wasmtime::WasmResults>(inst: &Instance, store: &mut Store<()>, name: &str) -> TypedFunc<P, R> {
@@ -172,9 +204,10 @@ fn stage(inst: &Instance, store: &mut Store<()>, memory: Memory, text: &str) -> 
     (ptr, text.len() as u32)
 }
 
-/* Writes the snapshot with every case on one line in plain decimal seconds, so each line reads without converting. */
+/* Writes the snapshot with every case on one line in plain decimal seconds and MB, so each line reads without converting. */
 fn write(snapshot: &Snapshot) {
-    let cases: Vec<String> = snapshot.cases.iter().map(|(k, s)| format!("    \"{k}\": {s:.9}")).collect();
+    let (t, m) = (TIME.places, MEMORY.places);
+    let cases: Vec<String> = snapshot.cases.iter().map(|(k, (s, mb))| format!("    \"{k}\": [{s:.t$}, {mb:.m$}]")).collect();
     let json = format!(
         "{{\n  \"rustc\": {:?},\n  \"threshold\": {},\n  \"case_threshold\": {},\n  \"cases\": {{\n{}\n  }}\n}}\n",
         snapshot.rustc, snapshot.threshold, snapshot.case_threshold, cases.join(",\n")
